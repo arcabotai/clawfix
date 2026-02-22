@@ -189,15 +189,13 @@ function resultsPage(fixId) {
         html += '</div>';
       }
 
-      // Payment
+      // Beta notice (no payment during beta)
       if (count > 0) {
-        html += '<div class="payment">';
-        html += '<h3>✅ Fix Generated!</h3>';
-        html += '<p>This diagnosis saved you hours of debugging.<br>Pay what it\\'s worth — suggested: $2</p>';
-        html += '<div class="payment-options">';
-        html += '<button class="btn" onclick="alert(\\'Stripe payments coming soon!\\')">💳 Pay with Card</button>';
-        html += '<button class="btn btn-outline" onclick="alert(\\'USDC payment coming soon!\\')">⬡ Pay with USDC</button>';
-        html += '</div></div>';
+        html += '<div class="payment" style="border-color: var(--green);">';
+        html += '<h3>🎉 Free During Beta!</h3>';
+        html += '<p>This diagnosis is on us. Enjoy full AI analysis for free while we\\'re in early access.<br>';
+        html += 'Like ClawFix? Star us on <a href="https://github.com/arcaboteth/clawfix" style="color:var(--green)">GitHub</a> — it helps a lot.</p>';
+        html += '</div>';
       }
 
       // Meta
