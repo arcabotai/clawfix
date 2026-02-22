@@ -159,7 +159,7 @@ diagnoseRouter.get('/stats', async (req, res) => {
 diagnoseRouter.post('/feedback/:fixId', async (req, res) => {
   const { fixId } = req.params;
   const success = req.body?.success ?? req.query?.success === 'true';
-  const issuesRemaining = req.body?.issuesRemaining ?? parseInt(req.query?.remaining) || null;
+  const issuesRemaining = req.body?.issuesRemaining ?? (parseInt(req.query?.remaining) || null);
   const comment = req.body?.comment || null;
 
   await storeFeedback(fixId, success, issuesRemaining, comment);
