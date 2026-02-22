@@ -1,14 +1,30 @@
 import { Router } from 'express';
-import Anthropic from '@anthropic-ai/sdk';
 import { nanoid } from 'nanoid';
 import { detectIssues, KNOWN_ISSUES } from '../known-issues.js';
 
 export const diagnoseRouter = Router();
 
-const anthropic = new Anthropic();
-
 // In-memory store for fix results (use Redis/DB in production)
 const fixes = new Map();
+
+// Model configuration — swap easily via env vars
+const AI_CONFIG = {
+  provider: process.env.AI_PROVIDER || 'openrouter', // openrouter | anthropic | deepseek | gemini
+  model: process.env.AI_MODEL || 'minimax/minimax-m2.5',
+  apiKey: process.env.AI_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY,
+  baseUrl: process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1',
+  maxTokens: 2000,
+};
+
+// Provider base URLs
+const PROVIDER_URLS = {
+  openrouter: 'https://openrouter.ai/api/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta',
+  together: 'https://api.together.xyz/v1',
+  minimax: 'https://api.minimax.chat/v1',
+};
 
 const SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
 You analyze diagnostic data from users' OpenClaw setups and generate precise fix scripts.
@@ -39,7 +55,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     if (!diagnostic || !diagnostic.system) {
       return res.status(400).json({
         error: 'Invalid diagnostic payload',
-        hint: 'Run the diagnostic script: curl -sSL clawfix.com/fix | bash'
+        hint: 'Run the diagnostic script: curl -sSL clawfix.dev/fix | bash'
       });
     }
 
@@ -69,6 +85,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
       analysis: aiAnalysis.summary,
       fixScript,
       aiInsights: aiAnalysis.insights || '',
+      model: AI_CONFIG.model,
     };
 
     fixes.set(fixId, result);
@@ -85,7 +102,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     res.status(500).json({
       error: 'Diagnosis failed',
       message: error.message,
-      hint: 'If this persists, report at https://github.com/ArcaHQ/clawfix/issues'
+      hint: 'If this persists, report at https://github.com/arcaboteth/clawfix/issues'
     });
   }
 });
@@ -106,17 +123,61 @@ diagnoseRouter.get('/fix/:fixId', (req, res) => {
   res.json(fix);
 });
 
+/**
+ * Call AI via OpenAI-compatible API (works with OpenRouter, Together, DeepSeek, etc.)
+ */
+async function callAI(systemPrompt, userMessage) {
+  const baseUrl = AI_CONFIG.baseUrl || PROVIDER_URLS[AI_CONFIG.provider] || PROVIDER_URLS.openrouter;
+  
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${AI_CONFIG.apiKey}`,
+  };
+
+  // OpenRouter-specific headers
+  if (AI_CONFIG.provider === 'openrouter') {
+    headers['HTTP-Referer'] = 'https://clawfix.dev';
+    headers['X-Title'] = 'ClawFix';
+  }
+
+  const body = {
+    model: AI_CONFIG.model,
+    max_tokens: AI_CONFIG.maxTokens,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+  };
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`AI API ${response.status}: ${err}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
 async function analyzeWithAI(diagnostic, knownIssues) {
   try {
+    if (!AI_CONFIG.apiKey) {
+      return {
+        summary: `Pattern matching found ${knownIssues.length} issue(s). AI analysis unavailable (no API key configured).`,
+        insights: '',
+        additionalIssues: [],
+        additionalFixes: '',
+      };
+    }
+
     const knownIds = knownIssues.map(i => i.id);
 
-    const message = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6-20250514',
-      max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      messages: [{
-        role: 'user',
-        content: `Analyze this OpenClaw diagnostic data. 
+    const userMessage = `Analyze this OpenClaw diagnostic data. 
         
 Known issues already detected by pattern matching: ${knownIds.join(', ') || 'none'}
 
@@ -126,11 +187,9 @@ Look for ADDITIONAL issues not covered by the known patterns. Also provide:
 3. Fix scripts for any new issues you find
 
 Diagnostic data:
-${JSON.stringify(diagnostic, null, 2)}`
-      }],
-    });
+${JSON.stringify(diagnostic, null, 2)}`;
 
-    const response = message.content[0].text;
+    const response = await callAI(SYSTEM_PROMPT, userMessage);
 
     return {
       summary: extractSection(response, 'summary') || response.slice(0, 500),

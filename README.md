@@ -36,11 +36,22 @@ curl -sSL clawfix.com/fix | bash
 ## Self-Hosting
 
 ```bash
-git clone https://github.com/ArcaHQ/clawfix.git
+git clone https://github.com/arcaboteth/clawfix.git
 cd clawfix
 npm install
-ANTHROPIC_API_KEY=your-key node src/server.js
+OPENROUTER_API_KEY=your-key node src/server.js
 ```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AI_PROVIDER` | `openrouter` | AI provider (openrouter, anthropic, deepseek, together) |
+| `AI_MODEL` | `minimax/minimax-m2.5` | Model to use for analysis |
+| `AI_API_KEY` | — | API key for the provider |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key (fallback) |
+| `AI_BASE_URL` | auto | Override API base URL |
+| `PORT` | `3001` | Server port |
 
 ## Deploy to Railway
 
