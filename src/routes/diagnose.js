@@ -123,6 +123,18 @@ diagnoseRouter.get('/fix/:fixId', (req, res) => {
   res.json(fix);
 });
 
+// Stats endpoint
+diagnoseRouter.get('/stats', (req, res) => {
+  res.json({
+    totalDiagnoses: fixes.size,
+    uptime: process.uptime(),
+    version: '0.1.0',
+    aiProvider: AI_CONFIG.provider,
+    aiModel: AI_CONFIG.model,
+    aiAvailable: !!AI_CONFIG.apiKey,
+  });
+});
+
 /**
  * Call AI via OpenAI-compatible API (works with OpenRouter, Together, DeepSeek, etc.)
  */

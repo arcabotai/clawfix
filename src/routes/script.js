@@ -14,7 +14,7 @@ const DIAGNOSTIC_SCRIPT = `#!/usr/bin/env bash
 # 
 # This script collects diagnostic data from your OpenClaw installation.
 # It does NOT modify anything. It does NOT send data without your approval.
-# Source code: https://github.com/ArcaHQ/clawfix
+# Source code: https://github.com/arcaboteth/clawfix
 #
 # Usage: curl -sSL clawfix.dev/fix | bash
 
@@ -386,18 +386,32 @@ if [ \$ISSUES -gt 0 ]; then
     
     if echo "\$RESPONSE" | jq -e '.fixId' &>/dev/null; then
       FIX_ID=\$(echo "\$RESPONSE" | jq -r '.fixId')
+      ISSUES_FOUND=\$(echo "\$RESPONSE" | jq -r '.issuesFound // 0')
       echo ""
-      echo -e "\${GREEN}✅ Diagnosis complete!\${NC}"
+      echo -e "\${GREEN}✅ Diagnosis complete! Found \${ISSUES_FOUND} issue(s).\${NC}"
+      echo ""
+      
+      # Show known issues
+      echo "\$RESPONSE" | jq -r '.knownIssues[]? | "  \\(.severity | ascii_upcase) — \\(.title): \\(.description)"' 2>/dev/null
+      
       echo ""
       echo -e "\${BOLD}AI Analysis:\${NC}"
-      echo "\$RESPONSE" | jq -r '.analysis' 2>/dev/null
+      echo "\$RESPONSE" | jq -r '.analysis // "Pattern matching only (no AI key configured)"' 2>/dev/null
       echo ""
-      echo -e "\${BOLD}Fix Script:\${NC}"
-      echo "\$RESPONSE" | jq -r '.fixScript' 2>/dev/null
+      
+      # Save fix script
+      echo "\$RESPONSE" | jq -r '.fixScript' > "/tmp/clawfix-\$FIX_ID.sh" 2>/dev/null
+      
+      echo -e "\${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
       echo ""
-      echo -e "\${CYAN}Fix ID: \$FIX_ID\${NC}"
-      echo -e "Save the fix script: curl -sS \$API_URL/api/fix/\$FIX_ID > fix.sh"
-      echo -e "Review it, then run: bash fix.sh"
+      echo -e "\${BOLD}📋 Fix script saved to: /tmp/clawfix-\$FIX_ID.sh\${NC}"
+      echo -e "   Review it:  \${CYAN}cat /tmp/clawfix-\$FIX_ID.sh\${NC}"
+      echo -e "   Apply it:   \${CYAN}bash /tmp/clawfix-\$FIX_ID.sh\${NC}"
+      echo ""
+      echo -e "\${BOLD}🌐 View results in browser:\${NC}"
+      echo -e "   \${CYAN}\$API_URL/results/\$FIX_ID\${NC}"
+      echo ""
+      echo -e "\${BOLD}Fix ID:\${NC} \$FIX_ID"
     else
       echo -e "\${RED}❌ Error from API:\${NC}"
       echo "\$RESPONSE"
