@@ -8,6 +8,7 @@ import { resultsRouter } from './routes/results.js';
 import { paymentRouter } from './routes/payment.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { landingRouter } from './landing.js';
+import { initDB } from './db.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -49,8 +50,12 @@ app.use('/', scriptRouter);     // GET /fix — diagnostic script
 app.use('/', resultsRouter);    // GET /results/:fixId — web results page
 app.use('/', landingRouter);    // GET / — landing page (must be last)
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🦞 ClawFix v${process.env.npm_package_version || '0.1.0'} running on port ${PORT}`);
   console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`   AI: ${process.env.AI_PROVIDER || 'none'} / ${process.env.AI_MODEL || 'pattern-matching only'}`);
+  console.log(`   DB: ${process.env.DATABASE_URL ? 'PostgreSQL' : 'in-memory only'}`);
+  
+  // Initialize database
+  await initDB();
 });

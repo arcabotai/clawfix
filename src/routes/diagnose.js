@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { detectIssues, KNOWN_ISSUES } from '../known-issues.js';
+import { storeDiagnosis, storeFeedback, getStats } from '../db.js';
 
 export const diagnoseRouter = Router();
 
@@ -86,9 +87,20 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
       fixScript,
       aiInsights: aiAnalysis.insights || '',
       model: AI_CONFIG.model,
+      // Internal metadata for DB (not sent to client)
+      _hostHash: diagnostic.hostHash,
+      _os: diagnostic.system?.os,
+      _arch: diagnostic.system?.arch,
+      _nodeVersion: diagnostic.system?.nodeVersion,
+      _openclawVersion: diagnostic.openclaw?.version,
+      _aiIssues: aiAnalysis.additionalIssues || [],
     };
 
     fixes.set(fixId, result);
+
+    // Persist to database
+    const source = req.headers['user-agent']?.includes('node') ? 'npx' : 'curl';
+    storeDiagnosis(result, source).catch(() => {});
 
     // Clean up old fixes (keep last 1000)
     if (fixes.size > 1000) {
@@ -96,7 +108,9 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
       fixes.delete(oldest);
     }
 
-    res.json(result);
+    // Strip internal metadata before sending to client
+    const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _aiIssues, ...clientResult } = result;
+    res.json(clientResult);
   } catch (error) {
     console.error('Diagnosis error:', error);
     res.status(500).json({
@@ -124,15 +138,33 @@ diagnoseRouter.get('/fix/:fixId', (req, res) => {
 });
 
 // Stats endpoint
-diagnoseRouter.get('/stats', (req, res) => {
+diagnoseRouter.get('/stats', async (req, res) => {
+  const dbStats = await getStats();
+  
   res.json({
-    totalDiagnoses: fixes.size,
+    totalDiagnoses: dbStats?.totalDiagnoses || fixes.size,
+    last24h: dbStats?.last24h || 0,
+    topIssues: dbStats?.topIssues || [],
+    versionBreakdown: dbStats?.versionBreakdown || [],
+    outcomes: dbStats?.outcomes || [],
     uptime: process.uptime(),
     version: '0.1.0',
     aiProvider: AI_CONFIG.provider,
     aiModel: AI_CONFIG.model,
     aiAvailable: !!AI_CONFIG.apiKey,
   });
+});
+
+// Feedback endpoint — did the fix work?
+diagnoseRouter.post('/feedback/:fixId', async (req, res) => {
+  const { fixId } = req.params;
+  const success = req.body?.success ?? req.query?.success === 'true';
+  const issuesRemaining = req.body?.issuesRemaining ?? parseInt(req.query?.remaining) || null;
+  const comment = req.body?.comment || null;
+
+  await storeFeedback(fixId, success, issuesRemaining, comment);
+
+  res.json({ received: true, fixId, success });
 });
 
 /**
@@ -272,6 +304,12 @@ function generateFixScript(knownIssues, aiAnalysis, fixId) {
   lines.push('echo ""');
   lines.push('echo "🦞 All fixes applied! Run \'openclaw status\' to verify."');
   lines.push(`echo "Fix ID: ${fixId}"`);
+  lines.push('');
+  lines.push('# ─── Optional: Tell ClawFix if this worked ───');
+  lines.push('# This helps us improve fixes for everyone. Remove if you prefer.');
+  lines.push(`curl -s -X POST "https://clawfix.dev/api/feedback/${fixId}" \\`);
+  lines.push('  -H "Content-Type: application/json" \\');
+  lines.push('  -d \'{"success": true}\' &>/dev/null || true');
 
   return lines.join('\n');
 }
