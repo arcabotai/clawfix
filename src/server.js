@@ -5,6 +5,7 @@ import { diagnoseRouter } from './routes/diagnose.js';
 import { healthRouter } from './routes/health.js';
 import { scriptRouter } from './routes/script.js';
 import { resultsRouter } from './routes/results.js';
+import { paymentRouter } from './routes/payment.js';
 import { landingRouter } from './landing.js';
 
 const app = express();
@@ -40,9 +41,11 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api', diagnoseRouter);
 app.use('/api', healthRouter);
-app.use('/', scriptRouter);    // GET /fix — diagnostic script
-app.use('/', resultsRouter);   // GET /results/:fixId — web results page
-app.use('/', landingRouter);   // GET / — landing page (must be last)
+app.use('/api', paymentRouter);  // POST /api/checkout, /api/webhook/lemonsqueezy
+app.use('/', paymentRouter);    // GET /pay/:fixId — payment page
+app.use('/', scriptRouter);     // GET /fix — diagnostic script
+app.use('/', resultsRouter);    // GET /results/:fixId — web results page
+app.use('/', landingRouter);    // GET / — landing page (must be last)
 
 app.listen(PORT, () => {
   console.log(`🦞 ClawFix v${process.env.npm_package_version || '0.1.0'} running on port ${PORT}`);

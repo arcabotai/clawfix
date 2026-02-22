@@ -214,6 +214,140 @@ echo "This bug is tracked at: https://github.com/openclaw/openclaw/issues/11187"
   },
 
   {
+    id: 'duplicate-plugin',
+    severity: 'medium',
+    title: 'Duplicate plugin detected',
+    description: 'A plugin is registered multiple times in your config. The later entry overrides the earlier one, which may cause unexpected behavior.',
+    detect: (diag) => {
+      const status = diag.openclaw?.gatewayStatus || '';
+      return /duplicate plugin id detected/i.test(status);
+    },
+    fix: `# Fix: Remove duplicate plugin entries from config
+echo "⚠️  Check your openclaw.json for duplicate plugin entries."
+echo "Look for plugins listed twice in plugins.entries"
+echo "Remove the duplicate and keep the one with your preferred config."
+jq '.plugins.entries | keys[]' ~/.openclaw/openclaw.json 2>/dev/null | sort | uniq -d | while read dup; do
+  echo "  Duplicate found: $dup"
+done
+echo "Edit ~/.openclaw/openclaw.json to remove duplicates"`,
+  },
+
+  {
+    id: 'state-dir-migration',
+    severity: 'low',
+    title: 'State directory migration skipped',
+    description: 'OpenClaw tried to migrate your state directory but the target already exists. This is usually harmless but may indicate a leftover from a previous installation.',
+    detect: (diag) => {
+      const status = diag.openclaw?.gatewayStatus || '';
+      return /State dir migration skipped/i.test(status);
+    },
+    fix: `# Info: State directory migration was skipped
+# This is usually harmless — your ~/.openclaw directory already exists.
+# If you have issues, check for leftover files from a previous install:
+ls -la ~/.openclaw/ 2>/dev/null
+echo "✅ No action needed unless you're experiencing config conflicts"`,
+  },
+
+  {
+    id: 'large-workspace-files',
+    severity: 'medium',
+    title: 'Large workspace loaded every session',
+    description: 'Your workspace has many markdown files that may be loaded into context every turn, wasting tokens. Consider using progressive context loading with a small index file.',
+    detect: (diag) => {
+      return (diag.workspace?.mdFiles || 0) > 100 && !diag.workspace?.hasSoul;
+    },
+    fix: `# Fix: Create a MEMORY.md index to avoid loading everything
+WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
+echo "Your workspace has many .md files. Consider:"
+echo "1. Create a small MEMORY.md index that points to detailed files"
+echo "2. Move old/large files to an archive/ subdirectory"
+echo "3. Use .contextignore to exclude files from context loading"
+echo ""
+echo "Files over 10KB:"
+find "$WORKSPACE" -name "*.md" -size +10k -not -path "*/node_modules/*" 2>/dev/null | head -10`,
+  },
+
+  {
+    id: 'no-compaction-config',
+    severity: 'medium',
+    title: 'No compaction safeguards',
+    description: 'Your context compaction has no reserveTokensFloor configured. When the context window fills up, important context may be lost without warning.',
+    detect: (diag) => {
+      try {
+        const compaction = diag.config?.agents?.defaults?.compaction;
+        return !compaction?.reserveTokensFloor && !compaction?.mode;
+      } catch { return true; }
+    },
+    fix: `# Fix: Set compaction safeguards
+jq '.agents.defaults.compaction.mode = "safeguard" |
+    .agents.defaults.compaction.reserveTokensFloor = 32000' \\
+  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
+  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
+echo "✅ Compaction safeguard enabled (32K token reserve)"`,
+  },
+
+  {
+    id: 'missing-agents-md',
+    severity: 'low',
+    title: 'No AGENTS.md found',
+    description: 'AGENTS.md provides instructions for your agent on how to use the workspace, handle memory, and behave in different contexts. Without it, your agent lacks operational guidance.',
+    detect: (diag) => !diag.workspace?.hasAgents,
+    fix: `# Fix: Create a basic AGENTS.md
+WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
+cat > "$WORKSPACE/AGENTS.md" << 'EOF'
+# AGENTS.md - Workspace Instructions
+
+## Every Session
+1. Read SOUL.md — this is who you are
+2. Read memory/ files for recent context
+
+## Memory
+- Daily notes: memory/YYYY-MM-DD.md
+- Long-term: MEMORY.md
+
+## Safety
+- Don't run destructive commands without asking
+- trash > rm
+EOF
+echo "✅ Created basic AGENTS.md at $WORKSPACE/AGENTS.md"`,
+  },
+
+  {
+    id: 'heartbeat-no-model-override',
+    severity: 'low',
+    title: 'Heartbeat using expensive model',
+    description: 'Your heartbeat is not configured with a cheaper model override. Heartbeats run frequently and don\'t need the most powerful model — using a smaller model saves significant token costs.',
+    detect: (diag) => {
+      try {
+        const hb = diag.config?.agents?.defaults?.heartbeat;
+        return hb?.every && !hb?.model;
+      } catch { return false; }
+    },
+    fix: `# Fix: Set a cheaper model for heartbeats
+jq '.agents.defaults.heartbeat.model = "anthropic/claude-sonnet-4-6"' \\
+  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
+  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
+echo "✅ Heartbeat model set to Sonnet (cheaper than default)"`,
+  },
+
+  {
+    id: 'session-transcript-not-indexed',
+    severity: 'low',
+    title: 'Session transcripts not indexed for search',
+    description: 'Enabling session transcript indexing improves memory recall by making past conversation content searchable.',
+    detect: (diag) => {
+      try {
+        return !diag.config?.agents?.defaults?.memorySearch?.sessionTranscripts?.enabled;
+      } catch { return true; }
+    },
+    fix: `# Fix: Enable session transcript indexing
+jq '.agents.defaults.memorySearch.sessionTranscripts.enabled = true' \\
+  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
+  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
+echo "✅ Session transcript indexing enabled"`,
+  },
+
+  {
     id: 'high-token-usage',
     severity: 'medium',
     title: 'High token consumption detected',
