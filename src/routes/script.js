@@ -332,7 +332,14 @@ ISSUES=0
 ISSUE_LIST=""
 
 # Check for common problems
-if echo "\$GATEWAY_STATUS" | grep -qi "error\\|not running\\|failed"; then
+GATEWAY_RUNNING=false
+if echo "\$GATEWAY_STATUS" | grep -qi "running.*pid\\|state active\\|listening"; then
+  GATEWAY_RUNNING=true
+fi
+if echo "\$GATEWAY_STATUS" | grep -qi "not running\\|failed to start\\|stopped\\|inactive"; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
+elif [ "\$GATEWAY_RUNNING" = "false" ] && ! echo "\$GATEWAY_STATUS" | grep -qi "warning"; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
 fi

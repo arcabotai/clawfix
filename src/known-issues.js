@@ -29,7 +29,10 @@ echo "✅ Mem0 graph disabled — autoCapture will now work on Free plan"`,
     description: 'The OpenClaw gateway process is not running. This could be due to a config error, port conflict, or crash.',
     detect: (diag) => {
       const status = diag.openclaw?.gatewayStatus || '';
-      return /not running|error|failed|stopped/i.test(status) && !diag.openclaw?.gatewayPid;
+      // Check for explicit "running" indicators first — ignore config warnings
+      if (/running.*pid|state active|listening/i.test(status)) return false;
+      return (/not running|failed to start|stopped|inactive/i.test(status)) ||
+             (!diag.openclaw?.gatewayPid && !/warning/i.test(status));
     },
     fix: `# Fix: Restart the gateway
 openclaw gateway restart

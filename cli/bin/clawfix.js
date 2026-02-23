@@ -190,7 +190,10 @@ Examples:
   const gatewayPort = config?.gateway?.port || 18789;
   const gatewayPid = run('pgrep -f "openclaw.*gateway"') || '';
 
-  console.log(`   Status: ${gatewayStatus.split('\n')[0]}`);
+  // Extract the actual status line, not config warnings
+  const statusLine = gatewayStatus.split('\n').find(l => /runtime:|listening|running|stopped|not running/i.test(l))
+    || gatewayStatus.split('\n')[0];
+  console.log(`   Status: ${statusLine.trim()}`);
   if (gatewayPid) console.log(`   PID: ${gatewayPid}`);
   console.log(`   Port: ${gatewayPort}`);
 
@@ -296,7 +299,10 @@ Examples:
 
   const issues = [];
 
-  if (/error|not running|failed/i.test(gatewayStatus)) {
+  // Check actual gateway status — ignore config warnings in output
+  const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
+  const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
+  if (gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) {
     issues.push({ severity: 'critical', text: 'Gateway is not running' });
   }
   if (/EADDRINUSE/i.test(errorLogs)) {
