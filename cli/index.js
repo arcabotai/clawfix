@@ -14,7 +14,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const DEFAULT_API = 'https://clawfix.dev';
 const ARGS = process.argv.slice(2);
 const JSON_MODE = ARGS.includes('--json');
@@ -280,14 +280,46 @@ async function main() {
   // 9. Ports
   log();
   log(c.blue('🔗 Checking ports...'));
-  for (const [port, name] of [[gatewayPort, 'gateway'], ['18800', 'browser CDP'], ['18791', 'browser control']]) {
+  for (const [port, name] of [[gatewayPort, 'gateway'], ['18791', 'browser control'], ['18792', 'extension relay'], ['18800', 'browser CDP']]) {
     const inUse = run(`lsof -i :${port} 2>/dev/null | head -1`);
     log(`   ${inUse ? c.yellow(`⚠️  Port ${port} (${name}) — IN USE`) : c.green(`✅ Port ${port} (${name}) — available`)}`);
   }
 
-  // 10. Browser
+  // 10. Browser & Extension Relay
+  log();
+  log(c.blue('🌐 Checking browser relay...'));
   const browserDir = ocDir ? join(ocDir, 'browser') : '';
   const browserStatus = browserDir && existsSync(browserDir) ? 'configured' : 'not configured';
+  const relayPort = '18792';
+  const relayPortListening = !!run(`lsof -i :${relayPort} 2>/dev/null | head -1`) ||
+    !!run(`ss -tlnp 2>/dev/null | grep ":${relayPort} "`);
+  
+  // Check extension installation
+  const extensionDir = ocDir ? join(ocDir, 'browser', 'chrome-extension') : '';
+  const extensionInstalled = extensionDir && existsSync(extensionDir) && existsSync(join(extensionDir, 'background.js'));
+  const hasOptionsValidation = extensionDir && existsSync(join(extensionDir, 'options-validation.js'));
+  const hasDeriveRelayToken = extensionDir && existsSync(join(extensionDir, 'background-utils.js'))
+    ? run(`grep -c "deriveRelayToken" "${join(extensionDir, 'background-utils.js')}" 2>/dev/null`) !== '0'
+    : false;
+
+  // Check for wrong-port indicators in logs
+  const wrongPortHits = parseInt(run(`grep -c "host=127.0.0.1:18789.*chrome-extension\\|chrome-extension.*:18789" ${join(logDir, 'gateway.err.log')} 2>/dev/null`)) || 0;
+
+  if (relayPortListening) {
+    log(c.green(`   ✅ Relay port ${relayPort} — listening`));
+  } else {
+    log(c.yellow(`   ⚠️  Relay port ${relayPort} — not listening`));
+  }
+  if (extensionInstalled) {
+    log(`   Extension: installed`);
+    if (!hasOptionsValidation) log(c.yellow('   ⚠️  Missing options-validation.js (outdated extension)'));
+    if (!hasDeriveRelayToken) log(c.yellow('   ⚠️  Missing deriveRelayToken (outdated auth method)'));
+  } else {
+    log(c.dim('   Extension: not installed'));
+  }
+  if (wrongPortHits > 0) {
+    log(c.red(`   ⚠️  ${wrongPortHits} wrong-port connections detected (extension → port 18789)`));
+  }
 
   // Build diagnostic payload
   const diagnostic = {
@@ -323,7 +355,17 @@ async function main() {
       mdFiles, memoryFiles,
       hasSoul, hasAgents,
     },
-    browser: { status: browserStatus },
+    browser: {
+      status: browserStatus,
+      relayPort,
+      relayPortListening,
+      extensionInstalled,
+      extension: {
+        missingOptionsValidation: extensionInstalled && !hasOptionsValidation,
+        hasDeriveRelayToken: extensionInstalled ? hasDeriveRelayToken : undefined,
+      },
+      wrongPortHits,
+    },
   };
 
   // JSON mode — just output and exit

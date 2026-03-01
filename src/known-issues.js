@@ -487,25 +487,165 @@ echo "  - Plugin crash on startup (check error logs)"`,
   },
 
   {
-    id: 'browser-relay-handshake-spam',
-    severity: 'medium',
-    title: 'Browser Relay extension spamming invalid handshakes',
-    description: 'The OpenClaw Browser Relay Chrome extension is repeatedly trying to connect with invalid WebSocket handshakes (~every 2 seconds). This bloats gateway.err.log to 200MB+ and makes it hard to find real errors.',
+    id: 'browser-relay-wrong-port',
+    severity: 'high',
+    title: 'Browser Relay extension connecting to wrong port',
+    description: 'The Chrome Browser Relay extension is configured to connect to the gateway port (18789) instead of the extension relay port (18792). This causes an infinite loop of WebSocket handshake timeouts because the gateway does not have an /extension endpoint. The extension\'s preflight check (HEAD /) passes on the wrong port because both servers return HTTP 200, masking the misconfiguration.',
     detect: (diag) => {
       const logs = diag.logs?.stderr || diag.logs?.errors || '';
-      const handshakeErrors = (logs.match(/invalid handshake.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
-      return handshakeErrors >= 5;
+      // Key indicator: handshake timeouts on port 18789 from chrome-extension origin
+      const wrongPortPattern = /host=127\.0\.0\.1:18789.*chrome-extension|chrome-extension.*:18789/gi;
+      const wrongPortHits = (logs.match(wrongPortPattern) || []).length;
+      if (wrongPortHits >= 2) return true;
+      // Also detect: handshake timeouts + relay not listening (suggests wrong port)
+      const handshakeTimeouts = (logs.match(/handshake timeout.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
+      const relayDown = diag.browser?.relayPortListening === false;
+      // If relay IS down and we see chrome-extension handshake failures on gateway, it's wrong port
+      if (handshakeTimeouts >= 3 && relayDown) return true;
+      return false;
+    },
+    fix: `# Fix: Browser Relay extension is connecting to the wrong port
+echo "The Browser Relay extension is pointed at port 18789 (gateway) instead of 18792 (relay)."
+echo ""
+echo "The gateway and relay are different services:"
+echo "  Port 18789 = Gateway (JSON-RPC, TUI, API) — does NOT handle extension connections"
+echo "  Port 18792 = Extension Relay (CDP bridge) — THIS is what the extension needs"
+echo ""
+echo "To fix:"
+echo "  1. Open Chrome → Extensions → OpenClaw Browser Relay → Details → Extension options"
+echo "     (or right-click the toolbar icon → Options)"
+echo "  2. Change Port from 18789 to 18792"
+echo "  3. Verify the gateway token matches your config:"
+TOKEN=\$(jq -r '.gateway.auth.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+if [ -n "\$TOKEN" ]; then
+  echo "     Token: \${TOKEN:0:12}... (showing first 12 chars)"
+else
+  echo "     ⚠️  No gateway token found in config"
+fi
+echo "  4. Click Save — status should show 'Relay reachable and authenticated'"
+echo ""
+echo "Verify relay is running:"
+if curl -sf http://127.0.0.1:18792/extension/status &>/dev/null; then
+  echo "  ✅ Relay is running on port 18792"
+  curl -sf http://127.0.0.1:18792/extension/status
+else
+  echo "  ⚠️  Relay not responding on 18792 — it starts lazily when a browser profile"
+  echo "     with driver: 'extension' is first used. Try: openclaw gateway restart"
+fi`,
+  },
+
+  {
+    id: 'browser-relay-not-listening',
+    severity: 'high',
+    title: 'Extension relay port (18792) not listening',
+    description: 'The gateway is running but the extension relay server on port 18792 is not responding. The relay starts lazily inside the gateway process when a browser profile with driver: "extension" is first used. Without it, the Chrome Browser Relay extension cannot connect.',
+    detect: (diag) => {
+      // Only flag if gateway IS running but relay IS NOT
+      const gatewayUp = diag.openclaw?.portListening === true;
+      const relayDown = diag.browser?.relayPortListening === false;
+      const hasExtension = diag.browser?.extensionInstalled === true;
+      // Only relevant if user has the extension installed or is trying to use browser relay
+      const wantsRelay = hasExtension || (diag.logs?.stderr || '').includes('chrome-extension');
+      return gatewayUp && relayDown && wantsRelay;
+    },
+    fix: `# Fix: Start the extension relay
+echo "The extension relay on port 18792 is not running."
+echo "It starts lazily when a browser profile with driver: 'extension' is used."
+echo ""
+echo "Option 1: Restart the gateway (relay will start on next browser use)"
+openclaw gateway restart 2>/dev/null || echo "⚠️  Could not restart — try manually"
+sleep 3
+echo ""
+echo "Option 2: Ensure you have an extension browser profile configured"
+echo "Check your openclaw.json for:"
+echo '  "browser": { "profiles": { "chrome": { "driver": "extension" } } }'
+echo ""
+echo "Verify:"
+if curl -sf http://127.0.0.1:18792/extension/status &>/dev/null; then
+  echo "✅ Relay is now running!"
+  curl -sf http://127.0.0.1:18792/extension/status
+else
+  echo "⚠️  Relay still not responding. Check gateway logs:"
+  echo "   tail -20 ~/.openclaw/logs/gateway.err.log"
+fi`,
+  },
+
+  {
+    id: 'browser-relay-outdated',
+    severity: 'medium',
+    title: 'Browser Relay extension is outdated',
+    description: 'The local Chrome extension at ~/.openclaw/browser/chrome-extension/ is missing important upstream improvements including HMAC token derivation (sends raw gateway token instead of derived relay token), connect.challenge handshake protocol, multi-attempt navigation re-attach, and structured options validation. Update to get better security and reliability.',
+    detect: (diag) => {
+      const ext = diag.browser?.extension || {};
+      // Check for missing files that upstream has
+      if (ext.missingOptionsValidation === true) return true;
+      // Check for missing deriveRelayToken (old auth method)
+      if (ext.hasDeriveRelayToken === false) return true;
+      return false;
+    },
+    fix: `# Fix: Update Browser Relay extension from upstream
+echo "Your local Browser Relay extension is outdated."
+echo ""
+echo "The extension is bundled with OpenClaw. Updating OpenClaw should update it:"
+echo "  openclaw update"
+echo ""
+echo "After updating, reload the extension:"
+echo "  1. Open chrome://extensions"
+echo "  2. Find 'OpenClaw Browser Relay'"
+echo "  3. Click the reload (circular arrow) button"
+echo ""
+echo "If the extension wasn't updated by openclaw update, you can manually sync:"
+echo "  - Check upstream: https://github.com/openclaw/openclaw/tree/main/assets/chrome-extension"
+echo "  - Local path: ~/.openclaw/browser/chrome-extension/"
+echo ""
+echo "Key improvements in latest version:"
+echo "  ✓ HMAC-derived relay tokens (more secure than raw gateway token)"
+echo "  ✓ connect.challenge handshake protocol"
+echo "  ✓ Multi-attempt navigation re-attach [300, 700, 1500ms]"
+echo "  ✓ Structured options validation with clear error messages"
+echo "  ✓ chrome:// URL filtering (won't try to debug chrome:// pages)"`,
+  },
+
+  {
+    id: 'browser-relay-handshake-spam',
+    severity: 'medium',
+    title: 'Browser Relay extension spamming failed handshakes',
+    description: 'The OpenClaw Browser Relay Chrome extension is repeatedly failing WebSocket handshakes (~every 11 seconds). This bloats gateway.err.log and makes it hard to find real errors. Common causes: wrong port (18789 vs 18792), missing/invalid gateway token, or relay server not running.',
+    detect: (diag) => {
+      const logs = diag.logs?.stderr || diag.logs?.errors || '';
+      const handshakeErrors = (logs.match(/handshake timeout.*chrome-extension|invalid handshake.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
+      // Don't double-report if wrong-port is already detected
+      const wrongPortPattern = /host=127\.0\.0\.1:18789.*chrome-extension/gi;
+      const isWrongPort = (logs.match(wrongPortPattern) || []).length >= 2;
+      return handshakeErrors >= 5 && !isWrongPort;
     },
     fix: `# Fix: Stop Browser Relay handshake spam
-echo "The OpenClaw Browser Relay Chrome extension is failing to authenticate."
+echo "The Browser Relay Chrome extension is failing to connect repeatedly."
 echo ""
-echo "Options:"
-echo "  1. Configure the extension with your gateway token"
-echo "     - Click the extension icon → Settings → paste your token"
-echo "     - Find token: jq -r '.gateway.auth.token' ~/.openclaw/openclaw.json"
+echo "Common causes (check in order):"
 echo ""
-echo "  2. Remove/disable the extension if you don't need it"
-echo "     - Chrome → Extensions → find 'OpenClaw Browser Relay' → Remove"
+echo "1. Wrong port — extension should connect to 18792, not 18789"
+echo "   → Open extension options → set Port to 18792"
+echo ""
+echo "2. Missing/wrong gateway token"
+echo "   → Find your token:"
+TOKEN=\$(jq -r '.gateway.auth.token // empty' ~/.openclaw/openclaw.json 2>/dev/null)
+if [ -n "\$TOKEN" ]; then
+  echo "     Token: \${TOKEN:0:12}..."
+  echo "   → Paste it in extension options → Gateway Token field"
+else
+  echo "     ⚠️  No token found in config"
+fi
+echo ""
+echo "3. Relay server not running"
+if curl -sf http://127.0.0.1:18792/extension/status &>/dev/null; then
+  echo "   ✅ Relay is running"
+else
+  echo "   ❌ Relay not responding — restart gateway: openclaw gateway restart"
+fi
+echo ""
+echo "4. If you don't use Browser Relay, disable/remove the extension:"
+echo "   Chrome → Extensions → OpenClaw Browser Relay → Remove"
 echo ""
 echo "Truncate the bloated error log:"
 tail -1000 ~/.openclaw/logs/gateway.err.log > /tmp/gw-err-trimmed.log && \\

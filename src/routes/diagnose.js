@@ -59,7 +59,17 @@ Your expertise comes from real-world experience running OpenClaw in production:
 **Pattern:** After a crash loop (3+ rapid restarts), launchd applies ThrottleInterval backoff. Gateway stays dead for 30-60+ minutes. No heartbeats, cron jobs, or monitoring fires during this time.
 **Fix:** Install a separate watchdog LaunchAgent that checks /health every 2 minutes independently of launchd's retry logic.
 
-### Diagnostic Field Reference (new fields in v0.3.0+)
+### Browser Relay Extension Wrong Port (port 18789 vs 18792)
+**Pattern:** gateway.err.log fills with "handshake timeout" + "closed before connect" lines every ~11 seconds, all with host=127.0.0.1:18789 and origin=chrome-extension://. The extension's preflight check (HEAD /) passes on the gateway because it returns HTTP 200 (HTML page), masking the misconfiguration.
+**Root cause:** Extension options has port set to 18789 (gateway) instead of 18792 (extension relay). The relay is a separate WebSocket server within the gateway process that bridges Chrome DevTools Protocol. Port mapping: 18789=gateway, 18790=bridge, 18791=browser control, 18792=extension relay, 18800+=CDP.
+**Fix:** Change port to 18792 in extension options. Verify relay is running: curl http://127.0.0.1:18792/extension/status. The relay starts lazily when a browser profile with driver: "extension" is first used.
+**Prevention:** The extension should validate the server identity via GET /json/version and check for Browser: "OpenClaw/extension-relay" instead of just doing HEAD /.
+
+### Browser Relay Extension Outdated
+**Pattern:** Extension sends raw gateway token instead of HMAC-derived relay token. Missing connect.challenge handshake. Single-attempt 500ms re-attach instead of multi-attempt [300, 700, 1500ms]. No options-validation.js file.
+**Fix:** Update OpenClaw (openclaw update) then reload the extension in chrome://extensions. If needed, manually sync from upstream assets/chrome-extension/.
+
+### Diagnostic Field Reference (new fields in v0.4.0+)
 - service.manager: "launchd" (macOS) | "systemd" (Linux) | "none"
 - service.state: "running" | "sigterm" | "crashed" | "inactive" | "not_registered"
 - service.exitCode: exit code from launchctl (e.g., "-15" = SIGTERM)
@@ -68,6 +78,12 @@ Your expertise comes from real-world experience running OpenClaw in production:
 - logs.errLogSizeMB: size of gateway.err.log in MB
 - logs.handshakeTimeoutCount: count of browser relay handshake error lines
 - logs.sigtermCount: count of SIGTERM events in gateway log
+- browser.relayPort: "18792" (extension relay port)
+- browser.relayPortListening: true if relay port has a listener
+- browser.extensionInstalled: true if chrome-extension dir exists with background.js
+- browser.extension.missingOptionsValidation: true if options-validation.js is missing (outdated)
+- browser.extension.hasDeriveRelayToken: true if HMAC token derivation is present
+- browser.wrongPortHits: count of log lines showing extension connecting to wrong port (18789)
 
 Rules:
 1. Generate bash fix scripts that are safe, idempotent, and well-commented
@@ -210,7 +226,7 @@ diagnoseRouter.get('/stats', async (req, res) => {
     sigtermCrashes: dbStats?.sigtermCrashes || 0,
     zombieProcesses: dbStats?.zombieProcesses || 0,
     uptime: process.uptime(),
-    version: '0.4.0',
+    version: '0.5.0',
     aiProvider: AI_CONFIG.provider,
     aiModel: AI_CONFIG.model,
     aiAvailable: !!AI_CONFIG.apiKey,
