@@ -109,7 +109,33 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     }
 
     // Step 1: Pattern matching (fast, free)
-    const knownIssues = detectIssues(diagnostic);
+    let knownIssues = detectIssues(diagnostic);
+
+    // Step 1b: If CLI sent local issues, try to match them to known fixes by text similarity
+    if (diagnostic._localIssues?.length && knownIssues.length === 0) {
+      const matchedIds = new Set(knownIssues.map(i => i.id));
+      for (const local of diagnostic._localIssues) {
+        const text = (local.text || '').toLowerCase();
+        for (const known of KNOWN_ISSUES) {
+          if (matchedIds.has(known.id)) continue;
+          const title = (known.title || '').toLowerCase();
+          // Match if local text contains significant portion of known title or vice versa
+          if (text.includes(title.slice(0, 20)) || title.includes(text.slice(0, 20)) ||
+              (text.includes('duplicate') && title.includes('duplicate')) ||
+              (text.includes('migration') && title.includes('migration')) ||
+              (text.includes('transcript') && title.includes('transcript')) ||
+              (text.includes('reload') && title.includes('reload')) ||
+              (text.includes('restart') && title.includes('restart')) ||
+              (text.includes('watchdog') && title.includes('watchdog')) ||
+              (text.includes('zombie') && title.includes('zombie')) ||
+              (text.includes('metadata') && title.includes('metadata'))) {
+            knownIssues.push(known);
+            matchedIds.add(known.id);
+            break;
+          }
+        }
+      }
+    }
 
     // Step 2: AI analysis (for novel issues and better explanations)
     const aiAnalysis = await analyzeWithAI(diagnostic, knownIssues);

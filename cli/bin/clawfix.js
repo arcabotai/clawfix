@@ -655,10 +655,12 @@ async function runInteractiveMode() {
 
   // --- Send diagnostic to server for AI context ---
   try {
+    // Include locally-detected issues so server can match them to known fixes
+    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
     const resp = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(diagnostic),
+      body: JSON.stringify(payload),
     });
     if (resp.ok) {
       const data = await resp.json();
@@ -774,6 +776,11 @@ async function runInteractiveMode() {
           console.log(c.dim('  ─────────────────────────────'));
           console.log('');
           console.log(`  Run ${c.cyan(`apply ${idx + 1}`)} to apply this fix.`);
+        } else {
+          // No fix script available — suggest asking AI
+          console.log('');
+          console.log(c.yellow('  No automatic fix script available for this issue.'));
+          console.log(`  Try asking: ${c.cyan(`"how do I fix ${issue.title || issue.text}?"`)}`);
         }
         console.log('');
       }
