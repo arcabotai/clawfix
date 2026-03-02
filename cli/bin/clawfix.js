@@ -8,7 +8,7 @@
  *        npx clawfix --scan   (one-shot scan, legacy mode)
  */
 
-import { readFile, access, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, rename, access, readdir, stat } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { homedir, platform, arch, release, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +17,7 @@ import { createInterface } from 'node:readline';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
-const VERSION = '0.7.0';
+const VERSION = '0.8.0';
 
 // --- Flags ---
 const args = process.argv.slice(2);
@@ -84,6 +84,500 @@ function sanitizeConfig(config) {
   };
 
   return redact(config);
+}
+
+// ============================================================
+// Built-in Safe Fix Functions — no jq, no bash, no copy-paste
+// ============================================================
+
+const CONFIG_PATH = join(homedir(), '.openclaw', 'openclaw.json');
+
+async function backupConfig() {
+  const backupPath = `${CONFIG_PATH}.bak.${Date.now()}`;
+  await copyFile(CONFIG_PATH, backupPath);
+  return backupPath;
+}
+
+async function readConfig() {
+  return JSON.parse(await readFile(CONFIG_PATH, 'utf8'));
+}
+
+async function safeWriteConfig(config) {
+  const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}`;
+  await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  await rename(tmpPath, CONFIG_PATH);
+}
+
+function tryGatewayRestart() {
+  try {
+    execSync('openclaw gateway restart 2>&1', { encoding: 'utf8', timeout: 60000 });
+    // Give it a moment to come up
+    execSync('sleep 3', { timeout: 10000 });
+    const status = run('openclaw gateway status 2>&1');
+    return /running.*pid|state active/i.test(status);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Built-in fixes keyed by known-issue ID.
+ * Each fix modifies the config object in-place and returns { changes: string[] }.
+ * All config changes are handled atomically: backup → modify → write → restart → verify.
+ */
+const BUILTIN_FIXES = {
+  'duplicate-plugin': {
+    description: 'Set explicit plugin allowlist to prevent duplicate loading',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      if (!config.plugins) config.plugins = {};
+      const entries = config.plugins.entries || {};
+      const enabled = Object.keys(entries).filter(k => entries[k]?.enabled !== false);
+      if (!config.plugins.allow || config.plugins.allow.length === 0) {
+        config.plugins.allow = enabled;
+        return { changes: [`Set plugins.allow = [${enabled.map(e => `"${e}"`).join(', ')}]`] };
+      }
+      return { changes: ['plugins.allow already configured — no change needed'] };
+    }
+  },
+
+  'config-reload-sigterm-cascade': {
+    description: 'Disable auto-update to stop config reload cascade',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      if (!config.update) config.update = {};
+      if (!config.update.auto) config.update.auto = {};
+      if (config.update.auto.enabled === true) {
+        config.update.auto.enabled = false;
+        return { changes: ['Disabled auto-update (was causing restart cascade)'] };
+      }
+      return { changes: ['Auto-update already disabled'] };
+    }
+  },
+
+  'auto-update-restart-loop': {
+    description: 'Disable auto-update causing restart loop',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      if (!config.update) config.update = {};
+      if (!config.update.auto) config.update.auto = {};
+      config.update.auto.enabled = false;
+      return { changes: ['Disabled auto-update'] };
+    }
+  },
+
+  'auto-update-enabled-warning': {
+    description: 'Disable auto-update for stability',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.update) config.update = {};
+      if (!config.update.auto) config.update.auto = {};
+      config.update.auto.enabled = false;
+      return { changes: ['Disabled auto-update'] };
+    }
+  },
+
+  'gateway-not-running': {
+    description: 'Restart the OpenClaw gateway',
+    risk: 'low',
+    needsConfig: false,
+    needsRestart: true,
+    informational: false,
+    apply: () => ({ changes: ['Restart gateway'] })
+  },
+
+  'port-conflict': {
+    description: 'Kill process on gateway port and restart',
+    risk: 'medium',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      const port = config?.gateway?.port || 18789;
+      const pid = run(`lsof -ti :${port} 2>/dev/null`);
+      if (pid) {
+        try { execSync(`kill ${pid.split('\\n')[0]}`, { timeout: 5000 }); } catch {}
+        return { changes: [`Killed process ${pid.split('\\n')[0]} on port ${port}`] };
+      }
+      return { changes: [`No process found on port ${port}`] };
+    }
+  },
+
+  'mem0-graph-free': {
+    description: 'Disable Mem0 graph mode (requires Pro plan)',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      const mem0 = config?.plugins?.entries?.['openclaw-mem0']?.config;
+      if (mem0 && mem0.enableGraph === true) {
+        mem0.enableGraph = false;
+        return { changes: ['Set Mem0 enableGraph = false (Pro plan required for graph)'] };
+      }
+      return { changes: ['Mem0 graph already disabled'] };
+    }
+  },
+
+  'no-hybrid-search': {
+    description: 'Enable hybrid search for better memory recall',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.agents) config.agents = {};
+      if (!config.agents.defaults) config.agents.defaults = {};
+      if (!config.agents.defaults.memorySearch) config.agents.defaults.memorySearch = {};
+      if (!config.agents.defaults.memorySearch.query) config.agents.defaults.memorySearch.query = {};
+      config.agents.defaults.memorySearch.query.hybrid = {
+        enabled: true,
+        vectorWeight: 0.6,
+        textWeight: 0.4,
+        temporalDecay: { enabled: true, halfLifeDays: 14 }
+      };
+      return { changes: ['Enabled hybrid search (vector 0.6 + BM25 0.4 + temporal decay)'] };
+    }
+  },
+
+  'no-context-pruning': {
+    description: 'Enable context pruning to reduce token waste',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.agents) config.agents = {};
+      if (!config.agents.defaults) config.agents.defaults = {};
+      config.agents.defaults.contextPruning = {
+        mode: 'cache-ttl',
+        ttl: '6h',
+        keepLastAssistants: 3
+      };
+      return { changes: ['Enabled context pruning (6h TTL, keeps last 3 assistant messages)'] };
+    }
+  },
+
+  'no-memory-flush': {
+    description: 'Enable memory flush before context compaction',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.agents) config.agents = {};
+      if (!config.agents.defaults) config.agents.defaults = {};
+      if (!config.agents.defaults.compaction) config.agents.defaults.compaction = {};
+      config.agents.defaults.compaction.mode = 'safeguard';
+      config.agents.defaults.compaction.reserveTokensFloor = 32000;
+      config.agents.defaults.compaction.memoryFlush = {
+        enabled: true,
+        softThresholdTokens: 40000,
+        prompt: "Distill this session to memory/YYYY-MM-DD.md (use today's date, APPEND only). Focus on: decisions made, state changes, lessons learned, blockers hit, tasks completed/started. Include specific details (IDs, URLs, amounts, error messages). If nothing worth saving, reply NO_REPLY."
+      };
+      return { changes: ['Enabled memory flush with safeguard mode (32K reserve)'] };
+    }
+  },
+
+  'no-compaction-config': {
+    description: 'Set compaction safeguards to prevent context loss',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.agents) config.agents = {};
+      if (!config.agents.defaults) config.agents.defaults = {};
+      if (!config.agents.defaults.compaction) config.agents.defaults.compaction = {};
+      config.agents.defaults.compaction.mode = 'safeguard';
+      config.agents.defaults.compaction.reserveTokensFloor = 32000;
+      return { changes: ['Set compaction safeguard (32K token reserve)'] };
+    }
+  },
+
+  'heartbeat-no-model-override': {
+    description: 'Use a cheaper model for heartbeat checks',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: (config) => {
+      if (!config.agents?.defaults?.heartbeat) return { changes: ['No heartbeat configured'] };
+      config.agents.defaults.heartbeat.model = 'anthropic/claude-sonnet-4-6';
+      return { changes: ['Set heartbeat model to Sonnet 4.6 (cheaper)'] };
+    }
+  },
+
+  'state-dir-migration': {
+    description: 'Your ~/.openclaw already exists — no action needed',
+    risk: 'none',
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['Informational only — ~/.openclaw already exists, harmless warning'] })
+  },
+
+  'no-soul': {
+    description: 'Create a basic SOUL.md personality file',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: async (config) => {
+      const workspace = config?.agents?.defaults?.workspace;
+      if (!workspace) return { changes: ['No workspace configured'] };
+      const soulPath = join(workspace, 'SOUL.md');
+      if (await exists(soulPath)) return { changes: ['SOUL.md already exists'] };
+      await writeFile(soulPath, `# SOUL.md — Who You Are\n\nYou are a helpful AI assistant. Be concise, direct, and genuinely useful.\nHave opinions. Be resourceful. Earn trust through competence.\n\nCustomize this file to give your agent personality!\n`, 'utf8');
+      return { changes: ['Created SOUL.md in workspace'] };
+    }
+  },
+
+  'missing-agents-md': {
+    description: 'Create a basic AGENTS.md instruction file',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: async (config) => {
+      const workspace = config?.agents?.defaults?.workspace;
+      if (!workspace) return { changes: ['No workspace configured'] };
+      const agentsPath = join(workspace, 'AGENTS.md');
+      if (await exists(agentsPath)) return { changes: ['AGENTS.md already exists'] };
+      await writeFile(agentsPath, `# AGENTS.md - Workspace Instructions\n\n## Every Session\n1. Read SOUL.md — this is who you are\n2. Read memory/ files for recent context\n\n## Memory\n- Daily notes: memory/YYYY-MM-DD.md\n- Long-term: MEMORY.md\n\n## Safety\n- Don't run destructive commands without asking\n- trash > rm\n`, 'utf8');
+      return { changes: ['Created AGENTS.md in workspace'] };
+    }
+  },
+
+  'no-memory-files': {
+    description: 'Create memory directory for session persistence',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: false,
+    informational: false,
+    apply: async (config) => {
+      const workspace = config?.agents?.defaults?.workspace;
+      if (!workspace) return { changes: ['No workspace configured'] };
+      const { mkdir } = await import('node:fs/promises');
+      const memDir = join(workspace, 'memory');
+      await mkdir(memDir, { recursive: true });
+      const memoryMd = join(workspace, 'MEMORY.md');
+      if (!await exists(memoryMd)) {
+        await writeFile(memoryMd, '# Memory\n\nCurated long-term memory. Updated periodically.\n', 'utf8');
+      }
+      return { changes: ['Created memory/ directory and MEMORY.md'] };
+    }
+  },
+};
+
+/**
+ * Apply a single builtin fix with full safety: backup → apply → write → restart → rescan
+ */
+async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
+  console.log('');
+  console.log(c.bold(`  Fix: ${issue.title || issue.text}`));
+  console.log(`  ${c.dim(builtinFix.description)}`);
+  console.log(`  Risk: ${builtinFix.risk === 'none' ? c.green('none') : builtinFix.risk === 'low' ? c.green(builtinFix.risk) : c.yellow(builtinFix.risk)}`);
+  console.log('');
+
+  if (builtinFix.informational) {
+    console.log(c.dim(`  ℹ️  ${builtinFix.description}`));
+    console.log('');
+    return { skipped: true };
+  }
+
+  // Show the plan
+  let step = 1;
+  console.log(c.bold('  Plan:'));
+  if (builtinFix.needsConfig) console.log(`    ${step++}. ${c.green('📋')} Backup config`);
+  console.log(`    ${step++}. ${c.blue('🔧')} ${builtinFix.description}`);
+  if (builtinFix.needsRestart) console.log(`    ${step++}. ${c.blue('🔄')} Restart gateway`);
+  console.log(`    ${step++}. ${c.blue('🔍')} Re-scan to verify`);
+  console.log('');
+
+  const answer = await new Promise(resolve => {
+    rl.question(`  ${c.yellow('Apply?')} [Y/n] `, resolve);
+  });
+
+  if (answer.trim() && !/^y(es)?$/i.test(answer.trim())) {
+    console.log(c.dim('  Cancelled.'));
+    console.log('');
+    return { cancelled: true };
+  }
+
+  let backupPath = null;
+
+  try {
+    let config = null;
+
+    if (builtinFix.needsConfig) {
+      // Backup
+      backupPath = await backupConfig();
+      console.log(`  ${c.green('✅')} Backed up → ${c.dim(backupPath.split('/').pop())}`);
+
+      // Read config
+      config = await readConfig();
+    }
+
+    // Apply fix
+    const result = await builtinFix.apply(config || {});
+
+    if (builtinFix.needsConfig && config) {
+      // Write config
+      await safeWriteConfig(config);
+    }
+
+    for (const change of result.changes) {
+      console.log(`  ${c.green('✅')} ${change}`);
+    }
+
+    // Restart if needed
+    if (builtinFix.needsRestart) {
+      process.stdout.write(`  ${c.blue('🔄')} Restarting gateway...`);
+      const ok = tryGatewayRestart();
+      console.log(ok ? ` ${c.green('✅')}` : ` ${c.yellow('⚠️  may need manual restart')}`);
+    }
+
+    // Re-scan to verify
+    if (scanFn) {
+      process.stdout.write(`  ${c.blue('🔍')} Re-scanning...`);
+      const scanResult = await scanFn();
+      if (scanResult) {
+        const allAfter = mergeIssues(scanResult.issues, scanResult.serverIssues);
+        const stillPresent = allAfter.some(i =>
+          (i.id && i.id === issue.id) ||
+          ((i.title || i.text || '').toLowerCase().includes((issue.title || issue.text || '').toLowerCase().slice(0, 20)))
+        );
+
+        if (stillPresent) {
+          console.log(` ${c.yellow('⚠️  issue may persist until gateway fully restarts')}`);
+        } else {
+          console.log(` ${c.green('✅ Issue resolved!')}`);
+        }
+      } else {
+        console.log(` ${c.dim('skipped')}`);
+      }
+    }
+
+    console.log('');
+    return { applied: true };
+
+  } catch (err) {
+    console.log(`  ${c.red('❌')} Error: ${err.message}`);
+    if (backupPath) {
+      console.log(`  ${c.dim(`Rollback available: cp ${backupPath} ${CONFIG_PATH}`)}`);
+    }
+    console.log('');
+    return { error: err.message };
+  }
+}
+
+/**
+ * Apply all fixable issues at once with single backup and single restart
+ */
+async function applyAllFixes(issues, serverIssues, rl, scanFn) {
+  const allIssues = mergeIssues(issues, serverIssues);
+  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.id] && !BUILTIN_FIXES[i.id].informational);
+
+  if (fixable.length === 0) {
+    console.log(c.dim('  No auto-fixable issues found.'));
+    return null;
+  }
+
+  console.log('');
+  console.log(c.bold(`  Fix plan (${fixable.length} issues):`));
+  for (const issue of fixable) {
+    const fix = BUILTIN_FIXES[issue.id];
+    const risk = fix.risk === 'low' ? c.green('low') : c.yellow(fix.risk);
+    console.log(`    ${c.blue('🔧')} [${risk}] ${issue.title || issue.text}`);
+    console.log(`       ${c.dim(fix.description)}`);
+  }
+
+  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.id]?.informational);
+  if (skipped.length) {
+    console.log('');
+    for (const issue of skipped) {
+      console.log(`    ${c.dim(`ℹ️  [SKIP] ${issue.title || issue.text} — informational`)}`);
+    }
+  }
+
+  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.id] && !i.fix);
+  if (noFix.length) {
+    console.log('');
+    for (const issue of noFix) {
+      console.log(`    ${c.dim(`❓ [MANUAL] ${issue.title || issue.text} — ask AI for help`)}`);
+    }
+  }
+
+  console.log('');
+  const answer = await new Promise(resolve => {
+    rl.question(`  ${c.yellow(`Apply ${fixable.length} fix(es)?`)} [Y/n] `, resolve);
+  });
+
+  if (answer.trim() && !/^y(es)?$/i.test(answer.trim())) {
+    console.log(c.dim('  Cancelled.'));
+    console.log('');
+    return null;
+  }
+
+  // Single backup
+  const backupPath = await backupConfig();
+  console.log(`  ${c.green('✅')} Config backed up → ${c.dim(backupPath.split('/').pop())}`);
+
+  // Read config once
+  let config = await readConfig();
+  let needsRestart = false;
+  let applied = 0;
+
+  for (const issue of fixable) {
+    const fix = BUILTIN_FIXES[issue.id];
+    try {
+      const result = await fix.apply(config);
+      for (const change of result.changes) {
+        console.log(`  ${c.green('✅')} ${change}`);
+      }
+      if (fix.needsRestart) needsRestart = true;
+      applied++;
+    } catch (err) {
+      console.log(`  ${c.red('❌')} ${issue.title || issue.text}: ${err.message}`);
+    }
+  }
+
+  // Write config once
+  await safeWriteConfig(config);
+  console.log(`  ${c.green('✅')} Config saved`);
+
+  // Restart once
+  if (needsRestart) {
+    process.stdout.write(`  ${c.blue('🔄')} Restarting gateway...`);
+    const ok = tryGatewayRestart();
+    console.log(ok ? ` ${c.green('✅')}` : ` ${c.yellow('⚠️  may need manual restart')}`);
+  }
+
+  // Re-scan
+  if (scanFn) {
+    process.stdout.write(`  ${c.blue('🔍')} Re-scanning...`);
+    await scanFn();
+    console.log(` ${c.green('done')}`);
+  }
+
+  console.log('');
+  console.log(c.green(`  ✅ ${applied}/${fixable.length} fix(es) applied.`));
+  if (backupPath) console.log(c.dim(`  Rollback: cp ${backupPath} ${CONFIG_PATH}`));
+  console.log('');
+  return { applied, total: fixable.length };
 }
 
 // ============================================================
@@ -754,7 +1248,39 @@ async function runInteractiveMode() {
       return;
     }
 
-    // fix <id> — show details about a detected issue
+    // fix-all — apply all auto-fixable issues at once
+    if (/^fix[\s-]?all$/i.test(input)) {
+      const scanFn = async () => {
+        const result = await collectDiagnostics({ quiet: true });
+        if (!result.error) {
+          diagnostic = result.diagnostic;
+          issues = result.issues;
+          summary = result.summary;
+          // Re-send to server for updated known issues
+          try {
+            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+            const resp = await fetch(`${API_URL}/api/diagnose`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (resp.ok) {
+              const data = await resp.json();
+              diagnosticId = data.fixId;
+              serverIssues = data.knownIssues || [];
+            }
+          } catch {}
+          return { issues, serverIssues };
+        }
+        return null;
+      };
+
+      await applyAllFixes(issues, serverIssues, rl, scanFn);
+      rl.prompt();
+      return;
+    }
+
+    // fix <id> — show details + auto-fix with confirmation
     const fixMatch = input.match(/^fix\s+(\d+)$/i);
     if (fixMatch) {
       const idx = parseInt(fixMatch[1]) - 1;
@@ -763,13 +1289,42 @@ async function runInteractiveMode() {
         console.log(c.red(`  No issue #${fixMatch[1]}. Use ${c.cyan('issues')} to see the list.`));
       } else {
         const issue = allIssues[idx];
-        console.log('');
-        console.log(c.bold(`  Issue #${idx + 1}: ${issue.title || issue.text}`));
-        console.log(`  Severity: ${severityColor(issue.severity)}`);
-        if (issue.description) console.log(`  ${issue.description}`);
-        if (issue.fix) {
+        const builtinFix = BUILTIN_FIXES[issue.id];
+
+        if (builtinFix) {
+          // Safe builtin fix — backup, apply, restart, verify
+          const scanFn = async () => {
+            const result = await collectDiagnostics({ quiet: true });
+            if (!result.error) {
+              diagnostic = result.diagnostic;
+              issues = result.issues;
+              summary = result.summary;
+              try {
+                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+                const resp = await fetch(`${API_URL}/api/diagnose`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(payload),
+                });
+                if (resp.ok) {
+                  const data = await resp.json();
+                  diagnosticId = data.fixId;
+                  serverIssues = data.knownIssues || [];
+                }
+              } catch {}
+              return { issues, serverIssues };
+            }
+            return null;
+          };
+          await applyBuiltinFix(issue, builtinFix, rl, scanFn);
+        } else if (issue.fix) {
+          // Legacy bash fix (from server) — show script
           console.log('');
-          console.log(c.dim('  Fix script:'));
+          console.log(c.bold(`  Issue #${idx + 1}: ${issue.title || issue.text}`));
+          console.log(`  Severity: ${severityColor(issue.severity)}`);
+          if (issue.description) console.log(`  ${issue.description}`);
+          console.log('');
+          console.log(c.dim('  Suggested fix script (review before running):'));
           console.log(c.dim('  ─────────────────────────────'));
           for (const line of issue.fix.split('\n').slice(0, 15)) {
             console.log(`  ${c.dim(line)}`);
@@ -779,77 +1334,26 @@ async function runInteractiveMode() {
           }
           console.log(c.dim('  ─────────────────────────────'));
           console.log('');
-          console.log(`  Run ${c.cyan(`apply ${idx + 1}`)} to apply this fix.`);
         } else {
-          // No fix script available — suggest asking AI
           console.log('');
-          console.log(c.yellow('  No automatic fix script available for this issue.'));
+          console.log(c.bold(`  Issue #${idx + 1}: ${issue.title || issue.text}`));
+          console.log(`  Severity: ${severityColor(issue.severity)}`);
+          if (issue.description) console.log(`  ${issue.description}`);
+          console.log('');
+          console.log(c.yellow('  No automatic fix available for this issue.'));
           console.log(`  Try asking: ${c.cyan(`"how do I fix ${issue.title || issue.text}?"`)}`);
+          console.log('');
         }
-        console.log('');
       }
       rl.prompt();
       return;
     }
 
-    // apply <id> — run fix with confirmation
+    // apply <id> — legacy command, now same as fix <id>
     const applyMatch = input.match(/^apply\s+(\d+)$/i);
     if (applyMatch) {
-      const idx = parseInt(applyMatch[1]) - 1;
-      const allIssues = mergeIssues(issues, serverIssues);
-      if (idx < 0 || idx >= allIssues.length) {
-        console.log(c.red(`  No issue #${applyMatch[1]}. Use ${c.cyan('issues')} to see the list.`));
-        rl.prompt();
-        return;
-      }
-
-      const issue = allIssues[idx];
-      if (!issue.fix) {
-        console.log(c.yellow(`  No automatic fix available for this issue.`));
-        console.log(`  Try asking about it: ${c.dim(`"how do I fix ${issue.title || issue.text}?"`)}`);
-        rl.prompt();
-        return;
-      }
-
-      console.log('');
-      console.log(c.bold(`  Applying fix for: ${issue.title || issue.text}`));
-      console.log('');
-      for (const line of issue.fix.split('\n').slice(0, 10)) {
-        console.log(`  ${c.dim(line)}`);
-      }
-      if (issue.fix.split('\n').length > 10) {
-        console.log(c.dim(`  ... (${issue.fix.split('\n').length - 10} more lines)`));
-      }
-      console.log('');
-
-      const answer = await new Promise(resolve => {
-        rl.question(`  ${c.yellow('Apply this fix?')} [y/N] `, resolve);
-      });
-
-      if (/^y(es)?$/i.test(answer.trim())) {
-        console.log('');
-        console.log(c.blue('  Running fix...'));
-        try {
-          const output = execSync(`bash -c ${JSON.stringify(issue.fix)}`, {
-            encoding: 'utf8',
-            timeout: 30000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-          });
-          if (output.trim()) {
-            for (const line of output.trim().split('\n')) {
-              console.log(`  ${line}`);
-            }
-          }
-          console.log(c.green('  ✅ Fix applied successfully.'));
-          console.log(c.dim('  Run "rescan" to verify.'));
-        } catch (err) {
-          console.log(c.red(`  ❌ Fix failed: ${err.message}`));
-        }
-      } else {
-        console.log(c.dim('  Cancelled.'));
-      }
-      console.log('');
-      rl.prompt();
+      // Redirect to fix handler
+      await handleInput(`fix ${applyMatch[1]}`);
       return;
     }
 
@@ -932,7 +1436,7 @@ function renderStatus(summary, issues, serverIssues) {
   renderIssues(issues, serverIssues);
 
   console.log(c.cyan('━'.repeat(48)));
-  console.log(c.dim('  Type naturally to chat, or: fix <#> | scan | apply <#> | help | exit'));
+  console.log(c.dim('  fix <#> | fix-all | scan | help | exit — or just type to chat'));
   console.log('');
 }
 
@@ -962,8 +1466,8 @@ function renderIssues(issues, serverIssues) {
 function renderHelp() {
   console.log('');
   console.log(c.bold('Commands:'));
-  console.log(`  ${c.cyan('fix <#>')}        Show details + fix script for issue #`);
-  console.log(`  ${c.cyan('apply <#>')}      Apply the fix for issue # (with confirmation)`);
+  console.log(`  ${c.cyan('fix <#>')}        Fix issue # (shows plan → confirm → apply → verify)`);
+  console.log(`  ${c.cyan('fix-all')}        Fix all auto-fixable issues at once`);
   console.log(`  ${c.cyan('scan')}            Re-run diagnostics`);
   console.log(`  ${c.cyan('issues')}          Show detected issues`);
   console.log(`  ${c.cyan('status')}          Show system status`);
@@ -1192,8 +1696,8 @@ Environment:
   CLAWFIX_AUTO=1   Same as --yes
 
 Interactive Commands:
-  fix <#>          Show details + fix script for a detected issue
-  apply <#>        Apply the fix (with confirmation)
+  fix <#>          Fix issue (shows plan → confirm → apply → verify)
+  fix-all          Fix all auto-fixable issues at once
   scan             Re-run diagnostics
   issues           Show detected issues
   help             Show help

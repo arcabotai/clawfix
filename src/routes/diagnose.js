@@ -156,6 +156,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
         severity: i.severity,
         title: i.title,
         description: i.description,
+        fix: i.fix || null,
       })),
       analysis: aiAnalysis.summary,
       fixScript,
