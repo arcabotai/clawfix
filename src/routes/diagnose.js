@@ -226,7 +226,7 @@ diagnoseRouter.get('/stats', async (req, res) => {
     sigtermCrashes: dbStats?.sigtermCrashes || 0,
     zombieProcesses: dbStats?.zombieProcesses || 0,
     uptime: process.uptime(),
-    version: '0.5.0',
+    version: '0.6.0',
     aiProvider: AI_CONFIG.provider,
     aiModel: AI_CONFIG.model,
     aiAvailable: !!AI_CONFIG.apiKey,

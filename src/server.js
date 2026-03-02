@@ -7,6 +7,7 @@ import { scriptRouter } from './routes/script.js';
 import { resultsRouter } from './routes/results.js';
 import { paymentRouter } from './routes/payment.js';
 import { webhooksRouter } from './routes/webhooks.js';
+import { chatRouter } from './routes/chat.js';
 import { landingRouter } from './landing.js';
 import { initDB } from './db.js';
 
@@ -44,6 +45,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/api', diagnoseRouter);
 app.use('/api', healthRouter);
+app.use('/api', chatRouter);     // POST /api/chat — interactive TUI chat
 app.use('/api', paymentRouter);  // POST /api/checkout, /api/webhook/lemonsqueezy
 app.use('/', paymentRouter);    // GET /pay/:fixId — payment page
 app.use('/', webhooksRouter);   // POST /webhooks/resend — inbound email
