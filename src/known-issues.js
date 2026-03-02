@@ -921,6 +921,39 @@ echo "✅ Watchdog installed — checks gateway every 2 minutes"
 echo "   Log: ~/.openclaw/logs/watchdog.log"
 echo "   Disable: launchctl unload \$WATCHDOG_PLIST"`,
   },
+
+  {
+    id: 'macos-app-metadata-upgrade',
+    severity: 'high',
+    title: 'macOS app blocked after OS update (metadata upgrade)',
+    description: 'The OpenClaw macOS app is repeatedly failing to connect with "pairing required" errors after a macOS version update. The gateway detects a platform version mismatch between the pinned metadata (old OS version) and the claimed metadata (new OS version), and requires re-approval. The app keeps retrying in a tight loop, spamming the gateway logs.',
+    detect: (diag) => {
+      const logs = diag.logs?.raw || diag.logs?.gatewayLog || '';
+      const hasMetadataUpgrade = /metadata-upgrade/.test(logs) || /metadata.upgrade/.test(logs);
+      const hasPairingRequired = /pairing.required.*openclaw-macos|openclaw-macos.*pairing.required/.test(logs);
+      const hasPlatformMismatch = /claimedPlatform.*pinnedPlatform/.test(logs);
+      return hasMetadataUpgrade || (hasPairingRequired && hasPlatformMismatch);
+    },
+    fix: `# Fix: Approve the macOS app metadata upgrade
+# The app was paired on an older macOS version and needs re-approval after an OS update.
+
+# List pending device requests
+openclaw devices list
+
+# Find the pending request with "repair" flag and approve it
+# Replace REQUEST_ID with the actual request ID from the list above
+PENDING_ID=\$(openclaw devices list 2>/dev/null | grep -A1 "repair" | head -1 | awk '{print \$2}')
+if [ -n "\$PENDING_ID" ]; then
+  openclaw devices approve "\$PENDING_ID"
+  echo "✅ macOS app re-approved after OS update"
+else
+  echo "No pending repair request found. Try:"
+  echo "  1. Open the OpenClaw macOS app"
+  echo "  2. Wait a few seconds for it to attempt connection"
+  echo "  3. Run: openclaw devices list"
+  echo "  4. Run: openclaw devices approve <request-id>"
+fi`,
+  },
 ];
 
 /**
