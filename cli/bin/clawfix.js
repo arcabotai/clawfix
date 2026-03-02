@@ -17,7 +17,7 @@ import { createInterface } from 'node:readline';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 
 // --- Flags ---
 const args = process.argv.slice(2);
@@ -25,6 +25,7 @@ const DRY_RUN = args.includes('--dry-run') || args.includes('-n');
 const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
 const AUTO_SEND = process.env.CLAWFIX_AUTO === '1' || args.includes('--yes') || args.includes('-y');
 const SHOW_HELP = args.includes('--help') || args.includes('-h');
+const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
 const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || DRY_RUN;
 
 // --- Colors ---
@@ -630,6 +631,13 @@ async function runInteractiveMode() {
   let summary = null;
   let serverIssues = null; // issues returned from server after /api/diagnose
 
+  // --- Concurrency guard ---
+  let busy = false;
+  // --- Paste detection: batch rapid lines into one message ---
+  let pasteBuffer = [];
+  let pasteTimer = null;
+  const PASTE_DELAY_MS = 80; // lines arriving within 80ms = paste
+
   // --- Clear screen and show header ---
   process.stdout.write('\x1b[2J\x1b[H');
 
@@ -682,14 +690,9 @@ async function runInteractiveMode() {
     terminal: true,
   });
 
-  rl.prompt();
-
-  rl.on('line', async (line) => {
-    const input = line.trim();
-
+  // --- Process a single input (command or chat) ---
+  async function handleInput(input) {
     if (!input) {
-      // Empty enter → show issues summary
-      renderIssues(issues, serverIssues);
       rl.prompt();
       return;
     }
@@ -721,10 +724,11 @@ async function runInteractiveMode() {
 
         // Re-send to server
         try {
+          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
           const resp = await fetch(`${API_URL}/api/diagnose`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(diagnostic),
+            body: JSON.stringify(payload),
           });
           if (resp.ok) {
             const data = await resp.json();
@@ -851,9 +855,52 @@ async function runInteractiveMode() {
 
     // --- Natural language → send to /chat ---
     console.log('');
-    await streamChat(input, diagnosticId, conversationId, rl);
+    busy = true;
+    try {
+      await streamChat(input, diagnosticId, conversationId, rl);
+    } finally {
+      busy = false;
+    }
     console.log('');
     rl.prompt();
+  }
+
+  // --- Flush paste buffer as a single combined message ---
+  function flushPasteBuffer() {
+    pasteTimer = null;
+    if (pasteBuffer.length === 0) return;
+
+    // Combine all buffered lines into one message
+    const combined = pasteBuffer.join('\n').trim();
+    pasteBuffer = [];
+
+    if (!combined) {
+      rl.prompt();
+      return;
+    }
+
+    // If the combined paste looks like a single command, handle as command
+    const firstLine = combined.split('\n')[0].trim();
+    if (combined.split('\n').length === 1 || /^(exit|quit|q|help|\?|scan|rescan|issues?|status|fix\s+\d+|apply\s+\d+)$/i.test(firstLine)) {
+      handleInput(firstLine);
+    } else {
+      // Multi-line paste → send as one chat message
+      handleInput(combined);
+    }
+  }
+
+  rl.prompt();
+
+  rl.on('line', (line) => {
+    const input = line.trim();
+
+    // If busy streaming, silently drop input
+    if (busy) return;
+
+    // Paste detection: buffer rapid lines and flush after a delay
+    pasteBuffer.push(input);
+    if (pasteTimer) clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(flushPasteBuffer, PASTE_DELAY_MS);
   });
 
   rl.on('close', () => {
@@ -999,57 +1046,84 @@ async function streamChat(message, diagnosticId, conversationId, rl) {
       return;
     }
 
-    // SSE streaming
+    // SSE streaming — collect full response, then render
+    // Buffer approach: collect content chunks, flush periodically for progressive display
     process.stdout.write('\r\x1b[K');
-    process.stdout.write('  ');
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
+    let sseBuffer = '';
+    let contentBuffer = ''; // accumulate content between flushes
     let col = 2; // Current column (2 for indent)
+    let started = false; // whether we've written any content yet
+    let hadError = false;
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data: ')) continue;
-
-        const data = trimmed.slice(6);
-        if (data === '[DONE]') break;
-
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) {
-            process.stdout.write(c.red(parsed.error));
-            break;
-          }
-          if (parsed.content) {
-            // Word-wrap at ~76 cols
-            for (const ch of parsed.content) {
-              if (ch === '\n') {
-                process.stdout.write('\n  ');
-                col = 2;
-              } else {
-                process.stdout.write(ch);
-                col++;
-                if (col > 76 && ch === ' ') {
-                  process.stdout.write('\n  ');
-                  col = 2;
-                }
-              }
-            }
-          }
-        } catch {}
+    // Flush accumulated content to screen
+    function flushContent() {
+      if (!contentBuffer) return;
+      if (!started) {
+        process.stdout.write('  ');
+        started = true;
       }
+      for (const ch of contentBuffer) {
+        if (ch === '\n') {
+          process.stdout.write('\n  ');
+          col = 2;
+        } else {
+          process.stdout.write(ch);
+          col++;
+          if (col > 76 && ch === ' ') {
+            process.stdout.write('\n  ');
+            col = 2;
+          }
+        }
+      }
+      contentBuffer = '';
     }
 
-    process.stdout.write('\n');
+    // Set up periodic flush (every 50ms) for smooth progressive rendering
+    const flushInterval = setInterval(flushContent, 50);
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') break;
+
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) {
+              flushContent();
+              process.stdout.write(c.red(parsed.error));
+              hadError = true;
+              break;
+            }
+            if (parsed.content) {
+              contentBuffer += parsed.content;
+            }
+          } catch {}
+        }
+        if (hadError) break;
+      }
+    } finally {
+      clearInterval(flushInterval);
+    }
+
+    // Final flush of any remaining content
+    flushContent();
+    if (started || hadError) {
+      process.stdout.write('\n');
+    }
   } catch (err) {
     process.stdout.write('\r\x1b[K');
     if (err.code === 'ECONNREFUSED' || err.cause?.code === 'ECONNREFUSED') {
@@ -1090,6 +1164,11 @@ function wrapPrint(text) {
 // Main entry point
 // ============================================================
 async function main() {
+  if (SHOW_VERSION) {
+    console.log(`clawfix v${VERSION}`);
+    return;
+  }
+
   if (SHOW_HELP) {
     console.log(`
 🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic
@@ -1105,6 +1184,7 @@ Options:
   --dry-run, -n    Scan locally only — shows what would be collected, sends nothing
   --show-data, -d  Display the full diagnostic payload before asking to send
   --yes, -y        Skip confirmation prompt and send automatically
+  --version, -v    Show version
   --help, -h       Show this help message
 
 Environment:
