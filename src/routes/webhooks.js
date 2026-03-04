@@ -70,31 +70,16 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
  * Forward an inbound email using Resend's send API
  */
 async function forwardEmail(emailData) {
-  // First, get the full email content
-  let body = '';
-  let htmlBody = '';
-  
-  if (emailData.email_id) {
-    try {
-      const contentRes = await fetch(`https://api.resend.com/emails/${emailData.email_id}/content`, {
-        headers: { 'Authorization': `Bearer ${RESEND_CONFIG.apiKey}` },
-      });
-      if (contentRes.ok) {
-        const content = await contentRes.json();
-        body = content.text || '';
-        htmlBody = content.html || '';
-      }
-    } catch (e) {
-      console.warn('Could not fetch email content:', e.message);
-    }
-  }
+  // Email body is included directly in the webhook payload
+  const body = emailData.text || '';
+  const htmlBody = emailData.html || '';
 
   const from = typeof emailData.from === 'string' ? emailData.from : emailData.from?.email || 'unknown';
   const subject = emailData.subject || '(no subject)';
   const to = Array.isArray(emailData.to) ? emailData.to.join(', ') : emailData.to || 'unknown';
 
   const forwardSubject = `[Fwd: ${subject}] from ${from}`;
-  const forwardText = `--- Forwarded email ---\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${emailData.created_at || 'unknown'}\n\n${body || '(email body not available — check Resend dashboard)'}`;
+  const forwardText = `--- Forwarded email ---\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${emailData.created_at || 'unknown'}\n\n${body || '(no text body in webhook payload)'}`;
   const forwardHtml = htmlBody 
     ? `<div style="border-left:3px solid #ccc;padding-left:12px;margin-bottom:16px;color:#666"><strong>From:</strong> ${from}<br><strong>To:</strong> ${to}<br><strong>Subject:</strong> ${subject}<br><strong>Date:</strong> ${emailData.created_at || 'unknown'}</div>${htmlBody}`
     : undefined;
