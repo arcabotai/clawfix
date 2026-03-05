@@ -50,6 +50,8 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
   if (event.type === 'email.received') {
     const data = event.data;
     console.log(`📨 Inbound email from ${data.from} to ${data.to?.join(', ')} — Subject: ${data.subject}`);
+    console.log(`📋 Webhook payload keys: ${Object.keys(data).join(', ')}`);
+    console.log(`📋 Has text: ${!!data.text} (${typeof data.text}), Has html: ${!!data.html} (${typeof data.html})`);
 
     // Forward if configured
     if (RESEND_CONFIG.apiKey && RESEND_CONFIG.forwardTo) {
