@@ -47,6 +47,17 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
   if (event.type === 'email.received') {
     const data = event.data;
     console.log(`📨 Inbound from ${data.from} → ${data.to?.join(', ')} — ${data.subject}`);
+    // Debug: log ALL keys at every level to find the body
+    console.log(`📋 event keys: ${Object.keys(event).join(', ')}`);
+    console.log(`📋 data keys: ${Object.keys(data).join(', ')}`);
+    if (data.attachments?.length) console.log(`📋 attachments: ${JSON.stringify(data.attachments.map(a => ({name: a.filename || a.name, type: a.content_type || a.type, size: a.content?.length || a.size})))}`);
+    // Check for body in unusual places
+    for (const key of Object.keys(data)) {
+      const val = data[key];
+      if (typeof val === 'string' && val.length > 50) {
+        console.log(`📋 data.${key} (${val.length} chars): ${val.substring(0, 100)}...`);
+      }
+    }
 
     // Forward if configured
     if (RESEND_CONFIG.apiKey && RESEND_CONFIG.forwardTo) {
