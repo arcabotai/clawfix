@@ -47,17 +47,6 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
   if (event.type === 'email.received') {
     const data = event.data;
     console.log(`📨 Inbound from ${data.from} → ${data.to?.join(', ')} — ${data.subject}`);
-    // Debug: log ALL keys at every level to find the body
-    console.log(`📋 event keys: ${Object.keys(event).join(', ')}`);
-    console.log(`📋 data keys: ${Object.keys(data).join(', ')}`);
-    if (data.attachments?.length) console.log(`📋 attachments: ${JSON.stringify(data.attachments.map(a => ({name: a.filename || a.name, type: a.content_type || a.type, size: a.content?.length || a.size})))}`);
-    // Check for body in unusual places
-    for (const key of Object.keys(data)) {
-      const val = data[key];
-      if (typeof val === 'string' && val.length > 50) {
-        console.log(`📋 data.${key} (${val.length} chars): ${val.substring(0, 100)}...`);
-      }
-    }
 
     // Forward if configured
     if (RESEND_CONFIG.apiKey && RESEND_CONFIG.forwardTo) {
@@ -75,15 +64,16 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
 });
 
 /**
- * Fetch inbound email content from Resend API using email_id
+ * Fetch inbound email content from Resend Receiving API
+ * Note: /emails/receiving/:id (NOT /emails/:id which is for sent emails only)
  */
 async function fetchEmailContent(emailId) {
   try {
-    const res = await fetch(`https://api.resend.com/emails/${emailId}`, {
+    const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
       headers: { 'Authorization': `Bearer ${RESEND_CONFIG.apiKeyFull}` },
     });
     if (!res.ok) {
-      console.warn(`Failed to fetch email ${emailId}: ${res.status}`);
+      console.warn(`Failed to fetch received email ${emailId}: ${res.status}`);
       return { text: '', html: '' };
     }
     const data = await res.json();
