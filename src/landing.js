@@ -8,7 +8,7 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'AI-powered OpenClaw repair',
-      version: '0.4.0',
+      version: '0.9.0',
       fix: 'curl -sSL clawfix.dev/fix | bash',
     });
   }
