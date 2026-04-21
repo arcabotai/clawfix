@@ -553,24 +553,13 @@ const LANDING_HTML = `<!DOCTYPE html>
     <section class="section" id="pricing">
       <div class="container">
         <h2 class="section-title">Pricing</h2>
-        <div class="pricing-cards">
-          <div class="price-card">
-            <div class="price free-tag">Free</div>
-            <h3>Quick Scan</h3>
-            <p>Pattern matching against 40+ known issues. Instant results, no AI needed.</p>
-            <p style="margin-top:8px;color:var(--green);font-size:0.8rem;font-weight:600;">Always free</p>
-          </div>
+        <div class="pricing-cards" style="grid-template-columns: minmax(300px, 520px); justify-content: center;">
           <div class="price-card featured">
-            <span class="badge" style="background:var(--green);">Free During Beta</span>
-            <div class="price free-tag">Free <span class="strikethrough">$2</span></div>
-            <h3>AI Fix</h3>
-            <p>Full AI analysis + generated fix script for novel issues. Pay after you see the fix.</p>
-            <p style="margin-top:8px;color:var(--green);font-size:0.8rem;font-weight:600;">🎉 $0 during beta</p>
-          </div>
-          <div class="price-card">
-            <div class="price">$9<span class="price-label">/mo</span></div>
-            <h3>Monitoring</h3>
-            <p>Continuous health checks. Get alerts before things break. <em>Coming soon.</em></p>
+            <span class="badge" style="background:var(--green);">For now</span>
+            <div class="price free-tag">Free</div>
+            <h3>Every feature, for everyone</h3>
+            <p>Pattern-matching scan, AI analysis, generated fix scripts — all free while we're figuring out what&apos;s worth charging for.</p>
+            <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">We may introduce paid tiers later (likely usage-based for heavy AI calls, or a hosted monitoring SKU). We&apos;ll announce before anything changes.</p>
           </div>
         </div>
       </div>

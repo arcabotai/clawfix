@@ -156,9 +156,12 @@ CLAWFIX_API=http://localhost:3001 npx clawfix
 
 ## Pricing
 
-- **Free** — Pattern matching scan (40+ known issues)
-- **$2** — AI-powered analysis + fix script *(free during beta)*
-- **$9/mo** — Continuous monitoring *(coming soon)*
+**Free.** Every feature — pattern-matching scan, AI analysis, generated
+fix scripts — is free while we figure out what's worth charging for.
+
+We may introduce paid tiers later (likely usage-based for heavy AI calls,
+or a hosted monitoring SKU). We'll announce before anything changes and
+grandfather anyone using the tool today.
 
 ## Contributing
 
