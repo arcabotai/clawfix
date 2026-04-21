@@ -45,6 +45,14 @@ bash clawfix.sh                         # Run after reviewing
 - 👻 Zombie processes (PID exists but port not listening)
 - 📜 Error log bloat (chrome extension spam, handshake storms)
 - 🐕 Gateway watchdog recommendations (independent health checks)
+- 🧵 Model provider prefix typos (`codex/gpt-5.4` vs `openai-codex/gpt-5.4` — silent 403 + fallback loop)
+- 🎣 Silently-dropped Discord group messages (`groupPolicy=allowlist` with empty `allowFrom`)
+- 🔒 Plaintext secrets in config (flags fields that should be SecretRefs pointing at `~/.openclaw/.env`)
+- 🪪 Invalid `GH_TOKEN`/`GITHUB_TOKEN` env overrides masking a working `gh` login
+- 📡 Stale self-paired nodes producing endless `skills-remote` probe timeouts
+- 🌊 Session context overflow (>100 % window, auto-compaction failing)
+- 🔐 FileVault blocking unattended reboots (macOS)
+- 📦 LaunchAgent plist carrying stale managed-env secrets after a `.env` migration (macOS)
 
 ## Security & Transparency
 
