@@ -30,10 +30,10 @@ bash clawfix.sh                         # Run after reviewing
 ## How It Works
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, and ports
-2. **AI analyzes** — Pattern matching catches 30+ known issues instantly. AI handles novel problems
+2. **AI analyzes** — Pattern matching catches 40+ known issues instantly. AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
-## What It Detects (v0.4.0)
+## What It Detects (v0.9.0)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)
 - 🧠 Memory issues (Mem0 silent failures, missing flush, broken search)
@@ -156,7 +156,7 @@ CLAWFIX_API=http://localhost:3001 npx clawfix
 
 ## Pricing
 
-- **Free** — Pattern matching scan (30+ known issues)
+- **Free** — Pattern matching scan (40+ known issues)
 - **$2** — AI-powered analysis + fix script *(free during beta)*
 - **$9/mo** — Continuous monitoring *(coming soon)*
 
