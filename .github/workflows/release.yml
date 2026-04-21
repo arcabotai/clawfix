@@ -1,0 +1,62 @@
+name: Release CLI
+
+# Runs on semver tag pushes only (`v0.9.0`, `v1.0.0-rc.1`, etc.).
+# Publishes cli/ to npm and creates a GitHub Release with auto-generated notes.
+#
+# One-time setup before the first tag:
+#   1. Create an npm automation token:  https://www.npmjs.com/settings/<user>/tokens
+#   2. Add as a repo secret named NPM_TOKEN:
+#        gh secret set NPM_TOKEN -R arcabotai/clawfix --body '<token>'
+#   3. Make sure cli/package.json "version" matches the tag you're about to push.
+#
+# Typical release flow:
+#   # bump cli/package.json version to e.g. 0.9.1
+#   git commit -am "release: cli 0.9.1"
+#   git push origin main
+#   git tag v0.9.1 && git push origin v0.9.1
+#   # -> workflow publishes to npm and cuts a GH release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create the GitHub Release
+
+jobs:
+  publish-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches cli/package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./cli/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error ::Tag v$TAG does not match cli/package.json version $PKG"
+            exit 1
+          fi
+
+      - name: Lint CLI JS
+        run: node --check cli/bin/clawfix.js && node --check cli/index.js
+
+      - name: Publish CLI to npm
+        working-directory: cli
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: Release ${{ github.ref_name }}
