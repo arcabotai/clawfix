@@ -8,7 +8,7 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'AI-powered OpenClaw repair',
-      version: '0.9.0',
+      version: '0.10.0',
       fix: 'curl -sSL clawfix.dev/fix | bash',
     });
   }
@@ -544,6 +544,27 @@ const LANDING_HTML = `<!DOCTYPE html>
             <div>
               <h4>Plist Stale Secrets</h4>
               <p>macOS — LaunchAgent <code>EnvironmentVariables</code> carries old secrets after a <code>.env</code> migration</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🩹</span>
+            <div>
+              <h4>Config Redacted-Placeholder Corruption</h4>
+              <p>Literal <code>__OPENCLAW_REDACTED__</code> persisted to <code>openclaw.json</code> — blocks <code>openclaw update</code> and schema validation</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">📉</span>
+            <div>
+              <h4>Incomplete npm Install</h4>
+              <p>Unmet transitive deps break plugin load — e.g. Discord missing <code>discord-api-types</code> after a bad upstream publish</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">↕️</span>
+            <div>
+              <h4>Version Drift</h4>
+              <p>Config last written by a newer OpenClaw than the installed CLI (usually when the macOS app auto-updates ahead)</p>
             </div>
           </div>
         </div>

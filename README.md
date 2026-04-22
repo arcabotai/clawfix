@@ -30,10 +30,10 @@ bash clawfix.sh                         # Run after reviewing
 ## How It Works
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, and ports
-2. **AI analyzes** — Pattern matching catches 40+ known issues instantly. AI handles novel problems
+2. **AI analyzes** — Pattern matching catches 45+ known issues instantly. AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
-## What It Detects (v0.9.0)
+## What It Detects (v0.10.0)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)
 - 🧠 Memory issues (Mem0 silent failures, missing flush, broken search)
@@ -53,6 +53,9 @@ bash clawfix.sh                         # Run after reviewing
 - 🌊 Session context overflow (>100 % window, auto-compaction failing)
 - 🔐 FileVault blocking unattended reboots (macOS)
 - 📦 LaunchAgent plist carrying stale managed-env secrets after a `.env` migration (macOS)
+- 🩹 `__OPENCLAW_REDACTED__` literal persisted to config (blocks `openclaw update` and schema validation)
+- 📉 Incomplete openclaw npm install (unmet transitive deps breaking plugin load — e.g. Discord missing `discord-api-types`)
+- ↕️ Config last written by a newer OpenClaw than the installed CLI (version drift when the macOS app auto-updates)
 
 ## Security & Transparency
 

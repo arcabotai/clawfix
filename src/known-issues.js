@@ -955,6 +955,153 @@ else
 fi`,
   },
 
+  // ─── 2026-04-22 additions ──────────────────────────────────────────────
+  // Patterns discovered after an `openclaw update` from 2026.4.15 to
+  // 2026.4.21 broke in two independent ways. See docs.openclaw.ai/ for
+  // upstream context.
+
+  {
+    id: 'redacted-placeholder-corruption',
+    severity: 'critical',
+    title: 'Config has "__OPENCLAW_REDACTED__" persisted as real value',
+    description: 'The openclaw CLI\'s display-redaction placeholder ("__OPENCLAW_REDACTED__") is stored as a real value in openclaw.json. Schema validation rejects it because the literal starts with underscore and fails pattern checks (like the ^[A-Z][A-Z0-9_]{0,127}$ for SecretRef ids). `openclaw update` and other commands will refuse to run. Observed after the macOS app auto-updated to a newer version than the installed CLI and rewrote the config through a write path that persisted the placeholder.',
+    detect: (diag) => {
+      const paths = diag.configDiagnostics?.redactedPlaceholderPaths;
+      return Array.isArray(paths) && paths.length > 0;
+    },
+    fix: `# Fix: restore corrupted fields by direct JSON write
+# (openclaw config set refuses to mutate an invalid config — chicken-and-egg)
+set -u
+CFG=~/.openclaw/openclaw.json
+[ -f "$CFG" ] || { echo "no config found"; exit 1; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+/bin/cp -p "$CFG" "$CFG.pre-redacted-fix-$TS"
+echo "snapshot: $CFG.pre-redacted-fix-$TS"
+
+# Find every path holding the literal placeholder
+/usr/bin/env python3 - <<'PY'
+import json
+d = json.load(open('/Users/'+__import__('os').environ['USER']+'/.openclaw/openclaw.json'))
+def walk(o, p=''):
+    out=[]
+    if isinstance(o, dict):
+        for k,v in o.items():
+            out += walk(v, f'{p}.{k}' if p else k)
+    elif isinstance(o, list):
+        for i,v in enumerate(o): out += walk(v, f'{p}[{i}]')
+    elif o == '__OPENCLAW_REDACTED__':
+        out.append(p)
+    return out
+paths = walk(d)
+if not paths:
+    print("No corruption found (maybe already fixed)")
+else:
+    print(f"Corrupted paths ({len(paths)}):")
+    for p in paths: print(f"  {p}")
+PY
+
+echo ""
+echo "For each path printed above, choose one of:"
+echo "  1) If it's a SecretRef .id field (e.g. channels.discord.token.id):"
+echo "     edit the JSON to set it back to the real env var name you use,"
+echo "     e.g. DISCORD_BOT_TOKEN / MATRIX_ACCESS_TOKEN / <YOUR_PROVIDER>_API_KEY"
+echo "  2) If it's an env.vars.* entry: the plist already propagates env vars,"
+echo "     so the safest fix is to remove the whole env section entirely:"
+echo "       python3 -c 'import json,os,tempfile; p=os.path.expanduser(\"~/.openclaw/openclaw.json\"); d=json.load(open(p)); d.pop(\"env\",None); fd,tmp=tempfile.mkstemp(dir=os.path.dirname(p)); os.write(fd, json.dumps(d,indent=2).encode()); os.close(fd); os.chmod(tmp,0o600); os.replace(tmp,p); print(\"removed env block\")'"
+echo ""
+echo "After fixing the paths, validate + reload:"
+echo "  openclaw config validate && openclaw gateway restart"`,
+  },
+
+  {
+    id: 'incomplete-npm-install',
+    severity: 'high',
+    title: 'Incomplete openclaw npm install — deps referenced by built bundle are missing',
+    description: 'The installed openclaw package has unmet dependencies that its own built code require()s. Typical symptom: `openclaw channels status --probe` reports "discord failed during register: Cannot find module discord-api-types/v10" (or similar chained missing modules like @buape/carbon, @discordjs/opus, opusscript). This happens when an upstream publish is missing transitive deps from its declared dependencies. One unmet (node-llama-cpp, optional) is expected; more than one is broken.',
+    detect: (diag) => {
+      const c = diag.install?.unmetCount;
+      return typeof c === 'number' && c > 1;
+    },
+    fix: `# Fix: install the missing deps directly into the openclaw global install
+# Uses --no-save to avoid mutating the upstream package.json, and
+# --legacy-peer-deps to skirt unrelated peer-dep conflicts.
+set -u
+
+OC_BIN=$(which openclaw 2>/dev/null)
+OC_DIR=$(dirname "$OC_BIN" | xargs -I{} sh -c 'cd {}/../lib/node_modules/openclaw && pwd')
+[ -d "$OC_DIR" ] || OC_DIR=/opt/homebrew/lib/node_modules/openclaw
+[ -d "$OC_DIR" ] || { echo "can't find openclaw install"; exit 1; }
+echo "openclaw install: $OC_DIR"
+
+# Find what's missing
+MISSING=$(/opt/homebrew/bin/npm ls --prefix "$OC_DIR" --depth=0 2>&1 \\
+  | grep 'UNMET DEPENDENCY' \\
+  | awk '{print $NF}' \\
+  | sed 's/@[^@]*$//' \\
+  | sort -u \\
+  | grep -v '^node-llama-cpp$')
+
+if [ -z "$MISSING" ]; then
+  echo "no unmet deps other than the expected optional ones"
+  exit 0
+fi
+
+echo "Will install into $OC_DIR:"
+echo "$MISSING" | sed 's/^/  /'
+echo ""
+read -r -p "Proceed? [y/N] " ANS
+[ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
+
+cd "$OC_DIR"
+/opt/homebrew/bin/npm install --no-save --no-package-lock --legacy-peer-deps $MISSING
+
+# reload the gateway so it picks up the new modules
+if launchctl list 2>/dev/null | grep -q ai.openclaw.gateway; then
+  launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+  echo "✅ gateway reloaded"
+elif command -v systemctl >/dev/null 2>&1; then
+  sudo systemctl restart openclaw-gateway
+fi
+
+echo ""
+echo "Verify with: openclaw channels status --probe"`,
+  },
+
+  {
+    id: 'config-written-by-newer-version',
+    severity: 'medium',
+    title: 'Config was last written by a newer OpenClaw than the installed CLI',
+    description: 'openclaw.json\'s meta.lastTouchedVersion is newer than the currently installed openclaw CLI. This usually means the macOS app (or another installation) auto-updated and touched the shared config file, possibly introducing schema elements the older CLI doesn\'t understand. If you see unexpected "Config invalid" errors, this is often the upstream cause. Often co-occurs with redacted-placeholder-corruption.',
+    detect: (diag) => {
+      const touched = diag.configDiagnostics?.lastTouchedVersion;
+      const installed = diag.openclaw?.version;
+      if (!touched || !installed) return false;
+      // strip any "OpenClaw " prefix and "(hash)" suffix from installed
+      const iv = String(installed).replace(/^OpenClaw\s+/, '').split(/\s+/)[0];
+      const semverish = /^\d+\.\d+\.\d+/;
+      if (!semverish.test(touched) || !semverish.test(iv)) return false;
+      const parts = (v) => v.split('.').map(Number);
+      const [a1,a2,a3] = parts(touched);
+      const [b1,b2,b3] = parts(iv);
+      if (a1 !== b1) return a1 > b1;
+      if (a2 !== b2) return a2 > b2;
+      return a3 > b3;
+    },
+    fix: `# Fix: bring the CLI up to the newer version
+# The newer version is whatever rewrote the config (usually the macOS app).
+# Syncing the CLI removes the mismatch warnings and unlocks openclaw update / doctor.
+echo "CLI version installed: $(openclaw --version)"
+echo "Config lastTouchedVersion (from openclaw.json): $(jq -r '.meta.lastTouchedVersion // "(unset)"' ~/.openclaw/openclaw.json)"
+echo ""
+echo "Bring the CLI up to the latest published version:"
+echo "  npm install -g openclaw@beta    # or @latest for the stable channel"
+echo ""
+echo "If you don't want the macOS app to keep pulling ahead:"
+echo "  open the OpenClaw app preferences and disable auto-updates,"
+echo "  or lock it to the same release channel as your CLI."`,
+  },
+
   // ─── 2026-04-20 additions ──────────────────────────────────────────────
   // Patterns discovered while fixing a live production Mac mini. Each fix
   // script is conservative: backs up before writing, pauses before any
