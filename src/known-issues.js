@@ -1293,6 +1293,314 @@ else
   echo "  4. Run: openclaw devices approve <request-id>"
 fi`,
   },
+
+  // ─── 2026-04-20 additions ──────────────────────────────────────────────
+  // Patterns discovered while fixing a live production Mac mini. Each fix
+  // script is conservative: backs up before writing, pauses before any
+  // destructive step, and prefers `openclaw config set`/`unset` over
+  // hand-editing JSON so writes are atomic + schema-validated.
+
+  {
+    id: 'provider-prefix-unregistered',
+    severity: 'high',
+    title: 'Cron falling back: unregistered model provider prefix',
+    description: 'An agent config references a provider prefix that isn\'t registered (e.g. "codex/gpt-5.4" instead of "openai-codex/gpt-5.4"). Every cron run logs `payload.model \'X\' not allowed, falling back`, tries the wrong auth, then fallback-hops — manifests as slow replies and 403s in the gateway.',
+    detect: (diag) => {
+      const logs = (diag.logs?.errors || '') + '\n' + (diag.logs?.stderr || '');
+      return /payload\.model ['"][^'"]+['"] not allowed, falling back/i.test(logs);
+    },
+    fix: `# Fix: locate the bad provider prefix, find the registered equivalent, apply
+set -u
+ERR=~/.openclaw/logs/gateway.err.log
+LOG=~/.openclaw/logs/gateway.log
+
+# Extract the most recent bad prefix from either log
+BAD=$(grep -hoE "payload\\.model '[^']+' not allowed" "$ERR" "$LOG" 2>/dev/null \\
+      | tail -1 | sed -E "s/.*'([^']+)'.*/\\1/")
+if [ -z "\${BAD:-}" ]; then echo "No payload.model error in recent logs — nothing to do."; exit 0; fi
+
+BAD_MODEL="\${BAD##*/}"
+echo "Bad prefix in use: $BAD  (model part: $BAD_MODEL)"
+
+# Find registered models with the same model suffix (unambiguous match only)
+CANDS=$(openclaw models list --json 2>/dev/null \\
+        | grep -oE '"id":[[:space:]]*"[^"]+/'"$BAD_MODEL"'"' \\
+        | sed -E 's/.*"([^"]+)"/\\1/' | sort -u)
+NUM=$(echo "$CANDS" | grep -c . || true)
+if [ "$NUM" != "1" ]; then
+  echo "Could not uniquely determine correct prefix. Candidates:"
+  echo "$CANDS"
+  echo "Re-run 'openclaw models list' and pick the right one, then set manually:"
+  echo "  openclaw config set agents.defaults.heartbeat.model '<correct>'"
+  exit 1
+fi
+GOOD="$CANDS"
+echo "Auto-detected correct prefix: $GOOD"
+echo ""
+read -r -p "Apply '$BAD' -> '$GOOD' everywhere it appears? [y/N] " ANS
+[ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+/bin/cp -p ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-fix-$TS
+echo "Snapshot: ~/.openclaw/openclaw.json.pre-fix-$TS"
+
+for path in agents.defaults.heartbeat.model agents.defaults.subagents.model; do
+  if [ "$(openclaw config get "$path" 2>/dev/null)" = "$BAD" ]; then
+    openclaw config set "$path" "$GOOD" && echo "  updated $path"
+  fi
+done
+
+# per-agent list
+N=$(jq '.agents.list | length' ~/.openclaw/openclaw.json 2>/dev/null || echo 0)
+for i in $(seq 0 $((N-1))); do
+  if [ "$(jq -r ".agents.list[$i].model // empty" ~/.openclaw/openclaw.json)" = "$BAD" ]; then
+    openclaw config set "agents.list.$i.model" "$GOOD" && echo "  updated agents.list.$i.model"
+  fi
+done
+
+openclaw config validate && openclaw gateway restart
+echo "✅ Provider prefix corrected and gateway restarted"`,
+  },
+
+  {
+    id: 'discord-allowlist-empty',
+    severity: 'high',
+    title: 'Discord groupPolicy=allowlist with empty allowFrom — group messages silently dropped',
+    description: 'channels.discord.groupPolicy is "allowlist" but channels.discord.allowFrom is absent or empty. Every group message sent to the bot is silently dropped; users report "bot is ignoring me" and there\'s nothing useful in the logs.',
+    detect: (diag) => {
+      const d = diag.config?.channels?.discord;
+      if (!d || d.enabled === false) return false;
+      if (d.groupPolicy !== 'allowlist') return false;
+      const allow = d.allowFrom;
+      return allow == null || (Array.isArray(allow) && allow.length === 0);
+    },
+    fix: `# Fix: choose one of the two supported remediations
+echo "Discord groupPolicy is 'allowlist' but allowFrom is empty."
+echo "You have two options:"
+echo ""
+echo "  A) Keep allowlist, add your user ID(s) (recommended):"
+echo "     openclaw config set channels.discord.allowFrom '[\\"<your-user-id>\\"]' --strict-json"
+echo "     (find your user ID in Discord: Settings -> Advanced -> Developer Mode,"
+echo "      then right-click your name -> Copy User ID)"
+echo ""
+echo "  B) Open the policy (any user in allowed guilds):"
+echo "     openclaw config set channels.discord.groupPolicy open"
+echo ""
+echo "Then: openclaw gateway restart"
+echo ""
+echo "This fix is intentionally manual — choose based on your threat model."`,
+  },
+
+  {
+    id: 'plaintext-secrets-in-config',
+    severity: 'high',
+    title: 'Plaintext secrets in openclaw.json (migrate to ~/.openclaw/.env + SecretRef)',
+    description: 'Fields like channels.discord.token, gateway.auth.token, and models.providers.*.apiKey hold plaintext strings rather than SecretRef objects. These values are auto-copied into the rolling .bak snapshots and baked into the LaunchAgent plist on install — so secrets end up in multiple places on disk. Migrating to ~/.openclaw/.env + SecretRef cuts that to one location.',
+    detect: (diag) => {
+      // After sanitize, plaintext values become "***REDACTED***" strings;
+      // SecretRef objects pass through unchanged as dicts.
+      const cfg = diag.config || {};
+      const isPlain = (v) => typeof v === 'string' && v.length > 0;
+      const candidates = [
+        cfg.gateway?.auth?.token,
+        cfg.channels?.discord?.token,
+        cfg.channels?.matrix?.accessToken,
+        cfg.messages?.tts?.providers?.elevenlabs?.apiKey,
+      ];
+      if (candidates.some(isPlain)) return true;
+      const provs = cfg.models?.providers || {};
+      for (const p of Object.values(provs)) {
+        if (isPlain(p?.apiKey)) return true;
+      }
+      return false;
+    },
+    fix: `# Fix: relocate plaintext secrets to ~/.openclaw/.env and re-point config at SecretRefs
+# Based on docs.openclaw.ai/gateway/secrets — the env provider pattern.
+#
+# This script STAGES the work but does not guess which values go where —
+# you'll copy values into .env yourself, then re-run to wire the refs.
+set -u
+
+ENV=~/.openclaw/.env
+touch "$ENV" && /bin/chmod 600 "$ENV"
+echo "Ensured $ENV exists with mode 600"
+echo ""
+echo "Step 1 — add the values you want to migrate to $ENV (one per line)."
+echo "Typical mapping:"
+echo "  channels.discord.token           ->  DISCORD_BOT_TOKEN"
+echo "  gateway.auth.token               ->  GATEWAY_AUTH_TOKEN"
+echo "  channels.matrix.accessToken      ->  MATRIX_ACCESS_TOKEN"
+echo "  models.providers.<name>.apiKey   ->  <NAME>_PROVIDER_API_KEY"
+echo "  messages.tts.providers.elevenlabs.apiKey  ->  ELEVENLABS_API_KEY"
+echo ""
+echo "Step 2 — for each field, after the value is in .env, run:"
+echo "  openclaw config set <dot.path> --ref-provider default --ref-source env --ref-id <VAR>"
+echo ""
+echo "Step 3 — openclaw config validate && openclaw gateway restart"
+echo ""
+echo "⚠️  Intentionally interactive: blindly rotating a live token (e.g. Discord bot)"
+echo "   would drop an active bot connection — you should do this in a maintenance"
+echo "   window with an open 'openclaw logs --follow' to watch reconnects."`,
+  },
+
+  {
+    id: 'invalid-gh-token-override',
+    severity: 'high',
+    title: 'Invalid GH_TOKEN/GITHUB_TOKEN env overrides gh CLI and breaks GitHub-using crons',
+    description: 'Gateway log shows "The token in GH_TOKEN is invalid" (or the GITHUB_TOKEN variant). gh CLI prefers env over its stored credentials, so every gh call in cron jobs / skills fails with an auth error even though `~/.config/gh/hosts.yml` is fine. Dropping the env override unblocks the stored login.',
+    detect: (diag) => {
+      const logs = (diag.logs?.errors || '') + '\n' + (diag.logs?.stderr || '');
+      return /(The token in GH_TOKEN is invalid|Failed to log in to github\.com using token \(GH_TOKEN\)|GITHUB_TOKEN.*invalid)/i.test(logs);
+    },
+    fix: `# Fix: drop the invalid env overrides so gh falls back to stored credentials
+set -u
+
+# 1) unset in openclaw.json.env if present
+openclaw config unset env.GH_TOKEN 2>/dev/null || true
+openclaw config unset env.GITHUB_TOKEN 2>/dev/null || true
+
+# 2) strip from ~/.openclaw/.env if present
+if [ -f ~/.openclaw/.env ]; then
+  TS=$(date +%Y%m%d-%H%M%S)
+  /bin/cp -p ~/.openclaw/.env ~/.openclaw/.env.pre-gh-strip-$TS
+  /usr/bin/sed -i '' -E '/^(GH_TOKEN|GITHUB_TOKEN)=/d' ~/.openclaw/.env
+  echo "Stripped GH_TOKEN/GITHUB_TOKEN from ~/.openclaw/.env (backup: .env.pre-gh-strip-$TS)"
+fi
+
+# 3) verify gh CLI can now authenticate via stored creds
+if gh auth status 2>&1 | grep -q "Logged in to github.com"; then
+  echo "✅ gh CLI is using stored credentials"
+else
+  echo ""
+  echo "⚠️  gh has no valid stored auth either. Re-login:"
+  echo "    gh auth login -h github.com --git-protocol https --web -s repo"
+fi
+
+openclaw gateway restart
+echo "✅ Gateway restarted. New cron runs will use gh's stored token."`,
+  },
+
+  {
+    id: 'stale-self-paired-node',
+    severity: 'medium',
+    title: 'Stale paired node generating skills-remote probe timeouts',
+    description: 'Gateway log repeatedly shows [skills-remote] remote bin probe timed out. ~/.openclaw/nodes/paired.json holds a node record (often the machine itself) that isn\'t backed by a running node host daemon — so the gateway probes forever and logs a timeout every few minutes.',
+    detect: (diag) => {
+      const logs = (diag.logs?.errors || '') + '\n' + (diag.logs?.stderr || '');
+      return /\[skills-remote\] remote bin probe timed out/i.test(logs);
+    },
+    fix: `# Fix: clear stale paired nodes (backs up first; restart gateway)
+set -u
+PAIRED=~/.openclaw/nodes/paired.json
+[ -f "$PAIRED" ] || { echo "No paired.json found; nothing to do."; exit 0; }
+
+# Show current pairings before clearing
+echo "Current paired nodes:"
+openclaw nodes list 2>/dev/null || /usr/bin/env python3 -c "import json;print(list(json.load(open('$PAIRED')).keys()))"
+echo ""
+read -r -p "Clear all paired nodes? [y/N] " ANS
+[ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+/bin/cp -p "$PAIRED" "$PAIRED.pre-unpair-$TS"
+echo '{}' > "$PAIRED"
+/bin/chmod 600 "$PAIRED"
+echo "✅ Paired-nodes cleared (backup at $PAIRED.pre-unpair-$TS)"
+openclaw gateway restart`,
+  },
+
+  {
+    id: 'context-overflow',
+    severity: 'high',
+    title: 'Session stuck at >100% context window — auto-compaction failing',
+    description: 'Gateway log shows "Context overflow: estimated context size exceeds safe threshold" and/or "LLM request timed out". Usually a bloated session that won\'t compact. Restart clears in-flight runs; sessions cleanup prunes stale ones.',
+    detect: (diag) => {
+      const logs = (diag.logs?.errors || '') + '\n' + (diag.logs?.stderr || '');
+      return /Context overflow: estimated context size exceeds safe threshold/i.test(logs);
+    },
+    fix: `# Fix: clear stale/bloated sessions and restart
+openclaw sessions cleanup --all-agents --enforce
+openclaw tasks maintenance --apply
+openclaw gateway restart
+echo ""
+echo "✅ Stale session entries pruned and gateway restarted."
+echo "Verify no session is > 100% context with:"
+echo "  openclaw status"
+echo ""
+echo "If one session persistently re-bloats, check what cron job is driving it:"
+echo "  grep -c 'cron:' ~/.openclaw/logs/gateway.log"`,
+  },
+
+  // macOS-only: FileVault + plist-managed-env patterns depend on signals
+  // the CLI only collects on Darwin. They return `null` on other OSes so
+  // detect() returns false there.
+
+  {
+    id: 'filevault-blocks-reboot',
+    severity: 'low',
+    title: 'FileVault is ON — unattended reboots will block at the pre-boot prompt',
+    description: 'On macOS, FileVault gates all services behind a disk-unlock prompt that only accepts input at the physical console. Fine if your machine is at a desk you can reach; a real problem for a remote Mac mini accessed only by SSH/Tailscale — the machine will sit off-network after any reboot until someone types the FileVault password.',
+    detect: (diag) => diag.system?.os === 'Darwin' && diag.host?.fileVaultOn === true,
+    fix: `# Fix (informational): pick one of the three paths below.
+# This is a POLICY decision, not an auto-apply — the script echoes the options.
+
+cat <<'EOF'
+
+  Option A — Accept the constraint (default):
+    Schedule reboots when someone can reach the physical console. Before a
+    planned reboot, pre-authorize one unattended boot:
+        sudo fdesetup authrestart
+
+  Option B — Disable FileVault:
+    Reboots become unattended. Trade-off: disk at rest is no longer user-
+    credential-locked. Reasonable for a machine at a secure known location;
+    unsafe for a portable or shared-space device.
+        sudo fdesetup disable
+
+  Option C — Out-of-band console (heavier):
+    Add a Tailnet-accessible KVM device (e.g. PiKVM) that can type the
+    FileVault password on your behalf. Out of scope for this fix.
+
+EOF
+echo "No changes made. Pick one of A/B/C and apply yourself."`,
+  },
+
+  {
+    id: 'stale-plist-env-secrets',
+    severity: 'medium',
+    title: 'LaunchAgent plist carries stale managed-env secrets',
+    description: '~/Library/LaunchAgents/ai.openclaw.gateway.plist has an EnvironmentVariables block with managed keys (PINATA_JWT, FILEBASE_ACCESS_KEY, provider API keys). Those were baked in at install time and aren\'t re-synced when ~/.openclaw/openclaw.json\'s env section changes — so after a secrets migration to ~/.openclaw/.env, secrets still live in the plist too.',
+    detect: (diag) => diag.system?.os === 'Darwin' && diag.service?.plistHasManagedEnv === true,
+    fix: `# Fix: strip the managed env keys from the plist and reload the LaunchAgent
+set -u
+PLIST=~/Library/LaunchAgents/ai.openclaw.gateway.plist
+[ -f "$PLIST" ] || { echo "plist not found; nothing to do"; exit 0; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+/bin/cp -p "$PLIST" "$PLIST.pre-env-strip-$TS"
+echo "Snapshot: $PLIST.pre-env-strip-$TS"
+
+MANAGED=$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_SERVICE_MANAGED_ENV_KEYS raw -o - "$PLIST" 2>/dev/null)
+if [ -z "\${MANAGED:-}" ]; then
+  echo "No managed env keys tracked in plist — nothing to strip."; exit 0
+fi
+
+echo "Managed keys listed in plist: $MANAGED"
+IFS=',' read -ra KEYS <<< "$MANAGED"
+for k in "\${KEYS[@]}"; do
+  /usr/bin/plutil -remove "EnvironmentVariables.$k" "$PLIST" 2>/dev/null && echo "  removed $k"
+done
+/usr/bin/plutil -replace EnvironmentVariables.OPENCLAW_SERVICE_MANAGED_ENV_KEYS -string '' "$PLIST"
+
+# Sanity: is the plist still valid?
+/usr/bin/plutil -lint "$PLIST" || { echo "plist broken — restoring backup"; /bin/cp -p "$PLIST.pre-env-strip-$TS" "$PLIST"; exit 1; }
+
+# Reload via launchctl kickstart (no sudo needed; user-level agent)
+/bin/launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+echo "✅ plist stripped + gateway reloaded"
+echo "Values should already be in ~/.openclaw/.env — verify with:"
+echo "  grep -c '^[A-Z_]' ~/.openclaw/.env"`,
+  },
 ];
 
 /**

@@ -14,7 +14,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const VERSION = '0.5.0';
+const VERSION = '0.9.0';
 const DEFAULT_API = 'https://clawfix.dev';
 const ARGS = process.argv.slice(2);
 const JSON_MODE = ARGS.includes('--json');
@@ -95,13 +95,19 @@ function sanitizeConfig(config) {
   const parsed = JSON.parse(redacted);
   // Remove env block entirely
   delete parsed.env;
-  // Redact known sensitive paths
-  if (parsed.gateway?.auth?.token) parsed.gateway.auth.token = '***REDACTED***';
+  // Redact known sensitive paths ONLY when they're plain strings.
+  // SecretRef objects ({source, provider, id}) must pass through so that
+  // migration-hygiene patterns can distinguish "plaintext still in config"
+  // from "already on .env via SecretRef".
+  const maybeRedact = (v) => (typeof v === 'string' && v.length > 0) ? '***REDACTED***' : v;
+  if (parsed.gateway?.auth && parsed.gateway.auth.token != null) {
+    parsed.gateway.auth.token = maybeRedact(parsed.gateway.auth.token);
+  }
   if (parsed.channels) {
     for (const [, ch] of Object.entries(parsed.channels)) {
-      if (ch.accessToken) ch.accessToken = '***REDACTED***';
-      if (ch.apiKey) ch.apiKey = '***REDACTED***';
-      if (ch.token) ch.token = '***REDACTED***';
+      if (ch.accessToken != null) ch.accessToken = maybeRedact(ch.accessToken);
+      if (ch.apiKey != null) ch.apiKey = maybeRedact(ch.apiKey);
+      if (ch.token != null) ch.token = maybeRedact(ch.token);
     }
   }
   return parsed;
@@ -180,6 +186,25 @@ async function main() {
   let serviceState = '';
   let serviceExitCode = '';
 
+  // macOS-specific extras: FileVault status (gates any unattended reboot
+   // because the pre-boot prompt blocks all services), and whether the
+   // LaunchAgent plist still carries managed env-var secrets (stale after
+   // migration to ~/.openclaw/.env). Both return null on non-Darwin so
+   // detect functions can distinguish "not applicable" from "off".
+  let fileVaultOn = null;
+  let plistHasManagedEnv = null;
+  if (osName === 'Darwin') {
+    const fv = run('/usr/bin/fdesetup status 2>/dev/null');
+    if (/FileVault is On/i.test(fv)) fileVaultOn = true;
+    else if (/FileVault is Off/i.test(fv)) fileVaultOn = false;
+
+    const plistPath = join(homedir(), 'Library/LaunchAgents/ai.openclaw.gateway.plist');
+    if (existsSync(plistPath)) {
+      const managed = run(`/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_SERVICE_MANAGED_ENV_KEYS raw -o - "${plistPath}" 2>/dev/null`);
+      plistHasManagedEnv = !!(managed && managed.trim().length > 0);
+    }
+  }
+
   if (osName === 'Darwin') {
     serviceManager = 'launchd';
     const launchctlOut = run('launchctl list 2>/dev/null | grep -i openclaw');
@@ -230,14 +255,34 @@ async function main() {
   let handshakeTimeoutCount = 0;
   let sigtermCount = 0;
 
+  // Pull two grep slices: the original error/warn/fail lines, plus a second
+  // pass for specific diagnostic signatures the known-issues library matches
+  // against (provider-prefix typos, context overflow, unavailable cron, etc.).
+  // Concatenating keeps existing patterns working while letting new ones fire.
+  const SIGNAL_PATTERNS = [
+    "payload\\.model '[^']+' not allowed",
+    "remote bin probe timed out",
+    "Context overflow",
+    "cron service unavailable",
+    "config change requires gateway restart",
+    "403 Forbidden",
+    "LLM request timed out",
+    "token in GH_TOKEN is invalid",
+    "GITHUB_TOKEN.*invalid",
+  ].join('|');
+
   if (logDir && existsSync(join(logDir, 'gateway.log'))) {
-    errorLogs = run(`grep -i "error\\|warn\\|fail\\|crash\\|EADDRINUSE" ${join(logDir, 'gateway.log')} | tail -30`);
+    const base = run(`grep -i "error\\|warn\\|fail\\|crash\\|EADDRINUSE" ${join(logDir, 'gateway.log')} | tail -30`);
+    const signals = run(`grep -iE "${SIGNAL_PATTERNS}" ${join(logDir, 'gateway.log')} | tail -20`);
+    errorLogs = [base, signals].filter(Boolean).join('\n');
     sigtermCount = parseInt(run(`grep -c "signal SIGTERM received\\|exit code -15" ${join(logDir, 'gateway.log')} 2>/dev/null`)) || 0;
     log(c.green('   ✅ Gateway log found'));
     if (sigtermCount > 0) log(c.yellow(`   ⚠️  ${sigtermCount} SIGTERM events in gateway log`));
   }
   if (logDir && existsSync(join(logDir, 'gateway.err.log'))) {
-    stderrLogs = run(`tail -50 ${join(logDir, 'gateway.err.log')}`);
+    const tail = run(`tail -50 ${join(logDir, 'gateway.err.log')}`);
+    const signals = run(`grep -iE "${SIGNAL_PATTERNS}" ${join(logDir, 'gateway.err.log')} | tail -20`);
+    stderrLogs = [tail, signals].filter(Boolean).join('\n');
     errLogSizeMB = parseInt(run(`du -sm ${join(logDir, 'gateway.err.log')} 2>/dev/null | awk '{print $1}'`)) || 0;
     handshakeTimeoutCount = parseInt(run(`grep -c "invalid handshake\\|closed before connect\\|chrome-extension.*timeout" ${join(logDir, 'gateway.err.log')} 2>/dev/null`)) || 0;
     if (errLogSizeMB > 10) {
@@ -341,6 +386,10 @@ async function main() {
       manager: serviceManager,
       state: serviceState || 'unknown',
       exitCode: serviceExitCode,
+      plistHasManagedEnv,
+    },
+    host: {
+      fileVaultOn,
     },
     config,
     logs: {

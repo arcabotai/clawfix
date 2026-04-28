@@ -30,10 +30,10 @@ bash clawfix.sh                         # Run after reviewing
 ## How It Works
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, and ports
-2. **AI analyzes** — Pattern matching catches 30+ known issues instantly. AI handles novel problems
+2. **AI analyzes** — Pattern matching catches 40+ known issues instantly. AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
-## What It Detects (v0.4.0)
+## What It Detects (v0.9.0)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)
 - 🧠 Memory issues (Mem0 silent failures, missing flush, broken search)
@@ -46,6 +46,14 @@ bash clawfix.sh                         # Run after reviewing
 - 📜 Error log bloat (chrome extension spam, handshake storms)
 - 🐕 Gateway watchdog recommendations (independent health checks)
 - ⚡ Native Codex harness drift (PI route fallback, session-store permissions, shell `CODEX_HOME`, fast tier)
+- 🧵 Model provider prefix typos (`codex/gpt-5.4` vs `openai-codex/gpt-5.4` — silent 403 + fallback loop)
+- 🎣 Silently-dropped Discord group messages (`groupPolicy=allowlist` with empty `allowFrom`)
+- 🔒 Plaintext secrets in config (flags fields that should be SecretRefs pointing at `~/.openclaw/.env`)
+- 🪪 Invalid `GH_TOKEN`/`GITHUB_TOKEN` env overrides masking a working `gh` login
+- 📡 Stale self-paired nodes producing endless `skills-remote` probe timeouts
+- 🌊 Session context overflow (>100 % window, auto-compaction failing)
+- 🔐 FileVault blocking unattended reboots (macOS)
+- 📦 LaunchAgent plist carrying stale managed-env secrets after a `.env` migration (macOS)
 
 ## Security & Transparency
 
@@ -150,9 +158,12 @@ CLAWFIX_API=http://localhost:3001 npx clawfix
 
 ## Pricing
 
-- **Free** — Pattern matching scan (30+ known issues)
-- **$2** — AI-powered analysis + fix script *(free during beta)*
-- **$9/mo** — Continuous monitoring *(coming soon)*
+**Free.** Every feature — pattern-matching scan, AI analysis, generated
+fix scripts — is free while we figure out what's worth charging for.
+
+We may introduce paid tiers later (likely usage-based for heavy AI calls,
+or a hosted monitoring SKU). We'll announce before anything changes and
+grandfather anyone using the tool today.
 
 ## Contributing
 

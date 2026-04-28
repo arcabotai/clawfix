@@ -8,7 +8,7 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'AI-powered OpenClaw repair',
-      version: '0.4.0',
+      version: '0.9.0',
       fix: 'curl -sSL clawfix.dev/fix | bash',
     });
   }
@@ -490,6 +490,62 @@ const LANDING_HTML = `<!DOCTYPE html>
               <p>Recommends independent health checks to avoid launchd backoff gaps</p>
             </div>
           </div>
+          <div class="issue-item">
+            <span class="issue-icon">🧵</span>
+            <div>
+              <h4>Provider Prefix Typos</h4>
+              <p><code>codex/gpt-5.4</code> vs <code>openai-codex/gpt-5.4</code> — silent 403 + fallback loop on every cron</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🎣</span>
+            <div>
+              <h4>Discord Silent Drops</h4>
+              <p><code>groupPolicy: allowlist</code> with empty <code>allowFrom</code> — group messages disappear without logs</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🔒</span>
+            <div>
+              <h4>Plaintext Secrets in Config</h4>
+              <p>Flags fields still inline that should be SecretRefs pointing at <code>~/.openclaw/.env</code></p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🪪</span>
+            <div>
+              <h4>Invalid GH Token Override</h4>
+              <p>Invalid <code>GH_TOKEN</code> env shadows a working <code>gh</code> login and breaks every GitHub-using cron</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">📡</span>
+            <div>
+              <h4>Stale Paired Nodes</h4>
+              <p>Endless <code>skills-remote</code> probe timeouts from a paired node with no host daemon behind it</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🌊</span>
+            <div>
+              <h4>Context Overflow</h4>
+              <p>Session stuck &gt;100 % of ctx window, auto-compaction failing — manifests as slow replies</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">🔐</span>
+            <div>
+              <h4>FileVault Blocks Reboots</h4>
+              <p>macOS — pre-boot prompt gates all services; any unattended reboot leaves the mac off-network</p>
+            </div>
+          </div>
+          <div class="issue-item">
+            <span class="issue-icon">📦</span>
+            <div>
+              <h4>Plist Stale Secrets</h4>
+              <p>macOS — LaunchAgent <code>EnvironmentVariables</code> carries old secrets after a <code>.env</code> migration</p>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -497,24 +553,13 @@ const LANDING_HTML = `<!DOCTYPE html>
     <section class="section" id="pricing">
       <div class="container">
         <h2 class="section-title">Pricing</h2>
-        <div class="pricing-cards">
-          <div class="price-card">
-            <div class="price free-tag">Free</div>
-            <h3>Quick Scan</h3>
-            <p>Pattern matching against 30+ known issues. Instant results, no AI needed.</p>
-            <p style="margin-top:8px;color:var(--green);font-size:0.8rem;font-weight:600;">Always free</p>
-          </div>
+        <div class="pricing-cards" style="grid-template-columns: minmax(300px, 520px); justify-content: center;">
           <div class="price-card featured">
-            <span class="badge" style="background:var(--green);">Free During Beta</span>
-            <div class="price free-tag">Free <span class="strikethrough">$2</span></div>
-            <h3>AI Fix</h3>
-            <p>Full AI analysis + generated fix script for novel issues. Pay after you see the fix.</p>
-            <p style="margin-top:8px;color:var(--green);font-size:0.8rem;font-weight:600;">🎉 $0 during beta</p>
-          </div>
-          <div class="price-card">
-            <div class="price">$9<span class="price-label">/mo</span></div>
-            <h3>Monitoring</h3>
-            <p>Continuous health checks. Get alerts before things break. <em>Coming soon.</em></p>
+            <span class="badge" style="background:var(--green);">For now</span>
+            <div class="price free-tag">Free</div>
+            <h3>Every feature, for everyone</h3>
+            <p>Pattern-matching scan, AI analysis, generated fix scripts — all free while we're figuring out what&apos;s worth charging for.</p>
+            <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">We may introduce paid tiers later (likely usage-based for heavy AI calls, or a hosted monitoring SKU). We&apos;ll announce before anything changes.</p>
           </div>
         </div>
       </div>
