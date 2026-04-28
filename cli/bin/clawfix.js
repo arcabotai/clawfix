@@ -827,6 +827,48 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   // --- Local Issue Detection ---
   const issues = [];
+  const activeModelRefs = [];
+  const addActiveModelRef = (value) => {
+    if (!value) return;
+    if (typeof value === 'string') {
+      activeModelRefs.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(addActiveModelRef);
+    }
+  };
+  const defaults = config?.agents?.defaults || {};
+  addActiveModelRef(defaults.model);
+  addActiveModelRef(defaults.model?.primary);
+  addActiveModelRef(defaults.model?.fallbacks);
+  addActiveModelRef(defaults.compaction?.model);
+  addActiveModelRef(defaults.heartbeat?.model);
+  addActiveModelRef(defaults.subagents?.model);
+  if (Array.isArray(config?.agents?.list)) {
+    for (const agent of config.agents.list) {
+      addActiveModelRef(agent?.model);
+      addActiveModelRef(agent?.model?.primary);
+      addActiveModelRef(agent?.model?.fallbacks);
+    }
+  }
+  const agentRuntimes = [
+    defaults.agentRuntime,
+    ...(Array.isArray(config?.agents?.list) ? config.agents.list.map(agent => agent?.agentRuntime) : []),
+  ].filter(Boolean);
+  const hasPiFallback = agentRuntimes.some(runtime => (
+    runtime === 'pi' ||
+    runtime?.id === 'pi' ||
+    runtime?.fallback === 'pi'
+  ));
+  const hasNativeCodexRuntime = agentRuntimes.some(runtime => (
+    runtime === 'codex' ||
+    runtime?.id === 'codex'
+  ));
+  const codexPlugin = config?.plugins?.entries?.codex || null;
+  const codexPluginEnabled = !!codexPlugin && codexPlugin.enabled !== false;
+  const codexAppServer = codexPlugin?.config?.appServer || {};
+  const combinedLogs = [errorLogs, stderrLogs, gatewayLogTail, gatewayStatus].filter(Boolean).join('\n');
 
   const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
   const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
@@ -835,6 +877,23 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
   if (/EADDRINUSE/i.test(errorLogs)) {
     issues.push({ severity: 'critical', text: 'Port conflict detected' });
+  }
+  if ((config?.plugins?.load?.paths || []).some(path => (
+    typeof path === 'string' && /openclaw\/dist\/extensions\//.test(path)
+  )) || /ignored plugins\.load\.paths entry.*bundled plugin directory/i.test(combinedLogs)) {
+    issues.push({ severity: 'medium', text: 'Stale bundled plugin load paths configured' });
+  }
+  if (codexPluginEnabled && (activeModelRefs.some(ref => String(ref).startsWith('openai-codex/')) || hasPiFallback)) {
+    issues.push({ severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
+  }
+  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs) ||
+      (hasNativeCodexRuntime && codexAppServer.sandbox === 'workspace-write')) {
+    issues.push({ severity: 'high', text: 'Codex session-store permission failure' });
+  }
+  if (codexPluginEnabled &&
+      (hasNativeCodexRuntime || activeModelRefs.some(ref => String(ref).startsWith('openai/'))) &&
+      codexAppServer.serviceTier !== 'fast') {
+    issues.push({ severity: 'low', text: 'Codex app-server fast tier is not enabled' });
   }
 
   const sigtermCount = (gatewayLogTail.match(/signal SIGTERM/gi) || []).length;

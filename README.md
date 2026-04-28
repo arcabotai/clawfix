@@ -45,6 +45,7 @@ bash clawfix.sh                         # Run after reviewing
 - 👻 Zombie processes (PID exists but port not listening)
 - 📜 Error log bloat (chrome extension spam, handshake storms)
 - 🐕 Gateway watchdog recommendations (independent health checks)
+- ⚡ Native Codex harness drift (PI route fallback, session-store permissions, fast tier)
 
 ## Security & Transparency
 

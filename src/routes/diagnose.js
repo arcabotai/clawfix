@@ -128,6 +128,9 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
               (text.includes('restart') && title.includes('restart')) ||
               (text.includes('watchdog') && title.includes('watchdog')) ||
               (text.includes('zombie') && title.includes('zombie')) ||
+              (text.includes('codex') && title.includes('codex')) ||
+              (text.includes('openai-codex') && title.includes('openai-codex')) ||
+              (text.includes('plugin load paths') && title.includes('plugin load paths')) ||
               (text.includes('metadata') && title.includes('metadata'))) {
             knownIssues.push(known);
             matchedIds.add(known.id);
