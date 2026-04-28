@@ -17,6 +17,11 @@ The gateway also could not write Codex session files under `~/.codex/sessions`
 from its service process. A dedicated gateway `CODEX_HOME` under
 `~/.openclaw/codex-home` fixed that permission boundary.
 
+A follow-up found that manual shell-based `openclaw agent` tests also need the
+same `CODEX_HOME` default in the user's shell startup file. Without that, the
+gateway and Discord runtime can be healthy while terminal smoke tests drift
+back toward the default `~/.codex` state.
+
 ## ClawFix coverage
 
 - Detect stale bundled `plugins.load.paths` aliases pointing back into
@@ -25,6 +30,8 @@ from its service process. A dedicated gateway `CODEX_HOME` under
   enabled.
 - Detect Codex session-store permission failures and the risky
   native-Codex-plus-`workspace-write` sandbox combination.
+- Detect shell `CODEX_HOME` mismatch for manual `openclaw agent` tests after a
+  gateway wrapper migration.
 - Detect missing Codex app-server `serviceTier = "fast"` when native Codex is
   active.
 
@@ -41,3 +48,11 @@ fallbackUsed = false
 
 The gateway should also write new session files under
 `~/.openclaw/codex-home/sessions/`.
+
+Manual shell validation should inherit the same home and return:
+
+```text
+CODEX_HOME=~/.openclaw/codex-home
+agentHarnessId = codex
+fallbackUsed = false
+```

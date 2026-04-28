@@ -287,6 +287,58 @@ echo "Run a Codex smoke test and confirm sessions appear under ~/.openclaw/codex
   },
 
   {
+    id: 'codex-shell-home-mismatch',
+    severity: 'medium',
+    title: 'Shell CODEX_HOME does not match OpenClaw Codex home',
+    description: 'The gateway wrapper is using a dedicated writable Codex home, but manual shell-based openclaw agent runs do not inherit the same CODEX_HOME. This can make terminal smoke tests drift into the default ~/.codex state while Discord/runtime traffic works correctly.',
+    detect: (diag) => {
+      return hasCodexPluginEnabled(diag.config) &&
+             hasNativeCodexRoute(diag.config) &&
+             diag.codex?.shellCodexHomeMatchesExpected === false;
+    },
+    fix: `# Fix: Persist the gateway Codex home for manual shell runs
+TS=$(date +%Y%m%d-%H%M%S)
+CODEX_HOME_DIR="$HOME/.openclaw/codex-home"
+mkdir -p "$CODEX_HOME_DIR"
+
+PROFILE="$HOME/.profile"
+case "\${SHELL:-}" in
+  */zsh) PROFILE="$HOME/.zshenv" ;;
+  */bash) PROFILE="$HOME/.bash_profile" ;;
+esac
+
+touch "$PROFILE"
+cp "$PROFILE" "$PROFILE.pre-codex-home-$TS"
+
+PROFILE="$PROFILE" node <<'NODE'
+const fs = require('fs');
+
+const profile = process.env.PROFILE;
+const line = 'export CODEX_HOME="\${CODEX_HOME:-$HOME/.openclaw/codex-home}"';
+const block = [
+  '',
+  '# Keep manual OpenClaw/Codex CLI runs on the same writable Codex home as the',
+  '# OpenClaw gateway wrapper.',
+  line,
+].join('\\n') + '\\n';
+
+let text = fs.existsSync(profile) ? fs.readFileSync(profile, 'utf8') : '';
+if (/^\\s*export\\s+CODEX_HOME=.*$/m.test(text)) {
+  text = text.replace(/^\\s*export\\s+CODEX_HOME=.*$/m, line);
+} else if (!text.includes('.openclaw/codex-home')) {
+  if (text && !text.endsWith('\\n')) text += '\\n';
+  text += block;
+}
+fs.writeFileSync(profile, text);
+NODE
+
+echo "Shell CODEX_HOME pinned in $PROFILE."
+echo "Open a new terminal, or source the profile, then verify with:"
+echo "  zsh -lc 'printf \"%s\\\\n\" \"\\$CODEX_HOME\"'"
+echo "Expected: $CODEX_HOME_DIR"`,
+  },
+
+  {
     id: 'codex-service-tier-not-fast',
     severity: 'low',
     title: 'Codex app-server fast tier is not enabled',

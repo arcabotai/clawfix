@@ -868,6 +868,9 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const codexPlugin = config?.plugins?.entries?.codex || null;
   const codexPluginEnabled = !!codexPlugin && codexPlugin.enabled !== false;
   const codexAppServer = codexPlugin?.config?.appServer || {};
+  const expectedCodexHome = openclawDir ? join(openclawDir, 'codex-home') : join(home, '.openclaw', 'codex-home');
+  const shellCodexHomeSet = Boolean(process.env.CODEX_HOME);
+  const shellCodexHomeMatchesExpected = process.env.CODEX_HOME === expectedCodexHome;
   const combinedLogs = [errorLogs, stderrLogs, gatewayLogTail, gatewayStatus].filter(Boolean).join('\n');
 
   const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
@@ -889,6 +892,9 @@ async function collectDiagnostics({ quiet = false } = {}) {
   if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs) ||
       (hasNativeCodexRuntime && codexAppServer.sandbox === 'workspace-write')) {
     issues.push({ severity: 'high', text: 'Codex session-store permission failure' });
+  }
+  if (codexPluginEnabled && hasNativeCodexRuntime && !shellCodexHomeMatchesExpected) {
+    issues.push({ severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
   }
   if (codexPluginEnabled &&
       (hasNativeCodexRuntime || activeModelRefs.some(ref => String(ref).startsWith('openai/'))) &&
@@ -986,6 +992,11 @@ async function collectDiagnostics({ quiet = false } = {}) {
     },
     browser: {
       status: openclawDir && await exists(join(openclawDir, 'browser')) ? 'configured' : 'not configured',
+    },
+    codex: {
+      expectedHome: expectedCodexHome,
+      shellCodexHomeSet,
+      shellCodexHomeMatchesExpected,
     },
   };
 
