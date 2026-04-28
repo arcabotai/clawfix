@@ -4,6 +4,64 @@
  * These are issues we've personally encountered and solved.
  */
 
+const BUNDLED_PLUGIN_PATH_RE = /[/\\]openclaw[/\\]dist[/\\]extensions[/\\][^/\\]+[/\\]?$/i;
+
+function logText(diag) {
+  return [
+    diag.logs?.errors,
+    diag.logs?.stderr,
+    diag.logs?.gatewayLog,
+    diag.openclaw?.gatewayStatus,
+  ].filter(Boolean).join('\n');
+}
+
+function bundledPluginLoadPaths(config) {
+  const paths = config?.plugins?.load?.paths;
+  if (!Array.isArray(paths)) return [];
+  return paths.filter(p => typeof p === 'string' && BUNDLED_PLUGIN_PATH_RE.test(p));
+}
+
+function collectStringValues(obj, out = [], path = []) {
+  if (typeof obj === 'string') {
+    out.push({ path: path.join('.'), value: obj });
+    return out;
+  }
+  if (Array.isArray(obj)) {
+    obj.forEach((v, i) => collectStringValues(v, out, path.concat(String(i))));
+    return out;
+  }
+  if (obj && typeof obj === 'object') {
+    Object.entries(obj).forEach(([k, v]) => collectStringValues(v, out, path.concat(k)));
+  }
+  return out;
+}
+
+function codexRuntimeAutoPi(config) {
+  const refs = collectStringValues(config)
+    .filter(({ path, value }) => /(^|\.)(model|primary|fallback)$/i.test(path) && /^openai-codex\//.test(value));
+  if (refs.length === 0) return false;
+
+  const codexPlugin = config?.plugins?.entries?.codex || config?.plugins?.entries?.['openclaw-codex'];
+  if (codexPlugin?.enabled === false) return false;
+
+  const runtimeId =
+    config?.agents?.defaults?.agentRuntime?.id ||
+    config?.agentRuntime?.id ||
+    'auto';
+  return runtimeId !== 'codex';
+}
+
+function updateAvailable(update) {
+  if (!update || typeof update !== 'object') return false;
+  return update.available === true ||
+    update.updateAvailable === true ||
+    update.hasUpdate === true ||
+    update.hasRegistryUpdate === true ||
+    update.availability?.available === true ||
+    update.registry?.available === true ||
+    update.registry?.hasUpdate === true;
+}
+
 export const KNOWN_ISSUES = [
   {
     id: 'mem0-graph-free',
@@ -955,6 +1013,146 @@ else
 fi`,
   },
 
+  // ─── 2026-04-28 additions ──────────────────────────────────────────────
+  // Patterns discovered while refreshing a live 2026.4.26 beta install.
+  // OpenClaw now bundles stock plugins directly, ACPX warm-up can exceed
+  // short health probes, and update status is available from the CLI.
+
+  {
+    id: 'bundled-plugin-load-path-aliases',
+    severity: 'medium',
+    title: 'Redundant bundled plugin paths in plugins.load.paths',
+    description: 'plugins.load.paths points back into OpenClaw\'s own bundled dist/extensions directory (for example codex or discord). Current OpenClaw releases bundle those stock plugins directly, so these paths are stale aliases that trigger config warnings and can confuse post-update gateway health checks.',
+    detect: (diag) => {
+      const paths = diag.configDiagnostics?.bundledPluginLoadPaths || bundledPluginLoadPaths(diag.config);
+      if (Array.isArray(paths) && paths.length > 0) return true;
+      return /ignored plugins\.load\.paths entry that points at OpenClaw's current bundled plugin directory/i.test(logText(diag));
+    },
+    fix: `# Fix: remove only bundled OpenClaw plugin aliases from plugins.load.paths
+set -u
+CFG=~/.openclaw/openclaw.json
+[ -f "$CFG" ] || { echo "no config found"; exit 1; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+/bin/cp -p "$CFG" "$CFG.pre-bundled-plugin-paths-$TS"
+echo "snapshot: $CFG.pre-bundled-plugin-paths-$TS"
+
+CURRENT=$(openclaw config get plugins.load.paths 2>/dev/null || echo '[]')
+FILTERED=$(node -e '
+let paths = [];
+try { paths = JSON.parse(process.argv[1] || "[]"); } catch {}
+const bundled = /[\\\\/]openclaw[\\\\/]dist[\\\\/]extensions[\\\\/][^\\\\/]+[\\\\/]?$/i;
+const kept = Array.isArray(paths) ? paths.filter(p => typeof p !== "string" || !bundled.test(p)) : [];
+process.stdout.write(JSON.stringify(kept));
+' "$CURRENT")
+
+if [ "$CURRENT" = "$FILTERED" ]; then
+  echo "No bundled plugin aliases found; nothing changed."
+else
+  openclaw config set plugins.load.paths "$FILTERED" --strict-json --replace
+  openclaw config validate
+  openclaw gateway restart
+  echo "✅ Removed bundled plugin path aliases and restarted gateway"
+fi
+
+echo ""
+echo "Verify:"
+echo "  openclaw plugins doctor"
+echo "  openclaw gateway status --deep"`,
+  },
+
+  {
+    id: 'acpx-startup-warmup-timeout',
+    severity: 'low',
+    title: 'Gateway health probe timed out during ACPX/Codex warm-up',
+    description: 'OpenClaw is still progressing through ACPX/Codex bridge startup, but a short health probe timed out first. Avoid repeated restart loops while logs are moving from hook loading to "embedded acpx runtime backend registered" and finally "[gateway] ready".',
+    detect: (diag) => {
+      const logs = logText(diag);
+      return /gateway timeout after 10000ms|Warm-up: launch agents can take a few seconds|health.*timed out/i.test(logs) &&
+        /acpx|loaded \d+ internal hook handlers|embedded acpx runtime backend registered/i.test(logs);
+    },
+    fix: `# Info: wait for ACPX/Codex warm-up before restarting again
+echo "ACPX/Codex startup can take longer than a 10 second health probe."
+echo "Wait up to 90 seconds while logs are still progressing:"
+echo "  tail -f ~/.openclaw/logs/gateway.log"
+echo ""
+echo "Healthy progression usually ends with:"
+echo "  embedded acpx runtime backend registered"
+echo "  Browser control listening on http://127.0.0.1:18791/"
+echo "  [gateway] ready"
+echo ""
+echo "Verify after the warm-up window:"
+echo "  openclaw gateway status --deep"
+echo "  openclaw health"`,
+  },
+
+  {
+    id: 'acpx-approve-all-warning',
+    severity: 'medium',
+    title: 'ACPX permissionMode is approve-all',
+    description: 'plugins.entries.acpx.config.permissionMode is "approve-all". This may be intentional for a trusted single-operator workflow, but it is a security audit warning and should be an explicit policy choice rather than a silent default.',
+    detect: (diag) => diag.config?.plugins?.entries?.acpx?.config?.permissionMode === 'approve-all' ||
+      /plugins\.entries\.acpx\.config\.permissionMode.*approve-all/i.test(logText(diag)),
+    fix: `# Info: ACPX approve-all is a policy choice, not an automatic fix
+echo "Current setting:"
+openclaw config get plugins.entries.acpx.config.permissionMode 2>/dev/null || true
+echo ""
+echo "If approve-all is not required, pick a narrower ACPX permission mode"
+echo "and restart the gateway. Do not change this blindly on a live workflow."
+echo ""
+echo "Example:"
+echo "  openclaw config set plugins.entries.acpx.config.permissionMode approve-reads"
+echo "  openclaw gateway restart"
+echo ""
+echo "Then verify:"
+echo "  openclaw security audit --deep"`,
+  },
+
+  {
+    id: 'codex-runtime-auto-pi-warning',
+    severity: 'low',
+    title: 'Codex plugin enabled but openai-codex model refs still route through auto/PI runtime',
+    description: 'OpenClaw doctor warns when the Codex plugin is enabled while openai-codex/* model references are still routed through agentRuntime.id=auto / PI. Existing installs may intentionally use that route, so ClawFix reports it as an advisory rather than changing model runtime policy.',
+    detect: (diag) => codexRuntimeAutoPi(diag.config) ||
+      /Codex plugin enabled.*openai-codex|agentRuntime\.id.*auto.*PI/i.test(logText(diag)),
+    fix: `# Info: choose Codex runtime routing intentionally
+echo "This is advisory. Do not auto-switch runtimes without testing model auth."
+echo ""
+echo "Current relevant settings:"
+openclaw config get agents.defaults.agentRuntime.id 2>/dev/null || true
+openclaw config get agents.defaults.model 2>/dev/null || true
+openclaw config get agents.defaults.heartbeat.model 2>/dev/null || true
+echo ""
+echo "If you want native Codex plugin routing, update the runtime/model settings"
+echo "in one maintenance window, then run:"
+echo "  openclaw config validate"
+echo "  openclaw gateway restart"
+echo "  openclaw doctor --non-interactive"`,
+  },
+
+  {
+    id: 'openclaw-update-available',
+    severity: 'medium',
+    title: 'OpenClaw update is available',
+    description: 'openclaw update status reports a newer release than the installed package. Current OpenClaw releases include update hardening, bundled-plugin path fixes, runtime dependency repair progress, openclaw migrate, and nodes remove support.',
+    detect: (diag) => updateAvailable(diag.update),
+    fix: `# Fix: update OpenClaw and run post-update health checks
+set -u
+openclaw update status --json
+echo ""
+read -r -p "Run openclaw update now? [y/N] " ANS
+[ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
+
+openclaw update --yes
+
+echo ""
+echo "If post-update health times out, wait for ACPX warm-up before restarting again."
+echo "Verify:"
+echo "  openclaw gateway status --deep"
+echo "  openclaw health"
+echo "  openclaw doctor --non-interactive"`,
+  },
+
   // ─── 2026-04-22 additions ──────────────────────────────────────────────
   // Patterns discovered after an `openclaw update` from 2026.4.15 to
   // 2026.4.21 broke in two independent ways. See docs.openclaw.ai/ for
@@ -1297,23 +1495,37 @@ echo "✅ Gateway restarted. New cron runs will use gh's stored token."`,
       const logs = (diag.logs?.errors || '') + '\n' + (diag.logs?.stderr || '');
       return /\[skills-remote\] remote bin probe timed out/i.test(logs);
     },
-    fix: `# Fix: clear stale paired nodes (backs up first; restart gateway)
+    fix: `# Fix: remove stale paired nodes (backs up first; restart gateway)
 set -u
 PAIRED=~/.openclaw/nodes/paired.json
 [ -f "$PAIRED" ] || { echo "No paired.json found; nothing to do."; exit 0; }
 
-# Show current pairings before clearing
 echo "Current paired nodes:"
 openclaw nodes list 2>/dev/null || /usr/bin/env python3 -c "import json;print(list(json.load(open('$PAIRED')).keys()))"
 echo ""
-read -r -p "Clear all paired nodes? [y/N] " ANS
-[ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
 
 TS=$(date +%Y%m%d-%H%M%S)
 /bin/cp -p "$PAIRED" "$PAIRED.pre-unpair-$TS"
-echo '{}' > "$PAIRED"
-/bin/chmod 600 "$PAIRED"
-echo "✅ Paired-nodes cleared (backup at $PAIRED.pre-unpair-$TS)"
+
+if openclaw nodes remove --help >/dev/null 2>&1; then
+  echo "OpenClaw supports targeted node removal."
+  read -r -p "Node id/name/ip to remove (leave blank to skip): " NODE
+  if [ -n "$NODE" ]; then
+    openclaw nodes remove --node "$NODE"
+    echo "✅ Removed stale node: $NODE"
+  else
+    echo "skipped"
+    exit 0
+  fi
+else
+  echo "This OpenClaw build lacks 'openclaw nodes remove'; falling back to clearing paired.json."
+  read -r -p "Clear all paired nodes? [y/N] " ANS
+  [ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
+  echo '{}' > "$PAIRED"
+  /bin/chmod 600 "$PAIRED"
+  echo "✅ Paired nodes cleared (backup at $PAIRED.pre-unpair-$TS)"
+fi
+
 openclaw gateway restart`,
   },
 

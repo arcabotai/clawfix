@@ -36,6 +36,7 @@ Your expertise comes from real-world experience running OpenClaw in production:
 - Browser automation (Chrome relay, managed browser, headless deployments)
 - Plugin configuration (Mem0, LanceDB, Matrix, Discord)
 - Token usage optimization (heartbeat intervals, model selection, pruning)
+- OpenClaw update/channel issues (2026.4.26 bundled plugin paths, update status, runtime deps)
 - VPS and headless deployment issues
 - macOS-specific issues (Metal GPU, Peekaboo, Apple Silicon)
 - Service manager recovery (launchd on macOS, systemd on Linux)
@@ -69,6 +70,19 @@ Your expertise comes from real-world experience running OpenClaw in production:
 **Pattern:** Extension sends raw gateway token instead of HMAC-derived relay token. Missing connect.challenge handshake. Single-attempt 500ms re-attach instead of multi-attempt [300, 700, 1500ms]. No options-validation.js file.
 **Fix:** Update OpenClaw (openclaw update) then reload the extension in chrome://extensions. If needed, manually sync from upstream assets/chrome-extension/.
 
+### Bundled Plugin Path Aliases After 2026.4.26
+**Pattern:** configDiagnostics.bundledPluginLoadPaths contains paths like /opt/homebrew/lib/node_modules/openclaw/dist/extensions/codex or /discord, or logs mention "ignored plugins.load.paths entry that points at OpenClaw's current bundled plugin directory".
+**Root cause:** Older channel/setup flows wrote stock plugin paths into plugins.load.paths. Current OpenClaw bundles stock plugins directly, so these are redundant aliases.
+**Fix:** Remove only bundled .../openclaw/dist/extensions/* entries from plugins.load.paths, validate config, restart gateway. Preserve real external plugin paths.
+
+### ACPX/Codex Warm-Up Probe Timeout
+**Pattern:** update or gateway status reports "gateway timeout after 10000ms" or "Warm-up", while logs still show ACPX/hook startup progress such as "loaded internal hook handlers" followed later by "embedded acpx runtime backend registered" and "[gateway] ready".
+**Fix:** Do not restart repeatedly while logs are progressing. Wait up to 90 seconds, then run openclaw gateway status --deep and openclaw health.
+
+### 2026.4.26 Release-Aware Fixes
+**Pattern:** update.available is true, configDiagnostics shows version drift, or install.unmetCount > 1.
+**Fix:** Prefer the current CLI's built-in repairs: openclaw update, openclaw doctor --fix for runtime deps, openclaw migrate where applicable, and openclaw nodes remove --node <id|name|ip> for stale paired nodes. OPENCLAW_NO_AUTO_UPDATE=1 is an incident-recovery kill switch.
+
 ### Diagnostic Field Reference (new fields in v0.4.0+)
 - service.manager: "launchd" (macOS) | "systemd" (Linux) | "none"
 - service.state: "running" | "sigterm" | "crashed" | "inactive" | "not_registered"
@@ -84,6 +98,11 @@ Your expertise comes from real-world experience running OpenClaw in production:
 - browser.extension.missingOptionsValidation: true if options-validation.js is missing (outdated)
 - browser.extension.hasDeriveRelayToken: true if HMAC token derivation is present
 - browser.wrongPortHits: count of log lines showing extension connecting to wrong port (18789)
+- update: parsed output from "openclaw update status --json"
+- configDiagnostics.lastTouchedVersion: config meta.lastTouchedVersion
+- configDiagnostics.redactedPlaceholderPaths: config paths holding "__OPENCLAW_REDACTED__"
+- configDiagnostics.bundledPluginLoadPaths: plugins.load.paths entries pointing into OpenClaw's own dist/extensions
+- install.unmetCount: number of "UNMET DEPENDENCY" lines from npm ls against the OpenClaw install
 
 Rules:
 1. Generate bash fix scripts that are safe, idempotent, and well-commented
@@ -112,9 +131,18 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     let knownIssues = detectIssues(diagnostic);
 
     // Step 1b: If CLI sent local issues, try to match them to known fixes by text similarity
-    if (diagnostic._localIssues?.length && knownIssues.length === 0) {
+    if (diagnostic._localIssues?.length) {
       const matchedIds = new Set(knownIssues.map(i => i.id));
       for (const local of diagnostic._localIssues) {
+        if (local.id && !matchedIds.has(local.id)) {
+          const direct = KNOWN_ISSUES.find(known => known.id === local.id);
+          if (direct) {
+            knownIssues.push(direct);
+            matchedIds.add(direct.id);
+            continue;
+          }
+        }
+
         const text = (local.text || '').toLowerCase();
         for (const known of KNOWN_ISSUES) {
           if (matchedIds.has(known.id)) continue;
@@ -128,7 +156,12 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
               (text.includes('restart') && title.includes('restart')) ||
               (text.includes('watchdog') && title.includes('watchdog')) ||
               (text.includes('zombie') && title.includes('zombie')) ||
-              (text.includes('metadata') && title.includes('metadata'))) {
+              (text.includes('metadata') && title.includes('metadata')) ||
+              (text.includes('bundled') && title.includes('bundled')) ||
+              (text.includes('plugins.load.paths') && title.includes('plugins.load.paths')) ||
+              (text.includes('acpx') && title.includes('acpx')) ||
+              (text.includes('codex runtime') && title.includes('codex')) ||
+              (text.includes('update available') && title.includes('update'))) {
             knownIssues.push(known);
             matchedIds.add(known.id);
             break;
@@ -253,7 +286,7 @@ diagnoseRouter.get('/stats', async (req, res) => {
     sigtermCrashes: dbStats?.sigtermCrashes || 0,
     zombieProcesses: dbStats?.zombieProcesses || 0,
     uptime: process.uptime(),
-    version: '0.6.0',
+    version: '0.11.0',
     aiProvider: AI_CONFIG.provider,
     aiModel: AI_CONFIG.model,
     aiAvailable: !!AI_CONFIG.apiKey,

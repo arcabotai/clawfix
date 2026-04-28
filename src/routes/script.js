@@ -52,7 +52,7 @@ set -euo pipefail
 
 # --- Config ---
 API_URL="\${CLAWFIX_API:-https://clawfix.dev}"
-VERSION="0.4.0"
+VERSION="0.11.0"
 
 # --- Colors ---
 RED='\\033[0;31m'
@@ -130,6 +130,15 @@ if [ -n "\$OPENCLAW_BIN" ]; then
   OC_VERSION=\$("\$OPENCLAW_BIN" --version 2>/dev/null || echo "unknown")
 fi
 
+# OpenClaw update status (safe metadata; no secrets)
+UPDATE_STATUS_JSON="{}"
+if [ -n "\$OPENCLAW_BIN" ]; then
+  UPDATE_STATUS_RAW=\$("\$OPENCLAW_BIN" update status --json 2>/dev/null || true)
+  if [ -n "\$UPDATE_STATUS_RAW" ]; then
+    UPDATE_STATUS_JSON=\$(printf '%s' "\$UPDATE_STATUS_RAW" | jq -c . 2>/dev/null || echo '{}')
+  fi
+fi
+
 echo -e "   OS: \$OS_NAME \$OS_VERSION (\$OS_ARCH)"
 echo -e "   Node: \$NODE_VERSION"
 echo -e "   OpenClaw: \${OC_VERSION:-not found}"
@@ -139,6 +148,7 @@ echo ""
 echo -e "\${BLUE}🔒 Reading config (secrets will be redacted)...\${NC}"
 
 SANITIZED_CONFIG="{}"
+CONFIG_DIAGNOSTICS="{}"
 if [ -n "\$OPENCLAW_CONFIG" ]; then
   # Redact anything that looks like a key, token, secret, or password
   SANITIZED_CONFIG=\$(jq '
@@ -157,6 +167,15 @@ if [ -n "\$OPENCLAW_CONFIG" ]; then
     | if .gateway.auth then .gateway.auth.token = "***REDACTED***" else . end
     | if .channels then (.channels | to_entries | map(.value.accessToken = "***REDACTED***" | .value.apiKey = "***REDACTED***") | from_entries) as \$ch | .channels = \$ch else . end
   ' "\$OPENCLAW_CONFIG" 2>/dev/null || echo '{"error": "could not parse config"}')
+
+  CONFIG_DIAGNOSTICS=\$(jq -c '
+    def dotted: map(tostring) | join(".");
+    {
+      lastTouchedVersion: (.meta.lastTouchedVersion // null),
+      redactedPlaceholderPaths: ([paths(scalars) as $p | select(getpath($p) == "__OPENCLAW_REDACTED__") | $p | dotted]),
+      bundledPluginLoadPaths: ((.plugins.load.paths // []) | map(select(type == "string" and test("/openclaw/dist/extensions/[^/]+/?$"))))
+    }
+  ' "\$OPENCLAW_CONFIG" 2>/dev/null || echo '{}')
   
   echo -e "\${GREEN}   ✅ Config read and sanitized\${NC}"
 else
@@ -358,6 +377,39 @@ check_port "\${GATEWAY_PORT:-18789}" "gateway"
 check_port 18800 "browser CDP"
 check_port 18791 "browser control"
 
+# --- Check OpenClaw Install Integrity ---
+echo ""
+echo -e "\${BLUE}📦 Checking OpenClaw install integrity...\${NC}"
+
+INSTALL_DIAGNOSTICS="{}"
+if [ -n "\$OPENCLAW_BIN" ] && command -v npm &>/dev/null; then
+  GLOBAL_ROOT=\$(npm root -g 2>/dev/null || true)
+  OC_INSTALL_DIR=""
+  if [ -n "\$GLOBAL_ROOT" ] && [ -d "\$GLOBAL_ROOT/openclaw" ]; then
+    OC_INSTALL_DIR="\$GLOBAL_ROOT/openclaw"
+  elif [ -d "/opt/homebrew/lib/node_modules/openclaw" ]; then
+    OC_INSTALL_DIR="/opt/homebrew/lib/node_modules/openclaw"
+  elif [ -d "/usr/local/lib/node_modules/openclaw" ]; then
+    OC_INSTALL_DIR="/usr/local/lib/node_modules/openclaw"
+  fi
+
+  if [ -n "\$OC_INSTALL_DIR" ]; then
+    NPM_LS_OUT=\$(npm ls --prefix "\$OC_INSTALL_DIR" --depth=0 2>&1 || true)
+    UNMET_COUNT=\$(printf '%s' "\$NPM_LS_OUT" | grep -c 'UNMET DEPENDENCY' || true)
+    UNMET_JSON=\$(printf '%s' "\$NPM_LS_OUT" | grep 'UNMET DEPENDENCY' | awk '{print \$NF}' | jq -Rsc 'split("\\n")[:-1]' 2>/dev/null || echo '[]')
+    INSTALL_DIAGNOSTICS=\$(jq -n --arg root "\$OC_INSTALL_DIR" --argjson unmetCount "\$UNMET_COUNT" --argjson unmet "\$UNMET_JSON" '{root:$root, unmetCount:$unmetCount, unmet:$unmet}')
+    if [ "\$UNMET_COUNT" -gt 1 ]; then
+      echo -e "   \${YELLOW}⚠️  \$UNMET_COUNT unmet OpenClaw npm dependencies\${NC}"
+    else
+      echo -e "   \${GREEN}✅ OpenClaw npm deps look sane\${NC}"
+    fi
+  else
+    echo -e "   \${YELLOW}⚠️  Could not locate global OpenClaw package directory\${NC}"
+  fi
+else
+  echo -e "   \${YELLOW}⚠️  npm/openclaw unavailable; skipped install integrity check\${NC}"
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -384,6 +436,7 @@ DIAGNOSTIC=\$(cat <<EOF
     "processExists": \$PROCESS_EXISTS,
     "portListening": \$PORT_LISTENING
   },
+  "update": \$UPDATE_STATUS_JSON,
   "service": {
     "manager": "\$SERVICE_MANAGER",
     "state": "\${SERVICE_STATE:-unknown}",
@@ -392,6 +445,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "runs": "\${SERVICE_RUNS:-}"
   },
   "config": \$SANITIZED_CONFIG,
+  "configDiagnostics": \$CONFIG_DIAGNOSTICS,
+  "install": \$INSTALL_DIAGNOSTICS,
   "logs": {
     "errors": \$(echo "\$GATEWAY_LOG" | jq -Rs .),
     "stderr": \$(echo "\$ERROR_LOG" | jq -Rs .),
@@ -460,6 +515,34 @@ fi
 if ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.compaction.memoryFlush.enabled == true' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Memory flush not enabled (data loss on compaction)\${NC}\\n"
+fi
+
+BUNDLED_PLUGIN_PATH_COUNT=\$(echo "\$CONFIG_DIAGNOSTICS" | jq -r '.bundledPluginLoadPaths | length' 2>/dev/null || echo "0")
+if [ "\$BUNDLED_PLUGIN_PATH_COUNT" -gt 0 ]; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Bundled plugin aliases in plugins.load.paths\${NC}\\n"
+fi
+
+if echo "\$SANITIZED_CONFIG" | jq -e '.plugins.entries.acpx.config.permissionMode == "approve-all"' &>/dev/null; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  ACPX permissionMode=approve-all (security policy advisory)\${NC}\\n"
+fi
+
+if echo "\$UPDATE_STATUS_JSON" | jq -e '(.available == true) or (.updateAvailable == true) or (.hasUpdate == true) or (.hasRegistryUpdate == true) or (.availability.available == true) or (.registry.available == true) or (.registry.hasUpdate == true)' &>/dev/null; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  OpenClaw update available\${NC}\\n"
+fi
+
+INSTALL_UNMET_COUNT=\$(echo "\$INSTALL_DIAGNOSTICS" | jq -r '.unmetCount // 0' 2>/dev/null || echo "0")
+if [ "\$INSTALL_UNMET_COUNT" -gt 1 ]; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Incomplete OpenClaw npm install (\$INSTALL_UNMET_COUNT unmet deps)\${NC}\\n"
+fi
+
+if printf '%s\\n%s\\n%s' "\$GATEWAY_STATUS" "\$GATEWAY_LOG" "\$ERROR_LOG" | grep -Eqi 'gateway timeout after 10000ms|Warm-up: launch agents|health.*timed out' &&
+   printf '%s\\n%s\\n%s' "\$GATEWAY_STATUS" "\$GATEWAY_LOG" "\$ERROR_LOG" | grep -Eqi 'acpx|loaded [0-9]+ internal hook handlers|embedded acpx runtime backend registered'; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Gateway probe timed out during ACPX/Codex warm-up\${NC}\\n"
 fi
 
 if [ "\$SOUL_EXISTS" = "false" ]; then

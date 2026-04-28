@@ -33,7 +33,7 @@ bash clawfix.sh                         # Run after reviewing
 2. **AI analyzes** — Pattern matching catches 45+ known issues instantly. AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
-## What It Detects (v0.10.0)
+## What It Detects (v0.11.0)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)
 - 🧠 Memory issues (Mem0 silent failures, missing flush, broken search)
@@ -56,6 +56,10 @@ bash clawfix.sh                         # Run after reviewing
 - 🩹 `__OPENCLAW_REDACTED__` literal persisted to config (blocks `openclaw update` and schema validation)
 - 📉 Incomplete openclaw npm install (unmet transitive deps breaking plugin load — e.g. Discord missing `discord-api-types`)
 - ↕️ Config last written by a newer OpenClaw than the installed CLI (version drift when the macOS app auto-updates)
+- 🧩 Stale bundled `plugins.load.paths` aliases left by older OpenClaw channel/setup flows
+- ⏳ ACPX/Codex bridge warm-up after updates, where short health probes can time out before the gateway is actually stuck
+- 🛡️ ACPX `permissionMode=approve-all` and Codex runtime routing advisories
+- 🔄 Latest release/update status via `openclaw update status --json`
 
 ## Security & Transparency
 
