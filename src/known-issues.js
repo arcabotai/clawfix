@@ -4,6 +4,101 @@
  * These are issues we've personally encountered and solved.
  */
 
+function collectActiveModelRefs(config) {
+  const refs = [];
+  const add = (value) => {
+    if (!value) return;
+    if (typeof value === 'string') {
+      refs.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(add);
+    }
+  };
+
+  const defaults = config?.agents?.defaults || {};
+  add(defaults.model);
+  add(defaults.model?.primary);
+  add(defaults.model?.fallbacks);
+  add(defaults.compaction?.model);
+  add(defaults.heartbeat?.model);
+  add(defaults.subagents?.model);
+
+  if (Array.isArray(config?.agents?.list)) {
+    for (const agent of config.agents.list) {
+      add(agent?.model);
+      add(agent?.model?.primary);
+      add(agent?.model?.fallbacks);
+    }
+  }
+
+  return refs.map(value => String(value)).filter(Boolean);
+}
+
+function collectAgentRuntimes(config) {
+  const runtimes = [];
+  const add = (runtime) => {
+    if (!runtime) return;
+    runtimes.push(runtime);
+  };
+
+  add(config?.agents?.defaults?.agentRuntime);
+  if (Array.isArray(config?.agents?.list)) {
+    for (const agent of config.agents.list) add(agent?.agentRuntime);
+  }
+
+  return runtimes;
+}
+
+function hasActiveOpenAiCodexRoute(config) {
+  const modelRefs = collectActiveModelRefs(config);
+  const hasOpenAiCodexModel = modelRefs.some(ref => ref.startsWith('openai-codex/'));
+  const hasPiFallback = collectAgentRuntimes(config).some(runtime => {
+    if (typeof runtime === 'string') return runtime === 'pi';
+    return runtime?.id === 'pi' || runtime?.fallback === 'pi';
+  });
+  return hasOpenAiCodexModel || hasPiFallback;
+}
+
+function hasNativeCodexRoute(config) {
+  return collectAgentRuntimes(config).some(runtime => {
+    if (typeof runtime === 'string') return runtime === 'codex';
+    return runtime?.id === 'codex';
+  });
+}
+
+function codexPluginEntry(config) {
+  return config?.plugins?.entries?.codex || null;
+}
+
+function codexAppServer(config) {
+  return codexPluginEntry(config)?.config?.appServer || {};
+}
+
+function hasCodexPluginEnabled(config) {
+  const entry = codexPluginEntry(config);
+  return !!entry && entry.enabled !== false;
+}
+
+function hasStaleBundledPluginLoadPath(config) {
+  const paths = config?.plugins?.load?.paths;
+  return Array.isArray(paths) && paths.some(path => (
+    typeof path === 'string' &&
+    /openclaw\/dist\/extensions\/(codex|discord|acpx|browser|mem0|lancedb|matrix)/.test(path)
+  ));
+}
+
+function logText(diag) {
+  return [
+    diag.logs?.errors,
+    diag.logs?.stderr,
+    diag.logs?.gatewayLog,
+    diag.logs?.raw,
+    diag.openclaw?.gatewayStatus,
+  ].filter(Boolean).join('\n');
+}
+
 export const KNOWN_ISSUES = [
   {
     id: 'mem0-graph-free',
@@ -20,6 +115,250 @@ jq '.plugins.entries["openclaw-mem0"].config.enableGraph = false' \\
   ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
   mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
 echo "✅ Mem0 graph disabled — autoCapture will now work on Free plan"`,
+  },
+
+  {
+    id: 'stale-bundled-plugin-load-paths',
+    severity: 'medium',
+    title: 'Stale bundled plugin load paths configured',
+    description: 'plugins.load.paths contains paths that point back into OpenClaw\'s own bundled dist/extensions directory. Newer OpenClaw releases load bundled plugins directly, so these stale aliases create noisy diagnostics and can make update recovery look broken.',
+    detect: (diag) => {
+      const logs = logText(diag);
+      return hasStaleBundledPluginLoadPath(diag.config) ||
+             /ignored plugins\.load\.paths entry.*bundled plugin directory/i.test(logs);
+    },
+    fix: `# Fix: Remove stale bundled plugin load path aliases
+CONFIG="$HOME/.openclaw/openclaw.json"
+TS=$(date +%Y%m%d-%H%M%S)
+cp "$CONFIG" "$CONFIG.pre-load-path-cleanup-$TS"
+
+openclaw config set plugins.load.paths '[]' --strict-json --replace
+openclaw config validate
+openclaw gateway restart
+
+echo "Stale bundled plugin load paths cleared."
+echo "Verify with: openclaw plugins doctor && openclaw gateway status --deep"`,
+  },
+
+  {
+    id: 'pi-backed-openai-codex-route',
+    severity: 'high',
+    title: 'PI-backed openai-codex route active instead of native Codex harness',
+    description: 'The Codex plugin is enabled, but active agent models or runtimes still point at openai-codex/* or PI fallback behavior. That keeps the instance on the older PI-backed route instead of the native Codex harness and can add latency.',
+    detect: (diag) => {
+      return hasCodexPluginEnabled(diag.config) && hasActiveOpenAiCodexRoute(diag.config);
+    },
+    fix: `# Fix: Switch active agent routing to the native Codex harness
+CONFIG="$HOME/.openclaw/openclaw.json"
+TS=$(date +%Y%m%d-%H%M%S)
+cp "$CONFIG" "$CONFIG.pre-native-codex-$TS"
+
+node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const home = process.env.HOME;
+const configPath = path.join(home, '.openclaw', 'openclaw.json');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+config.agents = config.agents || {};
+const defaults = config.agents.defaults = config.agents.defaults || {};
+defaults.agentRuntime = { id: 'codex', fallback: 'none' };
+defaults.model = {
+  ...(defaults.model && typeof defaults.model === 'object' && !Array.isArray(defaults.model) ? defaults.model : {}),
+  primary: 'openai/gpt-5.5',
+  fallbacks: [],
+};
+defaults.models = defaults.models && typeof defaults.models === 'object' && !Array.isArray(defaults.models)
+  ? defaults.models
+  : {};
+defaults.models['openai/gpt-5.5'] = {
+  ...(defaults.models['openai/gpt-5.5'] || {}),
+  params: {
+    ...((defaults.models['openai/gpt-5.5'] || {}).params || {}),
+    fastMode: true,
+  },
+};
+
+for (const key of ['compaction', 'heartbeat', 'subagents']) {
+  defaults[key] = defaults[key] || {};
+  defaults[key].model = 'openai/gpt-5.5';
+}
+defaults.compaction.maxActiveTranscriptBytes = 8388608;
+
+if (Array.isArray(config.agents.list)) {
+  for (const agent of config.agents.list) {
+    if (!agent || typeof agent !== 'object') continue;
+    if (typeof agent.model === 'string' && agent.model.startsWith('openai-codex/')) {
+      agent.model = 'openai/gpt-5.5';
+      agent.agentRuntime = { id: 'codex', fallback: 'none' };
+    }
+  }
+}
+
+config.plugins = config.plugins || {};
+config.plugins.entries = config.plugins.entries || {};
+config.plugins.entries.codex = config.plugins.entries.codex || {};
+config.plugins.entries.codex.config = config.plugins.entries.codex.config || {};
+config.plugins.entries.codex.config.appServer = config.plugins.entries.codex.config.appServer || {};
+config.plugins.entries.codex.config.appServer.serviceTier = 'fast';
+
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\\n');
+
+const cronPath = path.join(home, '.openclaw', 'cron', 'jobs.json');
+if (fs.existsSync(cronPath)) {
+  fs.copyFileSync(cronPath, cronPath + '.pre-native-codex-' + new Date().toISOString().replace(/[:.]/g, '-'));
+  const rewrite = (value) => {
+    if (typeof value === 'string') {
+      return value.startsWith('openai-codex/') ? value.replace(/^openai-codex\\//, 'openai/') : value;
+    }
+    if (Array.isArray(value)) return value.map(rewrite);
+    if (value && typeof value === 'object') {
+      for (const key of Object.keys(value)) value[key] = rewrite(value[key]);
+    }
+    return value;
+  };
+  const cron = JSON.parse(fs.readFileSync(cronPath, 'utf8'));
+  fs.writeFileSync(cronPath, JSON.stringify(rewrite(cron), null, 2) + '\\n');
+}
+NODE
+
+openclaw config validate
+openclaw gateway restart
+
+echo "Native Codex harness route enabled."
+echo "Verify with: openclaw doctor --non-interactive"
+echo "Smoke test should show agentHarnessId=codex and fallbackUsed=false."`,
+  },
+
+  {
+    id: 'codex-session-store-permission',
+    severity: 'high',
+    title: 'Codex session-store permission failure',
+    description: 'The gateway is using native Codex, but the Codex app-server cannot write session files under ~/.codex/sessions. On macOS this can happen when the LaunchAgent process sandbox cannot access the default Codex home even though ownership and file modes look correct.',
+    detect: (diag) => {
+      const logs = logText(diag);
+      const sandbox = codexAppServer(diag.config).sandbox;
+      return /Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(logs) ||
+             (hasNativeCodexRoute(diag.config) && sandbox === 'workspace-write');
+    },
+    fix: `# Fix: Give the OpenClaw gateway a dedicated writable Codex home
+CONFIG="$HOME/.openclaw/openclaw.json"
+TS=$(date +%Y%m%d-%H%M%S)
+CODEX_HOME_DIR="$HOME/.openclaw/codex-home"
+WRAPPER="$HOME/.openclaw/bin/openclaw-gateway-codex-wrapper"
+
+cp "$CONFIG" "$CONFIG.pre-codex-home-$TS"
+mkdir -p "$CODEX_HOME_DIR" "$HOME/.openclaw/bin"
+
+for file in auth.json config.toml config.json credentials.json; do
+  if [ -f "$HOME/.codex/$file" ] && [ ! -f "$CODEX_HOME_DIR/$file" ]; then
+    cp -p "$HOME/.codex/$file" "$CODEX_HOME_DIR/$file"
+  fi
+done
+
+OPENCLAW_BIN=$(command -v openclaw || true)
+if [ -z "$OPENCLAW_BIN" ]; then
+  if [ -x /opt/homebrew/bin/openclaw ]; then
+    OPENCLAW_BIN=/opt/homebrew/bin/openclaw
+  else
+    echo "openclaw binary not found in PATH"
+    exit 1
+  fi
+fi
+
+cat > "$WRAPPER" <<EOF
+#!/bin/sh
+set -eu
+
+export CODEX_HOME="\\$HOME/.openclaw/codex-home"
+
+exec "$OPENCLAW_BIN" "\\$@"
+EOF
+chmod +x "$WRAPPER"
+
+openclaw config set plugins.entries.codex.config.appServer.sandbox danger-full-access
+openclaw gateway install --force --wrapper "$WRAPPER"
+openclaw config validate
+openclaw gateway status --deep
+
+echo "Dedicated Codex home installed for the gateway."
+echo "Run a Codex smoke test and confirm sessions appear under ~/.openclaw/codex-home/sessions."`,
+  },
+
+  {
+    id: 'codex-shell-home-mismatch',
+    severity: 'medium',
+    title: 'Shell CODEX_HOME does not match OpenClaw Codex home',
+    description: 'The gateway wrapper is using a dedicated writable Codex home, but manual shell-based openclaw agent runs do not inherit the same CODEX_HOME. This can make terminal smoke tests drift into the default ~/.codex state while Discord/runtime traffic works correctly.',
+    detect: (diag) => {
+      return hasCodexPluginEnabled(diag.config) &&
+             hasNativeCodexRoute(diag.config) &&
+             diag.codex?.shellCodexHomeMatchesExpected === false;
+    },
+    fix: `# Fix: Persist the gateway Codex home for manual shell runs
+TS=$(date +%Y%m%d-%H%M%S)
+CODEX_HOME_DIR="$HOME/.openclaw/codex-home"
+mkdir -p "$CODEX_HOME_DIR"
+
+PROFILE="$HOME/.profile"
+case "\${SHELL:-}" in
+  */zsh) PROFILE="$HOME/.zshenv" ;;
+  */bash) PROFILE="$HOME/.bash_profile" ;;
+esac
+
+touch "$PROFILE"
+cp "$PROFILE" "$PROFILE.pre-codex-home-$TS"
+
+PROFILE="$PROFILE" node <<'NODE'
+const fs = require('fs');
+
+const profile = process.env.PROFILE;
+const line = 'export CODEX_HOME="\${CODEX_HOME:-$HOME/.openclaw/codex-home}"';
+const block = [
+  '',
+  '# Keep manual OpenClaw/Codex CLI runs on the same writable Codex home as the',
+  '# OpenClaw gateway wrapper.',
+  line,
+].join('\\n') + '\\n';
+
+let text = fs.existsSync(profile) ? fs.readFileSync(profile, 'utf8') : '';
+if (/^\\s*export\\s+CODEX_HOME=.*$/m.test(text)) {
+  text = text.replace(/^\\s*export\\s+CODEX_HOME=.*$/m, line);
+} else if (!text.includes('.openclaw/codex-home')) {
+  if (text && !text.endsWith('\\n')) text += '\\n';
+  text += block;
+}
+fs.writeFileSync(profile, text);
+NODE
+
+echo "Shell CODEX_HOME pinned in $PROFILE."
+echo "Open a new terminal, or source the profile, then verify with:"
+echo "  zsh -lc 'printf \"%s\\\\n\" \"\\$CODEX_HOME\"'"
+echo "Expected: $CODEX_HOME_DIR"`,
+  },
+
+  {
+    id: 'codex-service-tier-not-fast',
+    severity: 'low',
+    title: 'Codex app-server fast tier is not enabled',
+    description: 'OpenClaw can pass a fast service tier to the Codex app-server. If this is missing, native Codex traffic may not use the lower-latency path expected after the latest update.',
+    detect: (diag) => {
+      return hasCodexPluginEnabled(diag.config) &&
+             (hasNativeCodexRoute(diag.config) || collectActiveModelRefs(diag.config).some(ref => ref.startsWith('openai/'))) &&
+             codexAppServer(diag.config).serviceTier !== 'fast';
+    },
+    fix: `# Fix: Enable the Codex app-server fast tier
+CONFIG="$HOME/.openclaw/openclaw.json"
+TS=$(date +%Y%m%d-%H%M%S)
+cp "$CONFIG" "$CONFIG.pre-codex-fast-tier-$TS"
+
+openclaw config set plugins.entries.codex.config.appServer.serviceTier fast
+openclaw config validate
+openclaw gateway restart
+
+echo "Codex fast service tier enabled."
+echo "Verify with: openclaw gateway status --deep"`,
   },
 
   {

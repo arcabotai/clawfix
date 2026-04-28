@@ -45,6 +45,7 @@ bash clawfix.sh                         # Run after reviewing
 - 👻 Zombie processes (PID exists but port not listening)
 - 📜 Error log bloat (chrome extension spam, handshake storms)
 - 🐕 Gateway watchdog recommendations (independent health checks)
+- ⚡ Native Codex harness drift (PI route fallback, session-store permissions, shell `CODEX_HOME`, fast tier)
 - 🧵 Model provider prefix typos (`codex/gpt-5.4` vs `openai-codex/gpt-5.4` — silent 403 + fallback loop)
 - 🎣 Silently-dropped Discord group messages (`groupPolicy=allowlist` with empty `allowFrom`)
 - 🔒 Plaintext secrets in config (flags fields that should be SecretRefs pointing at `~/.openclaw/.env`)
@@ -65,6 +66,7 @@ We take security seriously. ClawFix is designed around the principle of **inform
 | System | OS type, version, architecture | No |
 | Runtime | Node.js version, npm version | No |
 | OpenClaw | Version, gateway status, port config | No |
+| Codex | Expected OpenClaw Codex home path and shell-match booleans | No |
 | Config | Structure only — **all secrets redacted** | Redacted |
 | Logs | Last 30 lines matching error/warn patterns | Low risk |
 | Workspace | File counts, existence checks (SOUL.md etc.) | No |
@@ -74,7 +76,7 @@ We take security seriously. ClawFix is designed around the principle of **inform
 
 - ❌ API keys, tokens, or passwords (all auto-redacted)
 - ❌ File contents (SOUL.md, AGENTS.md, memory files, chat history)
-- ❌ Environment variables (entire `env` block skipped)
+- ❌ Environment variable values (the config `env` block is skipped; Codex checks only send match booleans)
 - ❌ IP address or real hostname
 - ❌ Personal data of any kind
 
