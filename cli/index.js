@@ -14,7 +14,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const VERSION = '0.9.0';
+const VERSION = '0.10.0';
 const DEFAULT_API = 'https://clawfix.dev';
 const ARGS = process.argv.slice(2);
 const JSON_MODE = ARGS.includes('--json');
@@ -81,6 +81,60 @@ function hashHostname() {
   let h = 0;
   for (let i = 0; i < hostname.length; i++) h = ((h << 5) - h + hostname.charCodeAt(i)) | 0;
   return Math.abs(h).toString(16).slice(0, 8);
+}
+
+// --- Pre-sanitize scan for config-corruption signals that must survive sanitization ---
+// The openclaw CLI's own display-redaction uses the literal string
+// "__OPENCLAW_REDACTED__"; newer openclaw versions have been observed
+// persisting that placeholder to disk as the real value of some fields
+// (SecretRef ids, env.vars entries). Schema validation then rejects the
+// config. This scan runs BEFORE sanitizeConfig() so we can flag the
+// corruption class even when the affected key name (like "token") would
+// otherwise be replaced by our own sanitization.
+function scanConfigCorruption(rawConfig) {
+  if (!rawConfig) return { redactedPlaceholderPaths: [], writtenByNewerVersion: null };
+  const redactedPlaceholderPaths = [];
+  const walk = (node, path) => {
+    if (typeof node === 'string') {
+      if (node === '__OPENCLAW_REDACTED__') redactedPlaceholderPaths.push(path);
+    } else if (Array.isArray(node)) {
+      node.forEach((v, i) => walk(v, `${path}[${i}]`));
+    } else if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node)) walk(v, path ? `${path}.${k}` : k);
+    }
+  };
+  walk(rawConfig, '');
+  const meta = rawConfig.meta || {};
+  return {
+    redactedPlaceholderPaths,
+    lastTouchedVersion: typeof meta.lastTouchedVersion === 'string' ? meta.lastTouchedVersion : null,
+    lastTouchedAt: typeof meta.lastTouchedAt === 'string' ? meta.lastTouchedAt : null,
+  };
+}
+
+// --- Check the openclaw global install for missing deps ---
+// Incomplete upstream publishes have shipped in the past (e.g. 2026.4.21
+// omitted discord-api-types, @buape/carbon, @discordjs/opus, opusscript
+// from its declared deps). `npm ls` in the install dir shows them as
+// UNMET DEPENDENCY. One unmet is tolerable (node-llama-cpp is optional);
+// more than one is a broken install.
+function inspectOpenclawInstall(ocBin) {
+  if (!ocBin) return { dir: null, unmetCount: null, unmetNames: [] };
+  let dir = run(`dirname "${ocBin}" 2>/dev/null | xargs -I{} readlink -f {}/../lib/node_modules/openclaw 2>/dev/null`);
+  if (!dir || !existsSync(dir)) {
+    // fallback: try the common homebrew path
+    dir = existsSync('/opt/homebrew/lib/node_modules/openclaw') ? '/opt/homebrew/lib/node_modules/openclaw'
+        : existsSync('/usr/local/lib/node_modules/openclaw') ? '/usr/local/lib/node_modules/openclaw'
+        : null;
+  }
+  if (!dir) return { dir: null, unmetCount: null, unmetNames: [] };
+  const out = run(`npm ls --prefix "${dir}" --depth=0 2>&1`);
+  const unmet = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/UNMET (?:OPTIONAL )?DEPENDENCY\s+([@\w/-]+)/);
+    if (m) unmet.push(m[1]);
+  }
+  return { dir, unmetCount: unmet.length, unmetNames: unmet.slice(0, 20) };
 }
 
 // --- Sanitize config (redact secrets) ---
@@ -157,8 +211,19 @@ async function main() {
   log();
   log(c.blue('🔒 Reading config (secrets redacted)...'));
   const rawConfig = configPath ? readJson(configPath) : null;
+  // Run pre-sanitize scans so corruption / version-drift signals survive
+  const configCorruption = scanConfigCorruption(rawConfig);
   const config = sanitizeConfig(rawConfig);
   log(rawConfig ? c.green('   ✅ Config read and sanitized') : c.yellow('   ⚠️  No config file found'));
+  if (configCorruption.redactedPlaceholderPaths.length > 0) {
+    log(c.red(`   ⚠️  Redacted-placeholder corruption at ${configCorruption.redactedPlaceholderPaths.length} path(s)`));
+  }
+
+  // 3b. Check openclaw global install for missing deps (incomplete npm publishes)
+  const install = inspectOpenclawInstall(ocBin);
+  if (install.unmetCount != null && install.unmetCount > 1) {
+    log(c.red(`   ⚠️  ${install.unmetCount} unmet dep(s) in ${install.dir}`));
+  }
 
   // 4. Gateway status
   log();
@@ -390,6 +455,16 @@ async function main() {
     },
     host: {
       fileVaultOn,
+    },
+    install: {
+      dir: install.dir,
+      unmetCount: install.unmetCount,
+      unmetNames: install.unmetNames,
+    },
+    configDiagnostics: {
+      redactedPlaceholderPaths: configCorruption.redactedPlaceholderPaths,
+      lastTouchedVersion: configCorruption.lastTouchedVersion,
+      lastTouchedAt: configCorruption.lastTouchedAt,
     },
     config,
     logs: {

@@ -17,7 +17,7 @@ import { createInterface } from 'node:readline';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
-const VERSION = '0.8.0';
+const VERSION = '0.11.0';
 
 // --- Flags ---
 const args = process.argv.slice(2);
@@ -84,6 +84,108 @@ function sanitizeConfig(config) {
   };
 
   return redact(config);
+}
+
+function parseJsonSafe(value, fallback = {}) {
+  try { return JSON.parse(value); } catch { return fallback; }
+}
+
+const BUNDLED_PLUGIN_PATH_RE = /[/\\]openclaw[/\\]dist[/\\]extensions[/\\][^/\\]+[/\\]?$/i;
+
+function bundledPluginLoadPaths(config) {
+  const paths = config?.plugins?.load?.paths;
+  if (!Array.isArray(paths)) return [];
+  return paths.filter(p => typeof p === 'string' && BUNDLED_PLUGIN_PATH_RE.test(p));
+}
+
+function walkScalars(value, visitor, path = []) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value == null) {
+    visitor(path, value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, i) => walkScalars(item, visitor, path.concat(String(i))));
+    return;
+  }
+  if (value && typeof value === 'object') {
+    Object.entries(value).forEach(([key, child]) => walkScalars(child, visitor, path.concat(key)));
+  }
+}
+
+function collectConfigDiagnostics(config) {
+  const redactedPlaceholderPaths = [];
+  walkScalars(config, (path, value) => {
+    if (value === '__OPENCLAW_REDACTED__') redactedPlaceholderPaths.push(path.join('.'));
+  });
+  return {
+    lastTouchedVersion: config?.meta?.lastTouchedVersion || null,
+    redactedPlaceholderPaths,
+    bundledPluginLoadPaths: bundledPluginLoadPaths(config),
+  };
+}
+
+function updateAvailable(updateStatus) {
+  if (!updateStatus || typeof updateStatus !== 'object') return false;
+  return updateStatus.available === true ||
+    updateStatus.updateAvailable === true ||
+    updateStatus.hasUpdate === true ||
+    updateStatus.hasRegistryUpdate === true ||
+    updateStatus.availability?.available === true ||
+    updateStatus.registry?.available === true ||
+    updateStatus.registry?.hasUpdate === true;
+}
+
+function codexRuntimeAutoPi(config) {
+  let hasCodexModelRef = false;
+  walkScalars(config, (path, value) => {
+    if (typeof value !== 'string') return;
+    if (!/^openai-codex\//.test(value)) return;
+    const leaf = path[path.length - 1] || '';
+    if (/^(model|primary|fallback)$/i.test(leaf)) hasCodexModelRef = true;
+  });
+
+  if (!hasCodexModelRef) return false;
+  const codexPlugin = config?.plugins?.entries?.codex || config?.plugins?.entries?.['openclaw-codex'];
+  if (codexPlugin?.enabled === false) return false;
+
+  const runtimeId =
+    config?.agents?.defaults?.agentRuntime?.id ||
+    config?.agentRuntime?.id ||
+    'auto';
+  return runtimeId !== 'codex';
+}
+
+function findOpenClawInstallDir() {
+  const globalRoot = run('npm root -g 2>/dev/null');
+  const candidates = [
+    globalRoot ? join(globalRoot, 'openclaw') : '',
+    '/opt/homebrew/lib/node_modules/openclaw',
+    '/usr/local/lib/node_modules/openclaw',
+  ].filter(Boolean);
+  return candidates.find(p => run(`test -d "${p}" && printf yes`) === 'yes') || '';
+}
+
+function collectInstallDiagnostics() {
+  const root = findOpenClawInstallDir();
+  if (!root) return { root: null, unmetCount: 0, unmet: [] };
+
+  let output = '';
+  try {
+    output = execSync(`npm ls --prefix "${root}" --depth=0 2>&1`, { encoding: 'utf8', timeout: 15000 });
+  } catch (err) {
+    output = `${err.stdout || ''}${err.stderr || ''}`;
+  }
+  const unmet = output
+    .split('\n')
+    .filter(line => /UNMET DEPENDENCY/.test(line))
+    .map(line => line.trim().split(/\s+/).pop())
+    .filter(Boolean);
+
+  return {
+    root,
+    unmetCount: unmet.length,
+    unmet,
+  };
 }
 
 // ============================================================
@@ -187,6 +289,63 @@ const BUILTIN_FIXES = {
       config.update.auto.enabled = false;
       return { changes: ['Disabled auto-update'] };
     }
+  },
+
+  'bundled-plugin-load-path-aliases': {
+    description: 'Remove bundled OpenClaw plugin aliases from plugins.load.paths',
+    risk: 'low',
+    needsConfig: true,
+    needsRestart: true,
+    informational: false,
+    apply: (config) => {
+      if (!config.plugins) config.plugins = {};
+      if (!config.plugins.load) config.plugins.load = {};
+      const paths = config.plugins.load.paths;
+      if (!Array.isArray(paths) || paths.length === 0) {
+        config.plugins.load.paths = [];
+        return { changes: ['plugins.load.paths already empty'] };
+      }
+      const removed = paths.filter(p => typeof p === 'string' && BUNDLED_PLUGIN_PATH_RE.test(p));
+      config.plugins.load.paths = paths.filter(p => typeof p !== 'string' || !BUNDLED_PLUGIN_PATH_RE.test(p));
+      if (removed.length === 0) return { changes: ['No bundled OpenClaw plugin aliases found'] };
+      return { changes: [`Removed bundled plugin path aliases: ${removed.join(', ')}`] };
+    }
+  },
+
+  'acpx-startup-warmup-timeout': {
+    description: 'Informational: wait for ACPX/Codex warm-up before repeated restarts',
+    risk: 'none',
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['Wait up to 90 seconds, then verify with openclaw gateway status --deep and openclaw health'] })
+  },
+
+  'acpx-approve-all-warning': {
+    description: 'Informational: ACPX approve-all is a security policy decision',
+    risk: 'none',
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['Review plugins.entries.acpx.config.permissionMode before narrowing it'] })
+  },
+
+  'codex-runtime-auto-pi-warning': {
+    description: 'Informational: choose Codex runtime routing intentionally',
+    risk: 'none',
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['Review openai-codex model references and agentRuntime.id together'] })
+  },
+
+  'openclaw-update-available': {
+    description: 'Informational: run openclaw update in a maintenance window',
+    risk: 'none',
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['Run openclaw update, then openclaw gateway status --deep and openclaw doctor --non-interactive'] })
   },
 
   'gateway-not-running': {
@@ -617,8 +776,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const hostHash = hashStr(hostname());
 
   let ocVersion = '';
+  let updateStatus = {};
   if (openclawBin) {
     ocVersion = run(`"${openclawBin}" --version`);
+    updateStatus = parseJsonSafe(run(`"${openclawBin}" update status --json 2>/dev/null`), {});
   }
 
   log(`   OS: ${osName} ${osVersion} (${osArch})`);
@@ -631,10 +792,12 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   let config = null;
   let sanitizedConfig = {};
+  let configDiagnostics = {};
 
   if (configPath && await exists(configPath)) {
     config = await readJson(configPath);
     sanitizedConfig = sanitizeConfig(config) || {};
+    configDiagnostics = collectConfigDiagnostics(config || {});
     log(c.green('   ✅ Config read and sanitized'));
   } else {
     log(c.yellow('   ⚠️  No config file found'));
@@ -825,35 +988,50 @@ async function collectDiagnostics({ quiet = false } = {}) {
   checkPort(18800, 'browser CDP');
   checkPort(18791, 'browser control');
 
+  // --- OpenClaw Install Integrity ---
+  log('');
+  log(c.blue('📦 Checking OpenClaw install integrity...'));
+
+  const installDiagnostics = collectInstallDiagnostics();
+  if (installDiagnostics.root) {
+    if (installDiagnostics.unmetCount > 1) {
+      log(c.yellow(`   ⚠️  ${installDiagnostics.unmetCount} unmet OpenClaw npm dependencies`));
+    } else {
+      log(c.green('   ✅ OpenClaw npm deps look sane'));
+    }
+  } else {
+    log(c.dim('   OpenClaw package directory not found'));
+  }
+
   // --- Local Issue Detection ---
   const issues = [];
 
   const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
   const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
   if (gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) {
-    issues.push({ severity: 'critical', text: 'Gateway is not running' });
+    issues.push({ id: 'gateway-not-running', severity: 'critical', text: 'Gateway is not running' });
   }
   if (/EADDRINUSE/i.test(errorLogs)) {
-    issues.push({ severity: 'critical', text: 'Port conflict detected' });
+    issues.push({ id: 'port-conflict', severity: 'critical', text: 'Port conflict detected' });
   }
 
   const sigtermCount = (gatewayLogTail.match(/signal SIGTERM/gi) || []).length;
   const restartCount = (gatewayLogTail.match(/listening.*PID/gi) || []).length;
   if (config?.update?.auto?.enabled === true && (sigtermCount >= 2 || restartCount >= 3)) {
-    issues.push({ severity: 'critical', text: 'Auto-update causing gateway restart loop' });
+    issues.push({ id: 'auto-update-restart-loop', severity: 'critical', text: 'Auto-update causing gateway restart loop' });
   } else if (config?.update?.auto?.enabled === true) {
-    issues.push({ severity: 'medium', text: 'Auto-update enabled (risk of restart loops)' });
+    issues.push({ id: 'auto-update-enabled-warning', severity: 'medium', text: 'Auto-update enabled (risk of restart loops)' });
   }
 
   const reloadCount = (gatewayLogTail.match(/config change detected.*evaluating reload/gi) || []).length;
   if (reloadCount >= 3) {
-    issues.push({ severity: 'high', text: `Config reload cascade detected (${reloadCount} reloads in recent logs)` });
+    issues.push({ id: 'config-reload-sigterm-cascade', severity: 'high', text: `Config reload cascade detected (${reloadCount} reloads in recent logs)` });
   }
 
   if (serviceHealth.runs > 2 && (serviceHealth.uptimeSeconds || 0) < 300) {
-    issues.push({ severity: 'critical', text: `Gateway crash loop — ${serviceHealth.runs} restarts, only ${serviceHealth.uptimeStr} uptime` });
+    issues.push({ id: 'gateway-extended-downtime', severity: 'critical', text: `Gateway crash loop — ${serviceHealth.runs} restarts, only ${serviceHealth.uptimeStr} uptime` });
   } else if ((serviceHealth.nRestarts || 0) > 0) {
-    issues.push({ severity: 'high', text: `Gateway has restarted ${serviceHealth.nRestarts} time(s) (systemd)` });
+    issues.push({ id: 'gateway-extended-downtime', severity: 'high', text: `Gateway has restarted ${serviceHealth.nRestarts} time(s) (systemd)` });
   }
 
   const handshakeSpam = (stderrLogs.match(/invalid handshake.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
@@ -871,22 +1049,72 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
 
   if (config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true) {
-    issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
+    issues.push({ id: 'mem0-graph-free', severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
   }
   if (!config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled) {
-    issues.push({ severity: 'medium', text: 'Hybrid search not enabled (recommended)' });
+    issues.push({ id: 'no-hybrid-search', severity: 'medium', text: 'Hybrid search not enabled (recommended)' });
   }
   if (!config?.agents?.defaults?.contextPruning) {
-    issues.push({ severity: 'medium', text: 'No context pruning configured' });
+    issues.push({ id: 'no-context-pruning', severity: 'medium', text: 'No context pruning configured' });
   }
   if (!config?.agents?.defaults?.compaction?.memoryFlush?.enabled) {
-    issues.push({ severity: 'medium', text: 'Memory flush not enabled (data loss on compaction)' });
+    issues.push({ id: 'no-memory-flush', severity: 'medium', text: 'Memory flush not enabled (data loss on compaction)' });
+  }
+
+  if (configDiagnostics.bundledPluginLoadPaths?.length) {
+    issues.push({
+      id: 'bundled-plugin-load-path-aliases',
+      severity: 'medium',
+      text: `Bundled plugin aliases in plugins.load.paths (${configDiagnostics.bundledPluginLoadPaths.length})`,
+    });
+  }
+
+  if (config?.plugins?.entries?.acpx?.config?.permissionMode === 'approve-all') {
+    issues.push({
+      id: 'acpx-approve-all-warning',
+      severity: 'medium',
+      text: 'ACPX permissionMode=approve-all (security policy advisory)',
+    });
+  }
+
+  if (codexRuntimeAutoPi(config)) {
+    issues.push({
+      id: 'codex-runtime-auto-pi-warning',
+      severity: 'low',
+      text: 'Codex plugin enabled but openai-codex model refs still route through auto/PI runtime',
+    });
+  }
+
+  if (updateAvailable(updateStatus)) {
+    issues.push({
+      id: 'openclaw-update-available',
+      severity: 'medium',
+      text: 'OpenClaw update available',
+    });
+  }
+
+  if (installDiagnostics.unmetCount > 1) {
+    issues.push({
+      id: 'incomplete-npm-install',
+      severity: 'high',
+      text: `Incomplete OpenClaw npm install (${installDiagnostics.unmetCount} unmet deps)`,
+    });
+  }
+
+  const warmupText = `${gatewayStatus}\n${errorLogs}\n${stderrLogs}\n${gatewayLogTail}`;
+  if (/gateway timeout after 10000ms|Warm-up: launch agents|health.*timed out/i.test(warmupText) &&
+      /acpx|loaded \d+ internal hook handlers|embedded acpx runtime backend registered/i.test(warmupText)) {
+    issues.push({
+      id: 'acpx-startup-warmup-timeout',
+      severity: 'low',
+      text: 'Gateway probe timed out during ACPX/Codex warm-up',
+    });
   }
   if (!hasSoul && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No SOUL.md found (agent has no personality)' });
+    issues.push({ id: 'no-soul', severity: 'low', text: 'No SOUL.md found (agent has no personality)' });
   }
   if (memoryFiles === 0 && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No memory files found' });
+    issues.push({ id: 'no-memory-files', severity: 'low', text: 'No memory files found' });
   }
 
   // --- Build Payload ---
@@ -909,7 +1137,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
       gatewayPid: gatewayPid || 'none',
       gatewayPort,
     },
+    update: updateStatus,
     config: sanitizedConfig,
+    configDiagnostics,
+    install: installDiagnostics,
     logs: {
       errors: errorLogs,
       stderr: stderrLogs,
@@ -1060,7 +1291,7 @@ async function runOneShotMode() {
     const response = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(diagnostic),
+      body: JSON.stringify({ ...diagnostic, _localIssues: issues.map(i => ({ id: i.id, severity: i.severity, text: i.text, title: i.title })) }),
     });
 
     if (!response.ok) {
@@ -1158,7 +1389,7 @@ async function runInteractiveMode() {
   // --- Send diagnostic to server for AI context ---
   try {
     // Include locally-detected issues so server can match them to known fixes
-    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ id: i.id, severity: i.severity, text: i.text, title: i.title })) };
     const resp = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1218,7 +1449,7 @@ async function runInteractiveMode() {
 
         // Re-send to server
         try {
-          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ id: i.id, severity: i.severity, text: i.text, title: i.title })) };
           const resp = await fetch(`${API_URL}/api/diagnose`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1258,7 +1489,7 @@ async function runInteractiveMode() {
           summary = result.summary;
           // Re-send to server for updated known issues
           try {
-            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ id: i.id, severity: i.severity, text: i.text, title: i.title })) };
             const resp = await fetch(`${API_URL}/api/diagnose`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1300,7 +1531,7 @@ async function runInteractiveMode() {
               issues = result.issues;
               summary = result.summary;
               try {
-                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ id: i.id, severity: i.severity, text: i.text, title: i.title })) };
                 const resp = await fetch(`${API_URL}/api/diagnose`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -1489,11 +1720,13 @@ function renderHelp() {
 function mergeIssues(localIssues, serverIssues) {
   const merged = [];
   const seen = new Set();
+  const seenIds = new Set();
 
   // Server issues first (they have fix scripts)
   if (serverIssues) {
     for (const si of serverIssues) {
       merged.push(si);
+      if (si.id) seenIds.add(si.id);
       seen.add((si.title || '').toLowerCase());
     }
   }
@@ -1501,6 +1734,7 @@ function mergeIssues(localIssues, serverIssues) {
   // Then local issues that aren't duplicated
   for (const li of localIssues) {
     const key = (li.text || '').toLowerCase();
+    if (li.id && seenIds.has(li.id)) continue;
     const isDup = [...seen].some(s =>
       s.includes(key.slice(0, 20)) || key.includes(s.slice(0, 20))
     );
