@@ -449,6 +449,13 @@ const LANDING_HTML = `<!DOCTYPE html>
             </div>
           </div>
           <div class="issue-item">
+            <span class="issue-icon">⚡</span>
+            <div>
+              <h4>Native Codex Harness</h4>
+              <p>PI route drift, Codex home mismatches, fast tier gaps, timeout boundaries</p>
+            </div>
+          </div>
+          <div class="issue-item">
             <span class="issue-icon">💸</span>
             <div>
               <h4>Token Waste</h4>

@@ -901,6 +901,17 @@ async function collectDiagnostics({ quiet = false } = {}) {
       codexAppServer.serviceTier !== 'fast') {
     issues.push({ severity: 'low', text: 'Codex app-server fast tier is not enabled' });
   }
+  const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
+  const activeMemoryTimeoutMs = Number(config?.plugins?.entries?.['active-memory']?.config?.timeoutMs ?? NaN);
+  const codexTimeoutSymptoms =
+    /EMBEDDED FALLBACK: Gateway agent failed|gateway closed \((1006|1012)\)|codex app-server startup aborted/i.test(combinedLogs) ||
+    /active-memory:.*status=timeout|lane=.*active-memory.*durationMs=\d+.*codex app-server startup aborted/i.test(combinedLogs);
+  if (codexPluginEnabled &&
+      hasNativeCodexRuntime &&
+      codexTimeoutSymptoms &&
+      (codexRequestTimeoutMs <= 60000 || activeMemoryTimeoutMs <= 60000)) {
+    issues.push({ severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
+  }
 
   const sigtermCount = (gatewayLogTail.match(/signal SIGTERM/gi) || []).length;
   const restartCount = (gatewayLogTail.match(/listening.*PID/gi) || []).length;

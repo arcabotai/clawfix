@@ -30,10 +30,10 @@ bash clawfix.sh                         # Run after reviewing
 ## How It Works
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, and ports
-2. **AI analyzes** — Pattern matching catches 40+ known issues instantly. AI handles novel problems
+2. **AI analyzes** — Pattern matching catches 46+ known issues instantly. AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
-## What It Detects (v0.9.0)
+## What It Detects (v0.11.0)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)
 - 🧠 Memory issues (Mem0 silent failures, missing flush, broken search)
@@ -45,7 +45,7 @@ bash clawfix.sh                         # Run after reviewing
 - 👻 Zombie processes (PID exists but port not listening)
 - 📜 Error log bloat (chrome extension spam, handshake storms)
 - 🐕 Gateway watchdog recommendations (independent health checks)
-- ⚡ Native Codex harness drift (PI route fallback, session-store permissions, shell `CODEX_HOME`, fast tier)
+- ⚡ Native Codex harness drift (PI route fallback, session-store permissions, shell `CODEX_HOME`, fast tier, timeout boundaries)
 - 🧵 Model provider prefix typos (`codex/gpt-5.4` vs `openai-codex/gpt-5.4` — silent 403 + fallback loop)
 - 🎣 Silently-dropped Discord group messages (`groupPolicy=allowlist` with empty `allowFrom`)
 - 🔒 Plaintext secrets in config (flags fields that should be SecretRefs pointing at `~/.openclaw/.env`)

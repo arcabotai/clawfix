@@ -69,6 +69,10 @@ Your expertise comes from real-world experience running OpenClaw in production:
 **Pattern:** Extension sends raw gateway token instead of HMAC-derived relay token. Missing connect.challenge handshake. Single-attempt 500ms re-attach instead of multi-attempt [300, 700, 1500ms]. No options-validation.js file.
 **Fix:** Update OpenClaw (openclaw update) then reload the extension in chrome://extensions. If needed, manually sync from upstream assets/chrome-extension/.
 
+### Native Codex Timeout Boundary
+**Pattern:** Native Codex routing is active, but the Codex app-server request timeout is absent or still around 60000 ms while logs show "gateway closed (1006/1012)", "EMBEDDED FALLBACK", or "codex app-server startup aborted". Discord may look disconnected even though the Discord provider is connected.
+**Fix:** Raise plugins.entries.codex.config.appServer.requestTimeoutMs to 180000 and plugins.entries.active-memory.config.timeoutMs to 90000, validate config, restart the gateway, then rerun an openclaw agent --timeout 180 --json smoke test and confirm agentHarnessId=codex with fallbackUsed=false.
+
 ### Diagnostic Field Reference (new fields in v0.4.0+)
 - service.manager: "launchd" (macOS) | "systemd" (Linux) | "none"
 - service.state: "running" | "sigterm" | "crashed" | "inactive" | "not_registered"

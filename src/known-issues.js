@@ -76,6 +76,10 @@ function codexAppServer(config) {
   return codexPluginEntry(config)?.config?.appServer || {};
 }
 
+function activeMemoryConfig(config) {
+  return config?.plugins?.entries?.['active-memory']?.config || {};
+}
+
 function hasCodexPluginEnabled(config) {
   const entry = codexPluginEntry(config);
   return !!entry && entry.enabled !== false;
@@ -97,6 +101,12 @@ function logText(diag) {
     diag.logs?.raw,
     diag.openclaw?.gatewayStatus,
   ].filter(Boolean).join('\n');
+}
+
+function numericConfigValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
 }
 
 export const KNOWN_ISSUES = [
@@ -359,6 +369,46 @@ openclaw gateway restart
 
 echo "Codex fast service tier enabled."
 echo "Verify with: openclaw gateway status --deep"`,
+  },
+
+  {
+    id: 'native-codex-timeout-boundary',
+    severity: 'high',
+    title: 'Native Codex timeout boundary causes gateway fallback',
+    description: 'Native Codex turns can exceed the older 60 second app-server timeout. When that happens, the gateway websocket closes with 1006/1012 or the CLI reports embedded fallback, which makes Discord look disconnected even though the Discord provider is connected.',
+    detect: (diag) => {
+      const logs = logText(diag);
+      const appTimeout = numericConfigValue(codexAppServer(diag.config).requestTimeoutMs);
+      const memoryTimeout = numericConfigValue(activeMemoryConfig(diag.config).timeoutMs);
+      const lowAppTimeout = appTimeout === null || appTimeout <= 60000;
+      const lowMemoryTimeout = memoryTimeout !== null && memoryTimeout <= 60000;
+      const nativeCodex = hasCodexPluginEnabled(diag.config) && hasNativeCodexRoute(diag.config);
+      const timeoutSymptoms =
+        /EMBEDDED FALLBACK: Gateway agent failed|gateway closed \((1006|1012)\)|codex app-server startup aborted/i.test(logs) ||
+        /active-memory:.*status=timeout|lane=.*active-memory.*durationMs=\d+.*codex app-server startup aborted/i.test(logs);
+
+      return nativeCodex && timeoutSymptoms && (lowAppTimeout || lowMemoryTimeout);
+    },
+    fix: `# Fix: Give native Codex turns enough gateway/app-server time
+CONFIG="$HOME/.openclaw/openclaw.json"
+TS=$(date +%Y%m%d-%H%M%S)
+cp "$CONFIG" "$CONFIG.pre-codex-timeout-$TS"
+
+echo "Raising Codex app-server request timeout to 180 seconds..."
+openclaw config set plugins.entries.codex.config.appServer.requestTimeoutMs 180000 --strict-json
+
+echo "Raising active-memory timeout to 90 seconds..."
+openclaw config set plugins.entries.active-memory.config.timeoutMs 90000 --strict-json
+
+openclaw config validate
+openclaw gateway restart
+
+echo "Native Codex timeout headroom increased."
+echo "Verify:"
+echo "  openclaw gateway status --deep"
+echo "  openclaw channels status --deep"
+echo "  openclaw agent --agent main --message 'reply exactly OK' --thinking low --timeout 180 --json"
+echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
   },
 
   {
