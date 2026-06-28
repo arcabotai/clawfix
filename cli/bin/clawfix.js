@@ -8,6 +8,7 @@
  *        npx clawfix --scan   (one-shot scan, legacy mode)
  */
 
+import { readFileSync } from 'node:fs';
 import { readFile, writeFile, copyFile, rename, access, readdir, stat } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { homedir, platform, arch, release, hostname } from 'node:os';
@@ -17,7 +18,13 @@ import { createInterface } from 'node:readline';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
-const VERSION = '0.8.0';
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return '0.9.0';
+  }
+})();
 
 // --- Flags ---
 const args = process.argv.slice(2);
