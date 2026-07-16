@@ -204,6 +204,16 @@ grandfather anyone using the tool today.
 
 Found a new OpenClaw issue pattern? PRs welcome! Add it to `src/known-issues.js`.
 
+Before opening a PR:
+
+```bash
+npm test
+npm run validate:repairs   # requires ShellCheck
+npm audit --omit=dev
+```
+
+CI runs these checks on Node.js 22 and 24, verifies the npm publish manifest, and builds the production container.
+
 ## License
 
 MIT

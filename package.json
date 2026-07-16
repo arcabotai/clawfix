@@ -8,6 +8,7 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node --test",
+    "validate:repairs": "node scripts/validate-repairs.mjs",
     "lab:create": "node scripts/blaxel-lab.mjs create",
     "lab:provision": "node scripts/blaxel-lab.mjs provision",
     "lab:status": "node scripts/blaxel-lab.mjs status",
