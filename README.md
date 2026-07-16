@@ -105,6 +105,8 @@ curl -s clawfix.dev/fix/sha256
 
 - **Consent required**: Diagnostic data is only sent after you type "y" at the prompt
 - **Fix scripts are not auto-executed**: They're saved to `/tmp` for your review
+- **Repair validation**: Generated scripts must pass blocked-command policy and `bash -n`; hosted builds also run ShellCheck
+- **Feedback is opt-in**: Repair scripts only report outcomes when run with `CLAWFIX_SEND_FEEDBACK=1`
 - **Auto-backup**: Every fix script backs up `openclaw.json` before modifying
 - **Open source**: [100% of the code](https://github.com/arcabotai/clawfix) is public — CLI, server, diagnostic script
 - **npx over curl**: We recommend `npx clawfix` as the primary method because the source is auditable on [npm](https://www.npmjs.com/package/clawfix) and GitHub

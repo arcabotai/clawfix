@@ -8,6 +8,7 @@ import {
   parseAIAnalysis,
   requestAI,
 } from '../ai.js';
+import { validateRepairScript } from '../repair-validator.js';
 import { APP_VERSION } from '../version.js';
 
 export const diagnoseRouter = Router();
@@ -145,7 +146,9 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     const fixId = nanoid(12);
 
     // Combine known fixes + AI fixes into a single script
-    const fixScript = generateFixScript(knownIssues, aiAnalysis, fixId);
+    const generatedFixScript = generateFixScript(knownIssues, aiAnalysis, fixId);
+    const repairValidation = validateRepairScript(generatedFixScript);
+    const fixScript = repairValidation.ok ? generatedFixScript : null;
 
     // Store for later retrieval
     const result = {
@@ -161,7 +164,13 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
       })),
       analysis: aiAnalysis.summary,
       fixScript,
-      aiInsights: aiAnalysis.insights || '',
+      repairValidation,
+      aiInsights: [
+        aiAnalysis.insights,
+        repairValidation.ok
+          ? ''
+          : 'The combined repair script was withheld because it failed local shell validation.',
+      ].filter(Boolean).join(' '),
       model: AI_CONFIG.model,
       systemInfo: {
         os: diagnostic.system?.os ? `${diagnostic.system.os} ${diagnostic.system.osVersion || ''} (${diagnostic.system.arch || ''})` : null,
@@ -310,8 +319,19 @@ ${JSON.stringify(diagnostic, null, 2)}
       },
     });
 
+    const analysis = parseAIAnalysis(response.content);
+    const aiRepairValidation = validateRepairScript(analysis.additionalFixes);
+    if (!aiRepairValidation.ok) {
+      analysis.additionalFixes = '';
+      analysis.insights = [
+        analysis.insights,
+        'The generated repair was withheld because it failed local shell validation.',
+      ].filter(Boolean).join(' ');
+    }
+
     return {
-      ...parseAIAnalysis(response.content),
+      ...analysis,
+      aiRepairValidation,
       usage: response.usage,
     };
   } catch (error) {
@@ -325,7 +345,7 @@ ${JSON.stringify(diagnostic, null, 2)}
   }
 }
 
-function generateFixScript(knownIssues, aiAnalysis, fixId) {
+export function generateFixScript(knownIssues, aiAnalysis, fixId) {
   const lines = [
     '#!/usr/bin/env bash',
     `# ClawFix Fix Script — ${fixId}`,
@@ -368,14 +388,16 @@ function generateFixScript(knownIssues, aiAnalysis, fixId) {
   }
 
   lines.push('echo ""');
-  lines.push('echo "🦞 All fixes applied! Run \'openclaw status\' to verify."');
+  lines.push('echo "🦞 Repair steps completed. Run \'openclaw status\' to verify."');
   lines.push(`echo "Fix ID: ${fixId}"`);
   lines.push('');
   lines.push('# ─── Optional: Tell ClawFix if this worked ───');
-  lines.push('# This helps us improve fixes for everyone. Remove if you prefer.');
-  lines.push(`curl -s -X POST "https://clawfix.dev/api/feedback/${fixId}" \\`);
-  lines.push('  -H "Content-Type: application/json" \\');
-  lines.push('  -d \'{"success": true}\' &>/dev/null || true');
+  lines.push('# Feedback is opt-in. Set CLAWFIX_SEND_FEEDBACK=1 when running this script.');
+  lines.push('if [ "${CLAWFIX_SEND_FEEDBACK:-0}" = "1" ]; then');
+  lines.push(`  curl -s -X POST "https://clawfix.dev/api/feedback/${fixId}" \\`);
+  lines.push('    -H "Content-Type: application/json" \\');
+  lines.push('    -d \'{"success": true}\' &>/dev/null || true');
+  lines.push('fi');
 
   return lines.join('\n');
 }
