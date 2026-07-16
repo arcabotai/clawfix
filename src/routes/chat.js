@@ -1,19 +1,13 @@
 import { Router } from 'express';
 import { getDiagnosis } from '../db.js';
+import { getAIConfig, requestAI } from '../ai.js';
 
 export const chatRouter = Router();
 
 // In-memory conversation store (keyed by conversationId)
 const conversations = new Map();
 
-// Model configuration — same as diagnose.js
-const AI_CONFIG = {
-  provider: process.env.AI_PROVIDER || 'openrouter',
-  model: process.env.AI_MODEL || 'minimax/minimax-m2.5',
-  apiKey: process.env.AI_API_KEY || process.env.OPENROUTER_API_KEY || process.env.ANTHROPIC_API_KEY,
-  baseUrl: process.env.AI_BASE_URL || 'https://openrouter.ai/api/v1',
-  maxTokens: 2000,
-};
+const AI_CONFIG = getAIConfig();
 
 const CHAT_SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
 You're in an interactive debugging session with a user. You have their full diagnostic data available.
@@ -99,35 +93,11 @@ chatRouter.post('/chat', async (req, res) => {
     res.flushHeaders();
 
     // Stream from AI
-    const baseUrl = AI_CONFIG.baseUrl || 'https://openrouter.ai/api/v1';
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${AI_CONFIG.apiKey}`,
-    };
-
-    if (AI_CONFIG.provider === 'openrouter') {
-      headers['HTTP-Referer'] = 'https://clawfix.dev';
-      headers['X-Title'] = 'ClawFix';
-    }
-
-    const aiResponse = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: AI_CONFIG.model,
-        max_tokens: AI_CONFIG.maxTokens,
-        stream: true,
-        messages: aiMessages,
-      }),
+    const aiResponse = await requestAI({
+      config: AI_CONFIG,
+      messages: aiMessages,
+      stream: true,
     });
-
-    if (!aiResponse.ok) {
-      const err = await aiResponse.text();
-      res.write(`data: ${JSON.stringify({ error: `AI error: ${aiResponse.status}` })}\n\n`);
-      res.write('data: [DONE]\n\n');
-      res.end();
-      return;
-    }
 
     // Stream the response chunks
     let fullResponse = '';

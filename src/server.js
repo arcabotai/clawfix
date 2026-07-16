@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { pathToFileURL } from 'node:url';
 import { diagnoseRouter } from './routes/diagnose.js';
 import { healthRouter } from './routes/health.js';
 import { scriptRouter } from './routes/script.js';
@@ -10,8 +11,9 @@ import { webhooksRouter } from './routes/webhooks.js';
 import { chatRouter } from './routes/chat.js';
 import { landingRouter } from './landing.js';
 import { initDB } from './db.js';
+import { APP_VERSION } from './version.js';
 
-const app = express();
+export const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Security & parsing
@@ -53,12 +55,41 @@ app.use('/', scriptRouter);     // GET /fix — diagnostic script
 app.use('/', resultsRouter);    // GET /results/:fixId — web results page
 app.use('/', landingRouter);    // GET / — landing page (must be last)
 
-app.listen(PORT, async () => {
-  console.log(`🦞 ClawFix v${process.env.npm_package_version || '0.1.0'} running on port ${PORT}`);
-  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`   AI: ${process.env.AI_PROVIDER || 'none'} / ${process.env.AI_MODEL || 'pattern-matching only'}`);
-  console.log(`   DB: ${process.env.DATABASE_URL ? 'PostgreSQL' : 'in-memory only'}`);
-  
-  // Initialize database
-  await initDB();
-});
+export function startServer({
+  port = PORT,
+  listen = app.listen.bind(app),
+  initialize = initDB,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    let server;
+
+    server = listen(port, async (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      try {
+        console.log(`🦞 ClawFix v${APP_VERSION} running on port ${port}`);
+        console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`   AI: ${process.env.AI_PROVIDER || 'none'} / ${process.env.AI_MODEL || 'pattern-matching only'}`);
+        console.log(`   DB: ${process.env.DATABASE_URL ? 'PostgreSQL' : 'in-memory only'}`);
+        await initialize();
+        resolve(server);
+      } catch (initializationError) {
+        server?.close?.();
+        reject(initializationError);
+      }
+    });
+  });
+}
+
+const isMainModule = process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMainModule) {
+  startServer().catch((error) => {
+    console.error(`❌ ClawFix failed to start: ${error.message}`);
+    process.exitCode = 1;
+  });
+}

@@ -109,7 +109,32 @@ function numericConfigValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function hasAgentDefaultsTelemetry(diag) {
+  return !!diag.config?.agents?.defaults
+    && typeof diag.config.agents.defaults === 'object';
+}
+
 export const KNOWN_ISSUES = [
+  {
+    id: 'openclaw-node-engine-mismatch',
+    severity: 'critical',
+    title: 'Node.js runtime is incompatible with this OpenClaw release',
+    description: 'OpenClaw is installed, but its CLI refuses to start because the active Node.js version is outside the release\'s supported engine range. npm may install the package with only a warning, leaving a broken runtime behind.',
+    detect: (diag) => (
+      diag.openclaw?.runtimeCompatible === false &&
+      typeof diag.openclaw?.runtimeRequired === 'string' &&
+      diag.openclaw.runtimeRequired.length > 0
+    ),
+    fix: `# Repair guidance: upgrade Node.js with your existing version manager
+echo "Current Node: $(node --version 2>/dev/null || echo unavailable)"
+echo "OpenClaw requirement was reported by the installed CLI."
+echo "Install a supported Node release, open a fresh shell, then verify:"
+echo "  node --version"
+echo "  openclaw --version"
+echo "  openclaw doctor --lint --json"
+echo "No runtime changes were made automatically because Node installation methods vary by host."`,
+  },
+
   {
     id: 'mem0-graph-free',
     severity: 'critical',
@@ -419,11 +444,12 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
     detect: (diag) => {
       const status = diag.openclaw?.gatewayStatus || '';
       // Check for explicit "running" indicators first — ignore config warnings
-      if (/running.*pid|state active|listening/i.test(status)) return false;
+      if (/running.*pid|state active|listening/i.test(status) ||
+          (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;
       return (/not running|failed to start|stopped|inactive/i.test(status)) ||
-             (!diag.openclaw?.gatewayPid && !/warning/i.test(status));
+             diag.openclaw?.processExists === false;
     },
     fix: `# Fix: Restart the gateway
 # Try standard restart first
@@ -497,8 +523,9 @@ echo "✅ Browser ports cleared"`,
     description: 'Your memory search is using basic vector search only. Enabling hybrid search (vector + BM25) significantly improves recall, especially for exact matches like wallet addresses, error codes, and names.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable hybrid search with recommended weights
 jq '.agents.defaults.memorySearch.query.hybrid = {
@@ -518,8 +545,9 @@ echo "✅ Hybrid search enabled (vector 0.6 + BM25 0.4 + temporal decay)"`,
     description: 'Without context pruning, old messages pile up and waste your context window. This makes conversations more expensive and can cause compactions to happen more often.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.contextPruning;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable context pruning (cache-ttl mode, 6 hour TTL)
 jq '.agents.defaults.contextPruning = {
@@ -538,8 +566,9 @@ echo "✅ Context pruning enabled (6h TTL, keeps last 3 assistant messages)"`,
     description: 'When your context window fills up and compaction happens, important information will be lost. Memory flush automatically saves a summary before compacting.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.compaction?.memoryFlush?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable memory flush with smart prompt
 jq '.agents.defaults.compaction = {
@@ -560,7 +589,7 @@ echo "✅ Memory flush enabled — context compaction will save summaries"`,
     severity: 'low',
     title: 'No SOUL.md found',
     description: 'SOUL.md defines your agent\'s personality and behavior. Without it, your agent is generic and lacks character.',
-    detect: (diag) => !diag.workspace?.hasSoul,
+    detect: (diag) => diag.workspace?.hasSoul === false && diag.workspace?.exists !== false,
     fix: `# Fix: Create a basic SOUL.md
 WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
 cat > "$WORKSPACE/SOUL.md" << 'SOUL'
@@ -686,9 +715,10 @@ find "$WORKSPACE" -name "*.md" -size +10k -not -path "*/node_modules/*" 2>/dev/n
     description: 'Your context compaction has no reserveTokensFloor configured. When the context window fills up, important context may be lost without warning.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         const compaction = diag.config?.agents?.defaults?.compaction;
         return !compaction?.reserveTokensFloor && !compaction?.mode;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Set compaction safeguards
 jq '.agents.defaults.compaction.mode = "safeguard" |
@@ -703,7 +733,7 @@ echo "✅ Compaction safeguard enabled (32K token reserve)"`,
     severity: 'low',
     title: 'No AGENTS.md found',
     description: 'AGENTS.md provides instructions for your agent on how to use the workspace, handle memory, and behave in different contexts. Without it, your agent lacks operational guidance.',
-    detect: (diag) => !diag.workspace?.hasAgents,
+    detect: (diag) => diag.workspace?.hasAgents === false && diag.workspace?.exists !== false,
     fix: `# Fix: Create a basic AGENTS.md
 WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
 cat > "$WORKSPACE/AGENTS.md" << 'EOF'
@@ -749,8 +779,9 @@ echo "✅ Heartbeat model set to Sonnet (cheaper than default)"`,
     description: 'Enabling session transcript indexing improves memory recall by making past conversation content searchable.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.memorySearch?.sessionTranscripts?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable session transcript indexing
 jq '.agents.defaults.memorySearch.sessionTranscripts.enabled = true' \\

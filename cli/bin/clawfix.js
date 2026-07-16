@@ -15,6 +15,7 @@ import { homedir, platform, arch, release, hostname } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import { collectNativeDoctor, collectOpenClawVersion } from './native-diagnostics.js';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
@@ -33,7 +34,8 @@ const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
 const AUTO_SEND = process.env.CLAWFIX_AUTO === '1' || args.includes('--yes') || args.includes('-y');
 const SHOW_HELP = args.includes('--help') || args.includes('-h');
 const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
-const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || DRY_RUN;
+const JSON_ONLY = args.includes('--json');
+const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || DRY_RUN || JSON_ONLY;
 
 // --- Colors ---
 const c = {
@@ -623,10 +625,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const npmVersion = run('npm --version');
   const hostHash = hashStr(hostname());
 
-  let ocVersion = '';
-  if (openclawBin) {
-    ocVersion = run(`"${openclawBin}" --version`);
-  }
+  const versionProbe = openclawBin
+    ? collectOpenClawVersion(openclawBin)
+    : { version: '', runtimeCompatible: false, error: 'OpenClaw binary not found' };
+  const ocVersion = versionProbe.version;
 
   log(`   OS: ${osName} ${osVersion} (${osArch})`);
   log(`   Node: ${nodeVersion}`);
@@ -832,6 +834,19 @@ async function collectDiagnostics({ quiet = false } = {}) {
   checkPort(18800, 'browser CDP');
   checkPort(18791, 'browser control');
 
+  // --- Native OpenClaw Doctor (read-only structured findings) ---
+  log('');
+  log(c.blue('🩺 Running OpenClaw native health checks...'));
+  const nativeDoctor = openclawBin
+    ? collectNativeDoctor(openclawBin)
+    : { available: false, checksRun: 0, checksSkipped: 0, findings: [] };
+  if (nativeDoctor.available) {
+    const icon = nativeDoctor.findings.length > 0 ? c.yellow('⚠️') : c.green('✅');
+    log(`   ${icon} Doctor: ${nativeDoctor.checksRun} checks, ${nativeDoctor.findings.length} relevant finding(s)`);
+  } else {
+    log(c.dim('   Native Doctor JSON unavailable on this OpenClaw version'));
+  }
+
   // --- Local Issue Detection ---
   const issues = [];
   const activeModelRefs = [];
@@ -887,6 +902,13 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
   if (/EADDRINUSE/i.test(errorLogs)) {
     issues.push({ severity: 'critical', text: 'Port conflict detected' });
+  }
+  if (versionProbe.runtimeCompatible === false && versionProbe.runtimeRequired) {
+    issues.push({
+      severity: 'critical',
+      text: `OpenClaw requires Node ${versionProbe.runtimeRequired} (current: ${versionProbe.runtimeCurrent || nodeVersion})`,
+      source: 'openclaw-runtime',
+    });
   }
   if ((config?.plugins?.load?.paths || []).some(path => (
     typeof path === 'string' && /openclaw\/dist\/extensions\//.test(path)
@@ -956,13 +978,13 @@ async function collectDiagnostics({ quiet = false } = {}) {
   if (config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
   }
-  if (!config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled) {
+  if (config?.agents?.defaults && !config.agents.defaults.memorySearch?.query?.hybrid?.enabled) {
     issues.push({ severity: 'medium', text: 'Hybrid search not enabled (recommended)' });
   }
-  if (!config?.agents?.defaults?.contextPruning) {
+  if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
     issues.push({ severity: 'medium', text: 'No context pruning configured' });
   }
-  if (!config?.agents?.defaults?.compaction?.memoryFlush?.enabled) {
+  if (config?.agents?.defaults && !config.agents.defaults.compaction?.memoryFlush?.enabled) {
     issues.push({ severity: 'medium', text: 'Memory flush not enabled (data loss on compaction)' });
   }
   if (!hasSoul && workspaceDir) {
@@ -970,6 +992,22 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
   if (memoryFiles === 0 && workspaceDir) {
     issues.push({ severity: 'low', text: 'No memory files found' });
+  }
+
+  for (const finding of nativeDoctor.findings) {
+    const duplicate = issues.some(issue => (
+      issue.nativeCheckId === finding.checkId ||
+      issue.text.toLowerCase() === finding.message.toLowerCase()
+    ));
+    if (duplicate) continue;
+    issues.push({
+      severity: finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.message,
+      source: 'openclaw-doctor',
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
   }
 
   // --- Build Payload ---
@@ -988,11 +1026,18 @@ async function collectDiagnostics({ quiet = false } = {}) {
       version: ocVersion || 'unknown',
       binary: openclawBin || 'not found',
       configDir: openclawDir || 'not found',
+      configExists: config !== null,
       gatewayStatus,
       gatewayPid: gatewayPid || 'none',
       gatewayPort,
+      processExists: Boolean(gatewayPid),
+      portListening: portResults[gatewayPort] === true,
+      runtimeCompatible: versionProbe.runtimeCompatible,
+      runtimeRequired: versionProbe.runtimeRequired,
+      runtimeCurrent: versionProbe.runtimeCurrent,
     },
     config: sanitizedConfig,
+    nativeDoctor,
     logs: {
       errors: errorLogs,
       stderr: stderrLogs,
@@ -1003,6 +1048,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
     service: serviceHealth,
     workspace: {
       path: workspaceDir || 'unknown',
+      exists: Boolean(workspaceDir && await exists(workspaceDir)),
       mdFiles,
       memoryFiles,
       hasSoul,
@@ -1044,6 +1090,21 @@ async function collectDiagnostics({ quiet = false } = {}) {
 // One-shot mode (legacy: --scan, --dry-run, --no-interactive)
 // ============================================================
 async function runOneShotMode() {
+  if (JSON_ONLY) {
+    const result = await collectDiagnostics({ quiet: true });
+    if (result.error) {
+      console.log(JSON.stringify({ ok: false, error: result.error }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify({
+      ok: true,
+      diagnostic: result.diagnostic,
+      issues: result.issues,
+    }, null, 2));
+    return;
+  }
+
   console.log('');
   console.log(c.cyan(`🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic`));
   if (DRY_RUN) console.log(c.yellow('   🔍 DRY RUN MODE — nothing will be sent'));
@@ -1774,6 +1835,7 @@ Modes:
 
 Options:
   --dry-run, -n    Scan locally only — shows what would be collected, sends nothing
+  --json           Machine-readable local scan; sends nothing
   --show-data, -d  Display the full diagnostic payload before asking to send
   --yes, -y        Skip confirmation prompt and send automatically
   --version, -v    Show version
