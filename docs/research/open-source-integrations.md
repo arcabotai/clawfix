@@ -113,7 +113,7 @@ The model should receive this normalized evidence, not raw logs by default. Raw 
 
 ## Recommended implementation order
 
-1. Finish the native Doctor/version adapter and add schema/status/policy collectors.
+1. ✅ Add native Doctor, version, config validation, status, and security-audit collectors. Keep policy collection optional because older releases may not expose the plugin command.
 2. Change ClawFix results to distinguish `failure`, `warning`, and `optimization` instead of counting all recommendations as issues.
 3. Add ShellCheck and Bats to the repair-generation gate and the Blaxel scenario matrix.
 4. Add OSV-Scanner and Gitleaks as opt-in local collectors with redacted normalized output.

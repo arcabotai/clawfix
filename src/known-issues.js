@@ -446,6 +446,7 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
       // Check for explicit "running" indicators first — ignore config warnings
       if (/running.*pid|state active|listening/i.test(status) ||
           (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) return false;
+      if (diag.ports?.gateway?.listening === true && diag.nativeStatus?.gateway?.reachable === false) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;
       return (/not running|failed to start|stopped|inactive/i.test(status)) ||
@@ -482,18 +483,18 @@ curl -sf "http://localhost:\$PORT/health" && echo "✅ Gateway is healthy" || ec
     description: 'The gateway port is already in use by another process. This prevents OpenClaw from starting.',
     detect: (diag) => {
       const logs = diag.logs?.errors || '';
-      return /EADDRINUSE/i.test(logs);
+      return /EADDRINUSE/i.test(logs) || (
+        diag.ports?.gateway?.listening === true &&
+        diag.nativeStatus?.gateway?.reachable === false
+      );
     },
-    fix: `# Fix: Kill the process using the gateway port and restart
+    fix: `# Review: identify the process using the gateway port before stopping anything
 PORT=$(jq -r '.gateway.port // 18789' ~/.openclaw/openclaw.json)
-PID=$(lsof -ti :$PORT 2>/dev/null)
-if [ -n "$PID" ]; then
-  echo "Killing process $PID on port $PORT"
-  kill $PID
-  sleep 1
-fi
-openclaw gateway restart
-echo "✅ Port conflict resolved"`,
+echo "Listener on port $PORT:"
+lsof -nP -iTCP:$PORT -sTCP:LISTEN 2>/dev/null || ss -ltnp "sport = :$PORT" 2>/dev/null
+echo
+echo "No process was stopped. Confirm the owner, stop it through its service manager,"
+echo "then run: openclaw gateway restart"`,
   },
 
   {

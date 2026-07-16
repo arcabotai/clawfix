@@ -11,7 +11,11 @@ import {
 import { detectIssues } from '../src/known-issues.js';
 import { startServer } from '../src/server.js';
 import {
+  collectListeningPort,
+  collectNativeConfigValidation,
   collectNativeDoctor,
+  collectNativeSecurityAudit,
+  collectNativeStatus,
   collectOpenClawVersion,
   redactDiagnosticText,
 } from '../cli/bin/native-diagnostics.js';
@@ -159,6 +163,103 @@ test('native diagnostic text redacts credentials embedded in findings', () => {
   assert.equal(redacted.includes('sk-or-v1'), false);
   assert.equal(redacted.includes('ghp_'), false);
   assert.match(redacted, /token=\*\*\*REDACTED\*\*\*/);
+});
+
+test('native config validation preserves structured schema errors', () => {
+  const result = collectNativeConfigValidation('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    stdout: JSON.stringify({
+      valid: false,
+      path: `${process.env.HOME}/.openclaw/openclaw.json`,
+      warnings: [],
+      errors: [{ kind: 'schema', path: 'gateway.badKey', message: 'Unknown key' }],
+    }),
+    stderr: '',
+  }));
+
+  assert.equal(result.available, true);
+  assert.equal(result.valid, false);
+  assert.equal(result.path.startsWith('~'), true);
+  assert.deepEqual(result.errors[0], {
+    kind: 'schema',
+    path: 'gateway.badKey',
+    message: 'Unknown key',
+  });
+});
+
+test('native status keeps an allowlisted runtime summary only', () => {
+  const result = collectNativeStatus('/usr/local/bin/openclaw', () => ({
+    status: 0,
+    stdout: JSON.stringify({
+      runtimeVersion: '2026.6.11',
+      gateway: {
+        mode: 'local',
+        reachable: false,
+        error: 'token=sk-or-v1-abcdefghijklmnopqrstuvwxyz connect refused',
+      },
+      gatewayService: { installed: false, loaded: false, runtime: { status: 'unknown' } },
+      tasks: { total: 3, active: 1, failures: 1 },
+      sessions: { paths: ['/private/user/session.json'], recent: [{ secret: 'private' }] },
+      secretDiagnostics: [{ message: 'secret unavailable' }],
+    }),
+    stderr: '',
+  }));
+
+  assert.equal(result.gateway.reachable, false);
+  assert.equal(result.gateway.error.includes('sk-or-v1'), false);
+  assert.equal(result.tasks.failures, 1);
+  assert.equal(result.secretDiagnosticCount, 1);
+  assert.equal('sessions' in result, false);
+});
+
+test('native security audit normalizes and redacts findings', () => {
+  const result = collectNativeSecurityAudit('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    stdout: JSON.stringify({
+      summary: { critical: 1, warn: 0, info: 0 },
+      findings: [{
+        checkId: 'fs.config.perms_world_readable',
+        severity: 'critical',
+        title: 'Config file is world-readable',
+        detail: 'api_key=ghp_abcdefghijklmnopqrstuvwxyz was readable',
+        remediation: 'chmod 600 ~/.openclaw/openclaw.json',
+      }],
+    }),
+    stderr: '',
+  }));
+
+  assert.equal(result.summary.critical, 1);
+  assert.equal(result.findings[0].source, 'openclaw-security');
+  assert.equal(result.findings[0].message.includes('ghp_'), false);
+});
+
+test('port evidence identifies the listener without shell interpolation', () => {
+  let receivedArgs;
+  const result = collectListeningPort(18789, (_command, args) => {
+    receivedArgs = args;
+    return {
+      status: 0,
+      stdout: 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nnode 4242 user 20u IPv4 1 0t0 TCP 127.0.0.1:18789 (LISTEN)\n',
+      stderr: '',
+    };
+  });
+
+  assert.deepEqual(receivedArgs, ['-nP', '-iTCP:18789', '-sTCP:LISTEN']);
+  assert.equal(result.listening, true);
+  assert.equal(result.process, 'node');
+  assert.equal(result.pid, 4242);
+  assert.equal(result.endpoint, '127.0.0.1:18789');
+});
+
+test('port conflict detection uses listener and native reachability evidence', () => {
+  const issues = detectIssues({
+    openclaw: { processExists: false, portListening: true, gatewayStatus: 'unknown' },
+    ports: { gateway: { listening: true, process: 'node', pid: 4242 } },
+    nativeStatus: { gateway: { reachable: false } },
+  });
+
+  assert.ok(issues.some(issue => issue.id === 'port-conflict'));
+  assert.equal(issues.some(issue => issue.id === 'gateway-not-running'), false);
 });
 
 test('server startup rejects bind failures instead of reporting success', async () => {

@@ -11,6 +11,7 @@
     "lab:create": "node scripts/blaxel-lab.mjs create",
     "lab:provision": "node scripts/blaxel-lab.mjs provision",
     "lab:status": "node scripts/blaxel-lab.mjs status",
+    "lab:native": "node scripts/blaxel-native-evidence.mjs",
     "lab:stop": "node scripts/blaxel-lab.mjs stop",
     "lab:scenarios": "node scripts/blaxel-scenarios.mjs all"
   },

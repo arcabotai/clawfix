@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { homedir } from 'node:os';
 
 function cleanText(value, maxLength = 1000) {
   return String(value || '')
@@ -13,6 +14,40 @@ export function redactDiagnosticText(value) {
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/gi, '***REDACTED***')
     .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, '***REDACTED***')
     .replace(/((?:api[_-]?key|access[_-]?token|token|secret|password|jwt)\s*[=:]\s*)([^\s,;]+)/gi, '$1***REDACTED***');
+}
+
+function cleanPath(value) {
+  return redactDiagnosticText(cleanText(value, 500)).replaceAll(homedir(), '~');
+}
+
+function runJsonCommand(openclawBin, args, spawn, timeout = 30_000) {
+  const result = spawn(openclawBin, args, {
+    encoding: 'utf8',
+    timeout,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout = cleanText(result.stdout, 500_000);
+  const stderr = redactDiagnosticText(cleanText(result.stderr || result.error?.message, 2000));
+
+  try {
+    return { result, parsed: JSON.parse(stdout), error: stderr };
+  } catch {
+    return { result, parsed: null, error: stderr || (stdout ? 'Command returned invalid JSON' : '') };
+  }
+}
+
+function normalizeFinding(finding, source) {
+  return {
+    checkId: cleanText(finding.checkId, 200),
+    source,
+    severity: ['info', 'warning', 'warn', 'error', 'critical'].includes(finding.severity)
+      ? finding.severity
+      : 'warning',
+    title: redactDiagnosticText(cleanText(finding.title, 500)) || null,
+    message: redactDiagnosticText(cleanText(finding.message || finding.detail, 2000)),
+    path: cleanPath(finding.path) || null,
+    fixHint: redactDiagnosticText(cleanText(finding.fixHint || finding.remediation, 2000)) || null,
+  };
 }
 
 export function collectOpenClawVersion(openclawBin, spawn = spawnSync) {
@@ -93,4 +128,160 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
       findings: [],
     };
   }
+}
+
+export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
+  const { result, parsed, error } = runJsonCommand(
+    openclawBin,
+    ['config', 'validate', '--json'],
+    spawn,
+    20_000,
+  );
+  if (!parsed) {
+    return {
+      available: false,
+      exitCode: result.status,
+      valid: null,
+      warnings: [],
+      errors: error ? [error] : [],
+    };
+  }
+
+  const rawErrors = Array.isArray(parsed.errors) ? parsed.errors : [];
+  const rawWarnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
+  const valid = typeof parsed.valid === 'boolean'
+    ? parsed.valid
+    : typeof parsed.ok === 'boolean' ? parsed.ok : null;
+  return {
+    available: true,
+    exitCode: result.status,
+    valid,
+    path: cleanPath(parsed.path || parsed.configPath) || null,
+    warnings: rawWarnings.slice(0, 50).map(item => (
+      redactDiagnosticText(cleanText(item?.message || item, 2000))
+    )),
+    errors: rawErrors.slice(0, 50).map(item => ({
+      kind: cleanText(item?.kind, 100) || 'schema',
+      path: cleanPath(item?.path || item?.ref) || null,
+      message: redactDiagnosticText(cleanText(item?.message || item, 2000)),
+    })),
+  };
+}
+
+export function collectNativeStatus(openclawBin, spawn = spawnSync) {
+  const { result, parsed, error } = runJsonCommand(openclawBin, ['status', '--json'], spawn, 30_000);
+  if (!parsed) {
+    return { available: false, exitCode: result.status, error };
+  }
+
+  return {
+    available: true,
+    exitCode: result.status,
+    runtimeVersion: cleanText(parsed.runtimeVersion, 100) || null,
+    gateway: {
+      mode: cleanText(parsed.gateway?.mode, 50) || null,
+      reachable: typeof parsed.gateway?.reachable === 'boolean'
+        ? parsed.gateway.reachable
+        : null,
+      misconfigured: parsed.gateway?.misconfigured === true,
+      connectLatencyMs: Number.isFinite(parsed.gateway?.connectLatencyMs)
+        ? parsed.gateway.connectLatencyMs
+        : null,
+      error: redactDiagnosticText(cleanText(parsed.gateway?.error, 1000)) || null,
+      authWarning: redactDiagnosticText(cleanText(parsed.gateway?.authWarning, 1000)) || null,
+    },
+    gatewayService: {
+      label: cleanText(parsed.gatewayService?.label, 100) || null,
+      installed: parsed.gatewayService?.installed === true,
+      loaded: parsed.gatewayService?.loaded === true,
+      externallyManaged: parsed.gatewayService?.externallyManaged === true,
+      status: cleanText(parsed.gatewayService?.runtime?.status, 100) || null,
+      detail: redactDiagnosticText(cleanText(parsed.gatewayService?.runtime?.detail, 1000)) || null,
+    },
+    tasks: {
+      total: Number.isSafeInteger(parsed.tasks?.total) ? parsed.tasks.total : 0,
+      active: Number.isSafeInteger(parsed.tasks?.active) ? parsed.tasks.active : 0,
+      failures: Number.isSafeInteger(parsed.tasks?.failures) ? parsed.tasks.failures : 0,
+    },
+    secretDiagnosticCount: Array.isArray(parsed.secretDiagnostics)
+      ? parsed.secretDiagnostics.length
+      : 0,
+  };
+}
+
+export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
+  const { result, parsed, error } = runJsonCommand(
+    openclawBin,
+    ['security', 'audit', '--json'],
+    spawn,
+    30_000,
+  );
+  if (!parsed) {
+    return { available: false, exitCode: result.status, error, findings: [] };
+  }
+
+  return {
+    available: true,
+    exitCode: result.status,
+    summary: {
+      critical: Number.isSafeInteger(parsed.summary?.critical) ? parsed.summary.critical : 0,
+      warning: Number.isSafeInteger(parsed.summary?.warn)
+        ? parsed.summary.warn
+        : Number.isSafeInteger(parsed.summary?.warning) ? parsed.summary.warning : 0,
+      info: Number.isSafeInteger(parsed.summary?.info) ? parsed.summary.info : 0,
+    },
+    findings: Array.isArray(parsed.findings)
+      ? parsed.findings.slice(0, 100).map(finding => normalizeFinding(finding, 'openclaw-security'))
+      : [],
+    suppressedFindingCount: Array.isArray(parsed.suppressedFindings)
+      ? parsed.suppressedFindings.length
+      : 0,
+    secretDiagnosticCount: Array.isArray(parsed.secretDiagnostics)
+      ? parsed.secretDiagnostics.length
+      : 0,
+  };
+}
+
+export function collectListeningPort(port, spawn = spawnSync) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new TypeError('port must be an integer between 1 and 65535');
+  }
+
+  const lsof = spawn('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const lsofLines = cleanText(lsof.stdout, 20_000).split('\n').filter(Boolean);
+  if (lsof.status === 0 && lsofLines.length > 1) {
+    const fields = lsofLines[1].trim().split(/\s+/);
+    const endpoint = lsofLines[1].match(/\b(?:TCP|UDP)\s+(\S+)/)?.[1];
+    return {
+      listening: true,
+      process: cleanText(fields[0], 100) || null,
+      pid: Number.parseInt(fields[1], 10) || null,
+      endpoint: cleanText(endpoint, 200) || null,
+      collector: 'lsof',
+    };
+  }
+
+  const ss = spawn('ss', ['-ltnp', `sport = :${port}`], {
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const ssOutput = cleanText(ss.stdout, 20_000);
+  const processMatch = ssOutput.match(/users:\(\(\"([^\"]+)\",pid=(\d+)/);
+  const endpointMatch = ssOutput.match(/LISTEN\s+\d+\s+\d+\s+(\S+):\d+/);
+  if (ss.status === 0 && /\bLISTEN\b/.test(ssOutput)) {
+    return {
+      listening: true,
+      process: cleanText(processMatch?.[1], 100) || null,
+      pid: Number.parseInt(processMatch?.[2], 10) || null,
+      endpoint: cleanText(endpointMatch?.[1], 200) || null,
+      collector: 'ss',
+    };
+  }
+
+  return { listening: false, process: null, pid: null, endpoint: null, collector: null };
 }

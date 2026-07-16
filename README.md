@@ -29,8 +29,8 @@ bash clawfix.sh                         # Run after reviewing
 
 ## How It Works
 
-1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, and ports
-2. **Evidence is correlated** — OpenClaw Doctor and 49 deterministic patterns catch known failures before AI handles novel problems
+1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, ports, and listener ownership
+2. **Evidence is correlated** — Native config validation, status, Doctor, security audit, and 49 deterministic patterns run before AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
 ## What It Detects (49 deterministic patterns)
@@ -56,6 +56,8 @@ bash clawfix.sh                         # Run after reviewing
 - 📦 LaunchAgent plist carrying stale managed-env secrets after a `.env` migration (macOS)
 - 🧩 OpenClaw/Node.js engine incompatibility, including failed `openclaw --version` output
 - 🩺 Native OpenClaw Doctor findings from its read-only structured lint mode
+- 🛡️ Native OpenClaw security-audit findings with credential-redacted evidence
+- 🚧 Gateway port ownership when another process blocks OpenClaw startup
 
 ## Security & Transparency
 
@@ -67,8 +69,10 @@ We take security seriously. ClawFix is designed around the principle of **inform
 |----------|------|-----------|
 | System | OS type, version, architecture | No |
 | Runtime | Node.js version, npm version | No |
-| OpenClaw | Version, runtime compatibility, gateway status, port config | No |
+| OpenClaw | Version, runtime compatibility, schema validity, allowlisted gateway/service status | No |
 | Doctor | Check ID, severity, message, config path, and fix hint (up to 100 findings) | Potentially low risk; inspect with `--dry-run` |
+| Security audit | Summary, redacted finding text, remediation hint, suppression count | Potentially low risk; inspect with `--dry-run` |
+| Ports | Listening state, process name, PID, and endpoint | Low risk |
 | Codex | Expected OpenClaw Codex home path and shell-match booleans | No |
 | Config | Structure only — **all secrets redacted** | Redacted |
 | Logs | Last 30 lines matching error/warn patterns | Low risk |

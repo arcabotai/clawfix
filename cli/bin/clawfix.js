@@ -15,7 +15,14 @@ import { homedir, platform, arch, release, hostname } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
-import { collectNativeDoctor, collectOpenClawVersion } from './native-diagnostics.js';
+import {
+  collectListeningPort,
+  collectNativeConfigValidation,
+  collectNativeDoctor,
+  collectNativeSecurityAudit,
+  collectNativeStatus,
+  collectOpenClawVersion,
+} from './native-diagnostics.js';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
@@ -208,20 +215,12 @@ const BUILTIN_FIXES = {
   },
 
   'port-conflict': {
-    description: 'Kill process on gateway port and restart',
+    description: 'Review the process occupying the gateway port',
     risk: 'medium',
-    needsConfig: true,
-    needsRestart: true,
-    informational: false,
-    apply: (config) => {
-      const port = config?.gateway?.port || 18789;
-      const pid = run(`lsof -ti :${port} 2>/dev/null`);
-      if (pid) {
-        try { execSync(`kill ${pid.split('\\n')[0]}`, { timeout: 5000 }); } catch {}
-        return { changes: [`Killed process ${pid.split('\\n')[0]} on port ${port}`] };
-      }
-      return { changes: [`No process found on port ${port}`] };
-    }
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['No process stopped; review the listener evidence first'] })
   },
 
   'mem0-graph-free': {
@@ -816,11 +815,15 @@ async function collectDiagnostics({ quiet = false } = {}) {
   log(c.blue('🔗 Checking port availability...'));
 
   const portResults = {};
+  const portEvidence = {};
   const checkPort = (port, name) => {
-    const inUse = run(`lsof -i :${port} 2>/dev/null | grep LISTEN`) ||
-                  run(`ss -tlnp 2>/dev/null | grep :${port}`);
-    if (inUse) {
-      log(c.yellow(`   ⚠️  Port ${port} (${name}) — IN USE`));
+    const evidence = collectListeningPort(port);
+    portEvidence[port] = evidence;
+    if (evidence.listening) {
+      const owner = evidence.process && evidence.pid
+        ? ` by ${evidence.process} (PID ${evidence.pid})`
+        : '';
+      log(c.yellow(`   ⚠️  Port ${port} (${name}) — IN USE${owner}`));
       portResults[port] = true;
       return true;
     } else {
@@ -845,6 +848,35 @@ async function collectDiagnostics({ quiet = false } = {}) {
     log(`   ${icon} Doctor: ${nativeDoctor.checksRun} checks, ${nativeDoctor.findings.length} relevant finding(s)`);
   } else {
     log(c.dim('   Native Doctor JSON unavailable on this OpenClaw version'));
+  }
+
+  const canRunNativeEvidence = Boolean(openclawBin && versionProbe.runtimeCompatible);
+  const nativeConfig = canRunNativeEvidence
+    ? collectNativeConfigValidation(openclawBin)
+    : { available: false, valid: null, warnings: [], errors: [] };
+  const nativeStatus = canRunNativeEvidence
+    ? collectNativeStatus(openclawBin)
+    : { available: false };
+  const nativeSecurity = canRunNativeEvidence
+    ? collectNativeSecurityAudit(openclawBin)
+    : { available: false, findings: [] };
+
+  if (nativeConfig.available) {
+    const icon = nativeConfig.valid === true ? c.green('✅') :
+      nativeConfig.valid === false ? c.red('❌') : c.yellow('⚠️');
+    const label = nativeConfig.valid === true ? 'valid' :
+      nativeConfig.valid === false ? 'invalid' : 'unknown';
+    log(`   ${icon} Config schema: ${label}`);
+  }
+  if (nativeStatus.available) {
+    const icon = nativeStatus.gateway.reachable ? c.green('✅') : c.yellow('⚠️');
+    log(`   ${icon} Gateway reachability: ${nativeStatus.gateway.reachable ? 'reachable' : 'unreachable'}`);
+  }
+  if (nativeSecurity.available) {
+    const critical = nativeSecurity.summary.critical;
+    const warning = nativeSecurity.summary.warning;
+    const icon = critical > 0 ? c.red('❌') : warning > 0 ? c.yellow('⚠️') : c.green('✅');
+    log(`   ${icon} Security audit: ${critical} critical, ${warning} warning`);
   }
 
   // --- Local Issue Detection ---
@@ -994,6 +1026,58 @@ async function collectDiagnostics({ quiet = false } = {}) {
     issues.push({ severity: 'low', text: 'No memory files found' });
   }
 
+  if (nativeConfig.available && nativeConfig.valid === false) {
+    issues.push({
+      severity: 'high',
+      text: nativeConfig.errors[0]?.message || 'OpenClaw config schema validation failed',
+      source: 'openclaw-config',
+      nativeCheckId: 'config/schema-invalid',
+      path: nativeConfig.errors[0]?.path || null,
+    });
+  }
+
+  if (
+    nativeStatus.available &&
+    nativeStatus.gateway.reachable === false &&
+    !issues.some(issue => /gateway.*not running|gateway.*unreachable/i.test(issue.text))
+  ) {
+    issues.push({
+      severity: 'critical',
+      text: nativeStatus.gateway.error || 'OpenClaw gateway is unreachable',
+      source: 'openclaw-status',
+      nativeCheckId: 'status/gateway-unreachable',
+    });
+  }
+
+  if (
+    portEvidence[gatewayPort]?.listening &&
+    nativeStatus.available &&
+    nativeStatus.gateway.reachable === false
+  ) {
+    const owner = portEvidence[gatewayPort].process;
+    const pid = portEvidence[gatewayPort].pid;
+    issues.push({
+      severity: 'critical',
+      text: `Gateway port ${gatewayPort} is occupied${owner ? ` by ${owner}` : ''}${pid ? ` (PID ${pid})` : ''}, but OpenClaw cannot reach it`,
+      source: 'clawfix-port-probe',
+      nativeCheckId: 'runtime/gateway-port-conflict',
+    });
+  }
+
+  for (const finding of nativeSecurity.findings) {
+    if (finding.severity === 'info') continue;
+    issues.push({
+      severity: finding.severity === 'critical' ? 'critical' :
+        finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.title || finding.message,
+      description: finding.message,
+      source: finding.source,
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
+  }
+
   for (const finding of nativeDoctor.findings) {
     const duplicate = issues.some(issue => (
       issue.nativeCheckId === finding.checkId ||
@@ -1037,7 +1121,15 @@ async function collectDiagnostics({ quiet = false } = {}) {
       runtimeCurrent: versionProbe.runtimeCurrent,
     },
     config: sanitizedConfig,
+    nativeConfig,
     nativeDoctor,
+    nativeStatus,
+    nativeSecurity,
+    ports: {
+      gateway: { port: gatewayPort, ...portEvidence[gatewayPort] },
+      browserCdp: { port: 18800, ...portEvidence[18800] },
+      browserControl: { port: 18791, ...portEvidence[18791] },
+    },
     logs: {
       errors: errorLogs,
       stderr: stderrLogs,
