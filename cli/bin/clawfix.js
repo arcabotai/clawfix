@@ -960,7 +960,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
   if (codexPluginEnabled &&
       (hasNativeCodexRuntime || activeModelRefs.some(ref => String(ref).startsWith('openai/'))) &&
       codexAppServer.serviceTier !== 'fast') {
-    issues.push({ severity: 'low', text: 'Codex app-server fast tier is not enabled' });
+    issues.push({ severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
   }
   const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
   const activeMemoryTimeoutMs = Number(config?.plugins?.entries?.['active-memory']?.config?.timeoutMs ?? NaN);
@@ -1011,19 +1011,19 @@ async function collectDiagnostics({ quiet = false } = {}) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
   }
   if (config?.agents?.defaults && !config.agents.defaults.memorySearch?.query?.hybrid?.enabled) {
-    issues.push({ severity: 'medium', text: 'Hybrid search not enabled (recommended)' });
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)' });
   }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
-    issues.push({ severity: 'medium', text: 'No context pruning configured' });
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
   }
   if (config?.agents?.defaults && !config.agents.defaults.compaction?.memoryFlush?.enabled) {
-    issues.push({ severity: 'medium', text: 'Memory flush not enabled (data loss on compaction)' });
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Memory flush not enabled (data loss on compaction)' });
   }
   if (!hasSoul && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No SOUL.md found (agent has no personality)' });
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
   }
   if (memoryFiles === 0 && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No memory files found' });
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No memory files found' });
   }
 
   if (nativeConfig.available && nativeConfig.valid === false) {
@@ -1092,6 +1092,14 @@ async function collectDiagnostics({ quiet = false } = {}) {
       path: finding.path,
       fixHint: finding.fixHint,
     });
+  }
+
+  for (const issue of issues) {
+    if (!issue.kind) {
+      issue.kind = issue.severity === 'critical' || issue.severity === 'high'
+        ? 'failure'
+        : 'warning';
+    }
   }
 
   // --- Build Payload ---
@@ -1163,8 +1171,12 @@ async function collectDiagnostics({ quiet = false } = {}) {
     : 'not running';
   const configIcon = config ? c.green('✓') : c.yellow('⚠');
   const configLabel = config ? 'loaded' : 'not found';
-  const issueIcon = issues.length === 0 ? c.green('✓') : c.yellow('⚠');
-  const issueLabel = issues.length === 0 ? 'No issues' : `${issues.length} issue(s) detected`;
+  const actionableIssueCount = issues.filter(issue => issue.kind !== 'optimization').length;
+  const optimizationCount = issues.length - actionableIssueCount;
+  const issueIcon = actionableIssueCount === 0 ? c.green('✓') : c.yellow('⚠');
+  const issueLabel = actionableIssueCount === 0
+    ? optimizationCount > 0 ? `Healthy; ${optimizationCount} optimization(s)` : 'No issues'
+    : `${actionableIssueCount} issue(s), ${optimizationCount} optimization(s)`;
 
   const summary = {
     gateway: { icon: gatewayIcon, label: gatewayLabel },
@@ -1212,6 +1224,8 @@ async function runOneShotMode() {
   }
 
   const { diagnostic, issues } = result;
+  const actionableIssues = issues.filter(issue => issue.kind !== 'optimization');
+  const optimizations = issues.filter(issue => issue.kind === 'optimization');
 
   // --- Display issues ---
   console.log('');
@@ -1220,16 +1234,24 @@ async function runOneShotMode() {
   console.log(c.cyan('━'.repeat(50)));
   console.log('');
 
-  if (issues.length === 0) {
+  if (actionableIssues.length === 0) {
     console.log(c.green('✅ No issues detected! Your OpenClaw looks healthy.'));
   } else {
-    console.log(c.red(`Found ${issues.length} issue(s):`));
+    console.log(c.red(`Found ${actionableIssues.length} issue(s):`));
     console.log('');
-    for (const issue of issues) {
+    for (const issue of actionableIssues) {
       const icon = issue.severity === 'critical' ? c.red('❌') :
                    issue.severity === 'high' ? c.red('❌') :
                    c.yellow('⚠️');
       console.log(`   ${icon} [${issue.severity.toUpperCase()}] ${issue.text}`);
+    }
+  }
+
+  if (optimizations.length > 0) {
+    console.log('');
+    console.log(c.blue(`Optional optimizations (${optimizations.length}):`));
+    for (const issue of optimizations) {
+      console.log(`   ${c.blue('💡')} ${issue.text}`);
     }
   }
 
@@ -1259,8 +1281,11 @@ async function runOneShotMode() {
     return;
   }
 
-  if (issues.length === 0) {
-    console.log(c.green('Your OpenClaw is looking good! No fixes needed.'));
+  if (actionableIssues.length === 0) {
+    console.log(c.green('Your OpenClaw is looking good! No repairs needed.'));
+    if (optimizations.length > 0) {
+      console.log(`${optimizations.length} optional optimization(s) were listed above.`);
+    }
     console.log(`If you're still having issues, run with --show-data to see what would be collected.`);
     console.log('');
     console.log(c.cyan(`🦞 ClawFix — made by Arca (arcabot.eth)`));
@@ -1312,7 +1337,7 @@ async function runOneShotMode() {
     const fixId = result.fixId;
 
     console.log('');
-    console.log(c.green(`✅ Diagnosis complete! Found ${result.issuesFound} issue(s).`));
+    console.log(c.green(`✅ Diagnosis complete! Found ${result.issuesFound} issue(s) and ${result.optimizationsFound || 0} optimization(s).`));
     console.log('');
 
     if (result.knownIssues) {
@@ -1399,7 +1424,7 @@ async function runInteractiveMode() {
   // --- Send diagnostic to server for AI context ---
   try {
     // Include locally-detected issues so server can match them to known fixes
-    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
     const resp = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1459,7 +1484,7 @@ async function runInteractiveMode() {
 
         // Re-send to server
         try {
-          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
           const resp = await fetch(`${API_URL}/api/diagnose`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1499,7 +1524,7 @@ async function runInteractiveMode() {
           summary = result.summary;
           // Re-send to server for updated known issues
           try {
-            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
             const resp = await fetch(`${API_URL}/api/diagnose`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -1541,7 +1566,7 @@ async function runInteractiveMode() {
               issues = result.issues;
               summary = result.summary;
               try {
-                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
+                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
                 const resp = await fetch(`${API_URL}/api/diagnose`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -1690,11 +1715,13 @@ function renderIssues(issues, serverIssues) {
     return;
   }
 
-  console.log(c.bold('Detected Issues:'));
+  console.log(c.bold('Findings:'));
   for (let i = 0; i < all.length; i++) {
     const issue = all[i];
     const sev = issue.severity || 'medium';
-    const label = sev === 'critical' || sev === 'high'
+    const label = issue.kind === 'optimization'
+      ? c.blue('[OPTIONAL]')
+      : sev === 'critical' || sev === 'high'
       ? c.red(`[${sev.toUpperCase()}]`)
       : sev === 'medium'
         ? c.yellow(`[${sev.toUpperCase()}]`)

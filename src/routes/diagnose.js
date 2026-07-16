@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import { detectIssues, KNOWN_ISSUES } from '../known-issues.js';
+import { classifyKnownIssue, detectIssues, KNOWN_ISSUES } from '../known-issues.js';
 import { storeDiagnosis, storeFeedback, getStats, getDiagnosis } from '../db.js';
 import {
   AI_ANALYSIS_SCHEMA,
@@ -138,6 +138,10 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
         }
       }
     }
+    knownIssues = knownIssues.map(issue => ({
+      ...issue,
+      kind: issue.kind || classifyKnownIssue(issue),
+    }));
 
     // Step 2: AI analysis (for novel issues and better explanations)
     const aiAnalysis = await analyzeWithAI(diagnostic, knownIssues);
@@ -149,15 +153,19 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     const generatedFixScript = generateFixScript(knownIssues, aiAnalysis, fixId);
     const repairValidation = validateRepairScript(generatedFixScript);
     const fixScript = repairValidation.ok ? generatedFixScript : null;
+    const actionableKnownIssues = knownIssues.filter(issue => issue.kind !== 'optimization');
+    const optimizations = knownIssues.filter(issue => issue.kind === 'optimization');
 
     // Store for later retrieval
     const result = {
       fixId,
       timestamp: new Date().toISOString(),
-      issuesFound: knownIssues.length + (aiAnalysis.additionalIssues?.length || 0),
+      issuesFound: actionableKnownIssues.length + (aiAnalysis.additionalIssues?.length || 0),
+      optimizationsFound: optimizations.length,
       knownIssues: knownIssues.map(i => ({
         id: i.id,
         severity: i.severity,
+        kind: i.kind,
         title: i.title,
         description: i.description,
         fix: i.fix || null,
@@ -285,8 +293,10 @@ diagnoseRouter.post('/feedback/:fixId', async (req, res) => {
 async function analyzeWithAI(diagnostic, knownIssues) {
   try {
     if (!AI_CONFIG.apiKey) {
+      const issueCount = knownIssues.filter(issue => issue.kind !== 'optimization').length;
+      const optimizationCount = knownIssues.length - issueCount;
       return {
-        summary: `Pattern matching found ${knownIssues.length} issue(s). AI analysis unavailable (no API key configured).`,
+        summary: `Pattern matching found ${issueCount} issue(s) and ${optimizationCount} optimization(s). AI analysis unavailable (no API key configured).`,
         insights: '',
         additionalIssues: [],
         additionalFixes: '',
@@ -336,8 +346,10 @@ ${JSON.stringify(diagnostic, null, 2)}
     };
   } catch (error) {
     console.error('AI analysis failed:', error.message);
+    const issueCount = knownIssues.filter(issue => issue.kind !== 'optimization').length;
+    const optimizationCount = knownIssues.length - issueCount;
     return {
-      summary: `Pattern matching found ${knownIssues.length} issue(s). AI analysis unavailable (${error.message}).`,
+      summary: `Pattern matching found ${issueCount} issue(s) and ${optimizationCount} optimization(s). AI analysis unavailable (${error.message}).`,
       insights: '',
       additionalIssues: [],
       additionalFixes: '',
@@ -366,7 +378,8 @@ export function generateFixScript(knownIssues, aiAnalysis, fixId) {
 
   // Add known issue fixes
   for (const issue of knownIssues) {
-    lines.push(`# ─── Fix: ${issue.title} (${issue.severity}) ───`);
+    const label = issue.kind === 'optimization' ? 'Optimization' : 'Fix';
+    lines.push(`# ─── ${label}: ${issue.title} (${issue.severity}) ───`);
     lines.push(`# ${issue.description}`);
     lines.push(issue.fix);
     lines.push('');

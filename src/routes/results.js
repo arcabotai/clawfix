@@ -146,7 +146,12 @@ function resultsPage(fixId) {
 
     function renderResults(data) {
       const issues = data.knownIssues || [];
-      const count = data.issuesFound || issues.length;
+      const count = typeof data.issuesFound === 'number'
+        ? data.issuesFound
+        : issues.filter(issue => issue.kind !== 'optimization').length;
+      const optimizationCount = typeof data.optimizationsFound === 'number'
+        ? data.optimizationsFound
+        : issues.filter(issue => issue.kind === 'optimization').length;
 
       let html = '';
 
@@ -168,17 +173,21 @@ function resultsPage(fixId) {
 
       // Summary
       html += '<div class="summary">';
-      html += '<h2>' + (count === 0 ? '✅ No Issues Found' : '🔍 Found ' + count + ' Issue' + (count > 1 ? 's' : '')) + '</h2>';
+      html += '<h2>' + (count === 0
+        ? '✅ Healthy' + (optimizationCount > 0 ? ' — ' + optimizationCount + ' Optional Optimization' + (optimizationCount > 1 ? 's' : '') : '')
+        : '🔍 Found ' + count + ' Issue' + (count > 1 ? 's' : '') + (optimizationCount > 0 ? ' and ' + optimizationCount + ' Optimization' + (optimizationCount > 1 ? 's' : '') : '')) + '</h2>';
       html += '<p style="color:var(--muted)">' + (data.analysis || 'Pattern matching analysis complete.') + '</p>';
       html += '</div>';
 
       // Issues list
       if (issues.length > 0) {
         issues.forEach(issue => {
-          var borderColor = {critical: 'var(--red)', high: '#f97316', medium: 'var(--yellow)', low: 'var(--blue)'}[issue.severity] || 'var(--border)';
+          var severity = ['critical', 'high', 'medium', 'low'].includes(issue.severity) ? issue.severity : 'medium';
+          var optional = issue.kind === 'optimization';
+          var borderColor = optional ? 'var(--blue)' : ({critical: 'var(--red)', high: '#f97316', medium: 'var(--yellow)', low: 'var(--blue)'}[severity] || 'var(--border)');
           html += '<div class="issue" style="border-left:3px solid ' + borderColor + '">';
-          html += '<h3><span class="badge badge-' + issue.severity + '" style="font-size:0.8rem;padding:3px 10px">' + issue.severity.toUpperCase() + '</span> ' + issue.title + '</h3>';
-          html += '<p>' + issue.description + '</p>';
+          html += '<h3><span class="badge badge-' + severity + '" style="font-size:0.8rem;padding:3px 10px">' + (optional ? 'OPTIONAL' : severity.toUpperCase()) + '</span> ' + escapeHtml(issue.title || 'Finding') + '</h3>';
+          html += '<p>' + escapeHtml(issue.description || '') + '</p>';
           html += '</div>';
         });
       }

@@ -8,7 +8,7 @@ import {
   requestAI,
   sanitizeAIRepairScript,
 } from '../src/ai.js';
-import { detectIssues, KNOWN_ISSUES } from '../src/known-issues.js';
+import { classifyKnownIssue, detectIssues, KNOWN_ISSUES } from '../src/known-issues.js';
 import { generateFixScript } from '../src/routes/diagnose.js';
 import { startServer } from '../src/server.js';
 import { validateRepairScript } from '../src/repair-validator.js';
@@ -167,6 +167,25 @@ test('known-issue detection remains deterministic', () => {
   });
 
   assert.ok(issues.some(issue => issue.id === 'mem0-graph-free'));
+});
+
+test('optional tuning is classified separately from failures', () => {
+  assert.equal(classifyKnownIssue({ id: 'no-hybrid-search', severity: 'medium' }), 'optimization');
+  assert.equal(classifyKnownIssue({ id: 'gateway-not-running', severity: 'critical' }), 'failure');
+  assert.equal(classifyKnownIssue({ id: 'auto-update-enabled-warning', severity: 'medium' }), 'warning');
+
+  const detected = detectIssues({
+    config: {
+      agents: {
+        defaults: {
+          memorySearch: { query: { hybrid: { enabled: false } } },
+          contextPruning: { mode: 'cache-ttl' },
+          compaction: { memoryFlush: { enabled: true } },
+        },
+      },
+    },
+  });
+  assert.equal(detected.find(issue => issue.id === 'no-hybrid-search')?.kind, 'optimization');
 });
 
 test('missing telemetry is not reported as a confirmed failure', () => {

@@ -33,6 +33,8 @@ bash clawfix.sh                         # Run after reviewing
 2. **Evidence is correlated** — Native config validation, status, Doctor, security audit, and 49 deterministic patterns run before AI handles novel problems
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
+Failures and warnings are counted as issues. Performance and quality tuning is shown separately as optional optimization advice.
+
 ## What It Detects (49 deterministic patterns)
 
 - 💀 Gateway crashes (port conflicts, process hangs, restart loops)

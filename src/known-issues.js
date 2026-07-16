@@ -1685,6 +1685,23 @@ echo "  grep -c '^[A-Z_]' ~/.openclaw/.env"`,
   },
 ];
 
+const OPTIMIZATION_ISSUE_IDS = new Set([
+  'codex-service-tier-not-fast',
+  'no-hybrid-search',
+  'no-context-pruning',
+  'no-memory-flush',
+  'no-soul',
+  'no-memory-files',
+  'heartbeat-no-model-override',
+  'gateway-watchdog-missing',
+]);
+
+export function classifyKnownIssue(issue) {
+  if (OPTIMIZATION_ISSUE_IDS.has(issue.id)) return 'optimization';
+  if (issue.severity === 'critical' || issue.severity === 'high') return 'failure';
+  return 'warning';
+}
+
 /**
  * Run all pattern detections against a diagnostic payload
  */
@@ -1700,6 +1717,7 @@ export function detectIssues(diagnostic) {
     .map(issue => ({
       id: issue.id,
       severity: issue.severity,
+      kind: classifyKnownIssue(issue),
       title: issue.title,
       description: issue.description,
       fix: issue.fix,
