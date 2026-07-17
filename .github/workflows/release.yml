@@ -1,16 +1,29 @@
 name: Release CLI
 
-# Runs on semver tag pushes only (`v0.9.0`, `v1.0.0-rc.1`, etc.).
-# Publishes cli/ to npm and creates a GitHub Release with auto-generated notes.
+# npm Trusted Publisher coordinates:
+#   GitHub owner: arcabotai
+#   Repository: clawfix
+#   Workflow filename: release.yml
+#   Allowed action: npm publish
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing package version/tag to publish (for recovery only)
+        required: true
+        type: string
 
 permissions:
   contents: write
   id-token: write
+
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref_name }}-${{ inputs.version || '' }}
+  cancel-in-progress: false
 
 jobs:
   publish-cli:
@@ -18,29 +31,60 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
-      - name: Setup Node 22
+      - name: Setup Node 24
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          cache: npm
+          package-manager-cache: false
+
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@11.15.0
+
+      - name: Resolve release version
+        id: release
+        env:
+          MANUAL_VERSION: ${{ inputs.version || '' }}
+        run: |
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$MANUAL_VERSION"
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error ::Invalid release version: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag and package versions
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          ROOT=$(node -p "require('./package.json').version")
+          CLI=$(node -p "require('./cli/package.json').version")
+          if [ "$VERSION" != "$CLI" ] || [ "$ROOT" != "$CLI" ]; then
+            echo "::error ::Release $VERSION, root version $ROOT, and CLI version $CLI must match"
+            exit 1
+          fi
+          git rev-parse --verify "refs/tags/$TAG^{commit}" >/dev/null
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            git diff --quiet "refs/tags/$TAG^{commit}" HEAD -- cli package.json package-lock.json || {
+              echo "::error ::Manual recovery source differs from $TAG"
+              exit 1
+            }
+          fi
 
       - name: Install dependencies from lockfile
         run: npm ci
 
       - name: Install repair validators
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
-
-      - name: Verify tag and package versions
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          ROOT=$(node -p "require('./package.json').version")
-          CLI=$(node -p "require('./cli/package.json').version")
-          if [ "$TAG" != "$CLI" ] || [ "$ROOT" != "$CLI" ]; then
-            echo "::error ::Tag v$TAG, root version $ROOT, and CLI version $CLI must match"
-            exit 1
-          fi
 
       - name: Syntax-check CLI and tooling
         run: |
@@ -69,14 +113,13 @@ jobs:
           npm pack ./cli --dry-run --json --cache /tmp/clawfix-npm-cache > "$manifest"
           node scripts/verify-cli-package.mjs "$manifest"
 
-      - name: Publish CLI to npm
+      - name: Publish CLI to npm using OIDC
         working-directory: cli
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
           generate_release_notes: true
-          name: Release ${{ github.ref_name }}
+          name: Release ${{ steps.release.outputs.tag }}

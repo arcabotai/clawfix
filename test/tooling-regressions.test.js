@@ -25,8 +25,13 @@ test('CI packs and allowlist-validates the publishable cli package', async () =>
   assert.doesNotMatch(ci, /run: npm pack --dry-run --json/);
 });
 
-test('release installs from lockfile and runs every pre-publish gate', async () => {
+test('release uses npm trusted publishing and runs every pre-publish gate', async () => {
   const release = await read('.github/workflows/release.yml');
+  assert.match(release, /id-token: write/);
+  assert.match(release, /node-version: '24'/);
+  assert.match(release, /package-manager-cache: false/);
+  assert.match(release, /npm install --global npm@11\.15\.0/);
+  assert.match(release, /workflow_dispatch:/);
   assert.match(release, /run: npm ci/);
   assert.match(release, /run: npm test/);
   assert.match(release, /npm run prove:remediation/);
@@ -34,7 +39,8 @@ test('release installs from lockfile and runs every pre-publish gate', async () 
   assert.match(release, /npm audit --omit=dev/);
   assert.match(release, /node --check cli\/bin\/native-diagnostics\.js/);
   assert.match(release, /verify-cli-package\.mjs/);
-  assert.match(release, /npm publish --access public --provenance/);
+  assert.match(release, /npm publish --access public/);
+  assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
 test('Docker build is strict, least-privilege, and copies only runtime inputs', async () => {
