@@ -9,6 +9,14 @@ function cleanText(value, maxLength = 1000) {
     .slice(0, maxLength);
 }
 
+function isRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasAcceptedJsonExitCode(result) {
+  return result.status === 0 || result.status === 1;
+}
+
 export function redactDiagnosticText(value) {
   return redactText(value);
 }
@@ -32,6 +40,9 @@ function runJsonCommand(openclawBin, args, spawn, timeout = 30_000) {
       parsed: null,
       error: stderr || (result.signal ? `Command terminated by ${result.signal}` : 'Command failed before completion'),
     };
+  }
+  if (!hasAcceptedJsonExitCode(result)) {
+    return { result, parsed: null, error: stderr || `Command exited with status ${result.status}` };
   }
 
   try {
@@ -90,12 +101,12 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
   });
 
   const stdout = cleanText(result.stdout, 250_000);
-  if (result.error || result.signal || !Number.isInteger(result.status)) {
+  if (result.error || result.signal || !Number.isInteger(result.status) || !hasAcceptedJsonExitCode(result)) {
     return {
       available: false,
       exitCode: result.status,
       error: redactDiagnosticText(cleanText(
-        result.stderr || result.error?.message || (result.signal ? `Doctor terminated by ${result.signal}` : 'Doctor failed before completion'),
+        result.stderr || result.error?.message || (result.signal ? `Doctor terminated by ${result.signal}` : `Doctor exited with status ${result.status}`),
         1000,
       )),
       checksRun: 0,
@@ -116,17 +127,24 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
 
   try {
     const parsed = JSON.parse(stdout);
-    const findings = Array.isArray(parsed.findings)
-      ? parsed.findings.slice(0, 100).map(finding => ({
-          checkId: cleanText(finding.checkId, 200),
-          severity: ['info', 'warning', 'error'].includes(finding.severity)
-            ? finding.severity
-            : 'warning',
-          message: redactDiagnosticText(cleanText(finding.message, 2000)),
-          path: cleanPath(finding.path) || null,
-          fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
-        }))
-      : [];
+    if (!isRecord(parsed)
+      || typeof parsed.ok !== 'boolean'
+      || !Number.isSafeInteger(parsed.checksRun)
+      || parsed.checksRun < 0
+      || !Number.isSafeInteger(parsed.checksSkipped)
+      || parsed.checksSkipped < 0
+      || !Array.isArray(parsed.findings)) {
+      throw new TypeError('invalid Doctor envelope');
+    }
+    const findings = parsed.findings.slice(0, 100).map(finding => ({
+      checkId: cleanText(finding.checkId, 200),
+      severity: ['info', 'warning', 'error'].includes(finding.severity)
+        ? finding.severity
+        : 'warning',
+      message: redactDiagnosticText(cleanText(finding.message, 2000)),
+      path: cleanPath(finding.path) || null,
+      fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
+    }));
 
     return {
       available: true,
@@ -165,13 +183,27 @@ export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
     };
   }
 
+  const valid = typeof parsed.valid === 'boolean'
+    ? parsed.valid
+    : typeof parsed.ok === 'boolean' ? parsed.ok : null;
+  if (!isRecord(parsed)
+    || valid === null
+    || (parsed.issues != null && !Array.isArray(parsed.issues))
+    || (parsed.errors != null && !Array.isArray(parsed.errors))
+    || (parsed.warnings != null && !Array.isArray(parsed.warnings))) {
+    return {
+      available: false,
+      exitCode: result.status,
+      valid: null,
+      warnings: [],
+      errors: ['OpenClaw config validation returned an invalid JSON envelope'],
+    };
+  }
+
   const rawErrors = Array.isArray(parsed.issues)
     ? parsed.issues
     : Array.isArray(parsed.errors) ? parsed.errors : [];
   const rawWarnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
-  const valid = typeof parsed.valid === 'boolean'
-    ? parsed.valid
-    : typeof parsed.ok === 'boolean' ? parsed.ok : null;
   return {
     available: true,
     exitCode: result.status,
@@ -196,6 +228,19 @@ export function collectNativeStatus(openclawBin, spawn = spawnSync) {
   const { result, parsed, error } = runJsonCommand(openclawBin, ['status', '--json'], spawn, 30_000);
   if (!parsed) {
     return { available: false, exitCode: result.status, error };
+  }
+  if (!isRecord(parsed) || !(
+    typeof parsed.runtimeVersion === 'string'
+    || isRecord(parsed.gateway)
+    || isRecord(parsed.gatewayService)
+    || isRecord(parsed.tasks)
+    || Array.isArray(parsed.secretDiagnostics)
+  )) {
+    return {
+      available: false,
+      exitCode: result.status,
+      error: 'OpenClaw status returned an invalid JSON envelope',
+    };
   }
 
   return {
@@ -242,6 +287,14 @@ export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
   );
   if (!parsed) {
     return { available: false, exitCode: result.status, error, findings: [] };
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.summary) || !Array.isArray(parsed.findings)) {
+    return {
+      available: false,
+      exitCode: result.status,
+      error: 'OpenClaw security audit returned an invalid JSON envelope',
+      findings: [],
+    };
   }
 
   return {

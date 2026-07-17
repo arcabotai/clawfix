@@ -6,6 +6,8 @@ import {
   collectListeningPort,
   collectNativeConfigValidation,
   collectNativeDoctor,
+  collectNativeSecurityAudit,
+  collectNativeStatus,
 } from '../cli/bin/native-diagnostics.js';
 import { detectIssues, matchLocalKnownIssues } from '../src/known-issues.js';
 import { validateRepairScript } from '../src/repair-validator.js';
@@ -88,6 +90,33 @@ test('native collectors reject partial JSON from timed-out subprocesses', () => 
   assert.equal(config.valid, null);
   assert.equal(doctor.available, false);
   assert.equal(doctor.findings.length, 0);
+});
+
+test('native collectors reject valid JSON with the wrong top-level contract', () => {
+  const wrongShape = () => successfulSpawn('{}');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', wrongShape);
+  const config = collectNativeConfigValidation('/usr/local/bin/openclaw', wrongShape);
+  const status = collectNativeStatus('/usr/local/bin/openclaw', wrongShape);
+  const security = collectNativeSecurityAudit('/usr/local/bin/openclaw', wrongShape);
+
+  assert.equal(doctor.available, false);
+  assert.equal(config.available, false);
+  assert.equal(config.valid, null);
+  assert.equal(status.available, false);
+  assert.equal(security.available, false);
+});
+
+test('native collectors reject runtime exit code 2 even with plausible JSON', () => {
+  const failed = stdout => () => ({
+    status: 2,
+    signal: null,
+    stdout: JSON.stringify(stdout),
+    stderr: 'runtime failure',
+  });
+  assert.equal(collectNativeDoctor('/usr/local/bin/openclaw', failed({ ok: false, checksRun: 1, checksSkipped: 0, findings: [] })).available, false);
+  assert.equal(collectNativeConfigValidation('/usr/local/bin/openclaw', failed({ valid: false, issues: [] })).available, false);
+  assert.equal(collectNativeStatus('/usr/local/bin/openclaw', failed({ runtimeVersion: '2026.6.11' })).available, false);
+  assert.equal(collectNativeSecurityAudit('/usr/local/bin/openclaw', failed({ summary: {}, findings: [] })).available, false);
 });
 
 test('listening-port collection returns schema evidence for invalid configured ports', () => {
