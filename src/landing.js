@@ -22,15 +22,15 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawFix — AI-Powered OpenClaw Repair</title>
-  <meta name="description" content="Fix your broken OpenClaw in one command. AI diagnoses issues and generates fix scripts automatically. No SSH access needed.">
-  <meta property="og:title" content="ClawFix — Fix Your OpenClaw in One Command">
-  <meta property="og:description" content="AI-powered diagnostic and repair for OpenClaw installations. Run one command, get a fix.">
+  <title>ClawFix 0.9.1 — OpenClaw Diagnostics & Repair</title>
+  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.9.1 is signed on npm with GitHub provenance.">
+  <meta property="og:title" content="ClawFix 0.9.1 — Evidence Before Repair">
+  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, reviewable repair scripts, and a signed npm release.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ClawFix — Fix Your OpenClaw in One Command">
-  <meta name="twitter:description" content="AI-powered diagnostic and repair for OpenClaw. Free during beta.">
+  <meta name="twitter:title" content="ClawFix 0.9.1 — Evidence Before Repair">
+  <meta name="twitter:description" content="Local OpenClaw diagnostics and reviewable repairs. Signed on npm with GitHub provenance.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -57,7 +57,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     }
 
     .container {
-      max-width: 800px;
+      max-width: 920px;
       margin: 0 auto;
       padding: 0 24px;
     }
@@ -152,7 +152,8 @@ const LANDING_HTML = `<!DOCTYPE html>
       background: var(--border);
       border: none;
       color: var(--muted);
-      padding: 6px 12px;
+      padding: 8px 14px;
+      min-height: 40px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 0.85rem;
@@ -163,48 +164,41 @@ const LANDING_HTML = `<!DOCTYPE html>
       color: white;
     }
 
-    /* Beta banner */
-    .beta-banner {
-      background: linear-gradient(135deg, rgba(34,197,94,0.15), rgba(59,130,246,0.15));
-      border: 1px solid var(--green);
+    /* Release banner */
+    .release-banner {
+      background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(249,115,22,0.08));
+      border: 1px solid rgba(239,68,68,0.55);
       border-radius: 12px;
       padding: 16px 24px;
       max-width: 560px;
       margin: 0 auto 32px;
-      text-align: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      color: var(--text);
+      text-decoration: none;
+      transition: border-color 0.2s, transform 0.2s;
     }
-    .beta-banner .beta-tag {
+    .release-banner:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+    .release-tag {
       display: inline-block;
-      background: var(--green);
-      color: #0a0a0a;
+      background: var(--accent);
+      color: white;
       font-size: 0.7rem;
-      padding: 2px 8px;
+      padding: 3px 8px;
       border-radius: 4px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      margin-bottom: 8px;
+      white-space: nowrap;
     }
-    .beta-banner p {
-      color: var(--green);
-      font-size: 0.95rem;
-      font-weight: 600;
-    }
-    .beta-banner .beta-sub {
-      color: var(--muted);
-      font-size: 0.8rem;
-      font-weight: 400;
-      margin-top: 4px;
-    }
-    .strikethrough {
-      text-decoration: line-through;
-      color: var(--muted);
-      font-size: 1rem;
-    }
-    .free-tag {
-      color: var(--green);
-      font-weight: 800;
-    }
+    .release-copy { font-size: 0.9rem; font-weight: 600; }
+    .release-arrow { color: var(--accent); font-weight: 700; }
+    .free-tag { color: var(--green); font-weight: 800; }
 
     .command-hint {
       color: var(--muted);
@@ -212,6 +206,61 @@ const LANDING_HTML = `<!DOCTYPE html>
       text-align: center;
       margin-bottom: 48px;
     }
+
+    .proof-row {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 20px auto 0;
+    }
+    .proof-pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 10px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      background: rgba(255,255,255,0.02);
+    }
+    .proof-pill strong { color: var(--green); }
+
+    .release-panel {
+      background: linear-gradient(180deg, rgba(239,68,68,0.08), rgba(20,20,20,0.6));
+      border: 1px solid rgba(239,68,68,0.4);
+      border-radius: 16px;
+      padding: 32px;
+    }
+    .release-panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 24px;
+    }
+    .eyebrow {
+      color: var(--accent);
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .release-panel h2 { font-size: 1.6rem; line-height: 1.2; }
+    .release-panel-head p { color: var(--muted); max-width: 560px; margin-top: 8px; }
+    .release-link { color: var(--text); white-space: nowrap; font-size: 0.85rem; }
+    .release-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .release-item {
+      background: rgba(10,10,10,0.55);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .release-item h3 { font-size: 0.9rem; margin-bottom: 6px; }
+    .release-item p { color: var(--muted); font-size: 0.8rem; }
 
     /* How it works */
     .section { padding: 60px 0; }
@@ -346,8 +395,19 @@ const LANDING_HTML = `<!DOCTYPE html>
     @media (max-width: 640px) {
       h1 { font-size: 2rem; }
       .hero { padding: 48px 0 40px; }
-      .command-box code { font-size: 0.9rem; }
+      .nav-optional { display: none; }
+      .nav-links a { margin-left: 16px; }
+      .release-banner { align-items: flex-start; text-align: left; }
+      .command-box { padding: 16px; }
+      .command-box code { font-size: 0.8rem; }
+      .proof-row { align-items: stretch; flex-direction: column; }
+      .proof-pill { border-radius: 8px; }
+      .release-panel { padding: 24px 18px; }
+      .release-panel-head { display: block; }
+      .release-link { display: inline-block; margin-top: 16px; }
+      .release-grid { grid-template-columns: 1fr; }
       .issues-grid { grid-template-columns: 1fr; }
+      .sent-grid { grid-template-columns: 1fr !important; }
     }
   </style>
 </head>
@@ -356,10 +416,11 @@ const LANDING_HTML = `<!DOCTYPE html>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
       <nav class="nav-links">
-        <a href="#how">How It Works</a>
+        <a href="#release">v0.9.1</a>
+        <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
-        <a href="#pricing">Pricing</a>
-        <a href="https://github.com/arcabotai/clawfix">GitHub</a>
+        <a href="#pricing" class="nav-optional">Pricing</a>
+        <a href="https://github.com/arcabotai/clawfix" class="nav-optional">GitHub</a>
       </nav>
     </div>
   </header>
@@ -374,22 +435,56 @@ const LANDING_HTML = `<!DOCTYPE html>
           Runs locally, sends redacted logs, gets a fix script back.
         </p>
 
-        <div class="beta-banner">
-          <span class="beta-tag">🎉 Early Access</span>
-          <p>Free during beta — all features, no payment required</p>
-          <p class="beta-sub">Be an early user, help us improve, pay nothing</p>
-        </div>
+        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.9.1">
+          <span class="release-tag">v0.9.1 live</span>
+          <span class="release-copy">Modernized diagnostics. Stricter repair safety.</span>
+          <span class="release-arrow">→</span>
+        </a>
 
-        <div class="command-box" onclick="copyCommand('npx')">
+        <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-npx">npx clawfix</code>
-          <button class="copy-btn" id="copyBtn-npx">Copy</button>
+          <code id="cmd-npx">npx clawfix@0.9.1</code>
+          <button type="button" class="copy-btn" id="copyBtn-npx" onclick="copyCommand('npx')">Copy</button>
         </div>
         <p class="command-hint" style="margin-bottom: 8px;">
           <strong style="color:var(--green)">Recommended</strong> — auditable source on <a href="https://www.npmjs.com/package/clawfix" style="color:var(--muted)">npm</a> and <a href="https://github.com/arcabotai/clawfix" style="color:var(--muted)">GitHub</a>
         </p>
-        <p class="command-hint" style="margin-bottom: 4px;">Want to inspect before running? <code style="color:var(--green)">npx clawfix --dry-run</code></p>
-        <p class="command-hint" style="margin-bottom: 48px;">Works on macOS, Linux, and WSL. Requires Node.js 18+.</p>
+        <p class="command-hint" style="margin-bottom: 4px;">Want to inspect before running? <code style="color:var(--green)">npx clawfix@0.9.1 --dry-run</code></p>
+        <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Requires Node.js 18+.</p>
+        <div class="proof-row" aria-label="Release verification">
+          <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
+          <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
+          <span class="proof-pill"><strong>✓</strong> 7-file allowlisted package</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="release">
+      <div class="container">
+        <div class="release-panel">
+          <div class="release-panel-head">
+            <div>
+              <div class="eyebrow">Release 0.9.1</div>
+              <h2>Evidence before repair.</h2>
+              <p>ClawFix now rejects incomplete diagnostics instead of turning uncertainty into repair advice. The release itself is signed, attested, and reproducible from public source.</p>
+            </div>
+            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.9.1">Release notes →</a>
+          </div>
+          <div class="release-grid">
+            <div class="release-item">
+              <h3>Native contracts</h3>
+              <p>Structured OpenClaw output is validated before issues are classified.</p>
+            </div>
+            <div class="release-item">
+              <h3>Ownership evidence</h3>
+              <p>Port conflicts require proof of a competing listener—not merely an occupied port.</p>
+            </div>
+            <div class="release-item">
+              <h3>Fail-closed repairs</h3>
+              <p>Repair validators reject partial output, timeout ambiguity, and unsafe catalog entries.</p>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -624,7 +719,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         </div>
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:24px;margin-top:32px;">
           <h3 style="font-size:1rem;margin-bottom:12px;">📦 What Exactly Is Sent</h3>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+          <div class="sent-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
             <div>
               <p style="color:var(--green);font-weight:600;font-size:0.85rem;margin-bottom:8px;">✅ SENT (redacted)</p>
               <ul style="color:var(--muted);font-size:0.85rem;list-style:none;padding:0;">
