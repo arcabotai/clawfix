@@ -229,13 +229,11 @@ export function collectNativeStatus(openclawBin, spawn = spawnSync) {
   if (!parsed) {
     return { available: false, exitCode: result.status, error };
   }
-  if (!isRecord(parsed) || !(
-    typeof parsed.runtimeVersion === 'string'
-    || isRecord(parsed.gateway)
-    || isRecord(parsed.gatewayService)
-    || isRecord(parsed.tasks)
-    || Array.isArray(parsed.secretDiagnostics)
-  )) {
+  if (!isRecord(parsed)
+    || typeof parsed.runtimeVersion !== 'string'
+    || !parsed.runtimeVersion.trim()
+    || !isRecord(parsed.gateway)
+    || typeof parsed.gateway.reachable !== 'boolean') {
     return {
       available: false,
       exitCode: result.status,
@@ -288,7 +286,16 @@ export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
   if (!parsed) {
     return { available: false, exitCode: result.status, error, findings: [] };
   }
-  if (!isRecord(parsed) || !isRecord(parsed.summary) || !Array.isArray(parsed.findings)) {
+  const warningCount = parsed?.summary?.warn ?? parsed?.summary?.warning;
+  if (!isRecord(parsed)
+    || !isRecord(parsed.summary)
+    || !Number.isSafeInteger(parsed.summary.critical)
+    || parsed.summary.critical < 0
+    || !Number.isSafeInteger(warningCount)
+    || warningCount < 0
+    || !Number.isSafeInteger(parsed.summary.info)
+    || parsed.summary.info < 0
+    || !Array.isArray(parsed.findings)) {
     return {
       available: false,
       exitCode: result.status,

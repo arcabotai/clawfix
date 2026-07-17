@@ -18,6 +18,7 @@ import {
   createAIRequestGuard,
   createConcurrencyGate,
   createRateLimiter,
+  isPaidAIEnabled,
   validateChatBody,
   validateDiagnosticBody,
 } from '../src/security.js';
@@ -184,6 +185,14 @@ test('shared AI request guard enforces bearer auth, daily spend, and concurrency
   const reset = guard.acquire(req);
   assert.equal(reset.allowed, true);
   reset.release();
+});
+
+test('paid AI is disabled by default and requires auth or explicit public opt-in', () => {
+  const config = { apiKey: 'provider-key' };
+  assert.equal(isPaidAIEnabled(config, {}), false);
+  assert.equal(isPaidAIEnabled(config, { CLAWFIX_API_TOKEN: 'private-token' }), true);
+  assert.equal(isPaidAIEnabled(config, { ALLOW_PUBLIC_AI: '1' }), true);
+  assert.equal(isPaidAIEnabled({ apiKey: '' }, { ALLOW_PUBLIC_AI: '1' }), false);
 });
 
 test('HTML routes reject attacker-controlled fix IDs and do not enable cross-origin API calls', async (t) => {

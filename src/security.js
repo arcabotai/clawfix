@@ -73,6 +73,11 @@ export function positiveEnvInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+export function isPaidAIEnabled(config, env = process.env) {
+  if (!config?.apiKey) return false;
+  return Boolean(env.CLAWFIX_API_TOKEN) || env.ALLOW_PUBLIC_AI === '1';
+}
+
 export function clientIp(req) {
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }

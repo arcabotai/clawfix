@@ -14,6 +14,7 @@ import { redactOutbound, validateFixId } from '../../cli/bin/security.js';
 import {
   clientIp,
   createRateLimiter,
+  isPaidAIEnabled,
   positiveEnvInteger,
   sharedAIRequestGuard,
   validateDiagnosticBody,
@@ -25,6 +26,7 @@ export const diagnoseRouter = Router();
 const fixes = new Map();
 
 const AI_CONFIG = getAIConfig();
+const AI_ENABLED = isPaidAIEnabled(AI_CONFIG);
 const diagnoseLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.DIAGNOSE_RATE_LIMIT, 10),
   windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
@@ -118,7 +120,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     if (!diagnoseLimiter.consume(clientIp(req)).allowed) {
       return res.status(429).json({ error: 'Too many diagnosis requests' });
     }
-    if (AI_CONFIG.apiKey) {
+    if (AI_ENABLED) {
       const capacity = sharedAIRequestGuard.acquire(req);
       if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
       release = capacity.release;
@@ -270,7 +272,7 @@ diagnoseRouter.get('/stats', async (req, res) => {
     version: APP_VERSION,
     aiProvider: AI_CONFIG.provider,
     aiModel: AI_CONFIG.model,
-    aiAvailable: !!AI_CONFIG.apiKey,
+    aiAvailable: AI_ENABLED,
   });
 });
 
@@ -291,11 +293,11 @@ diagnoseRouter.post('/feedback/:fixId', async (req, res) => {
 
 async function analyzeWithAI(diagnostic, knownIssues) {
   try {
-    if (!AI_CONFIG.apiKey) {
+    if (!AI_ENABLED) {
       const issueCount = knownIssues.filter(issue => issue.kind !== 'optimization').length;
       const optimizationCount = knownIssues.length - issueCount;
       return {
-        summary: `Pattern matching found ${issueCount} issue(s) and ${optimizationCount} optimization(s). AI analysis unavailable (no API key configured).`,
+        summary: `Pattern matching found ${issueCount} issue(s) and ${optimizationCount} optimization(s). AI analysis is disabled or not configured on this server.`,
         insights: '',
         additionalIssues: [],
         additionalFixes: '',

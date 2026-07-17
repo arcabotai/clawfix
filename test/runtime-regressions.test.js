@@ -106,6 +106,17 @@ test('native collectors reject valid JSON with the wrong top-level contract', ()
   assert.equal(security.available, false);
 });
 
+test('native status and security reject plausible but incomplete sibling envelopes', () => {
+  const incompleteStatus = collectNativeStatus('/usr/local/bin/openclaw', () => successfulSpawn(JSON.stringify({ gateway: {} })));
+  const incompleteSecurity = collectNativeSecurityAudit('/usr/local/bin/openclaw', () => successfulSpawn(JSON.stringify({ summary: {}, findings: [] })));
+  const siblingStatus = collectNativeStatus('/usr/local/bin/openclaw', () => successfulSpawn(JSON.stringify({ summary: { critical: 0, warn: 0, info: 0 }, findings: [] })));
+  const siblingSecurity = collectNativeSecurityAudit('/usr/local/bin/openclaw', () => successfulSpawn(JSON.stringify({ runtimeVersion: '2026.6.11', gateway: { reachable: true } })));
+
+  for (const result of [incompleteStatus, incompleteSecurity, siblingStatus, siblingSecurity]) {
+    assert.equal(result.available, false);
+  }
+});
+
 test('native collectors reject runtime exit code 2 even with plausible JSON', () => {
   const failed = stdout => () => ({
     status: 2,

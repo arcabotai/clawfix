@@ -5,6 +5,7 @@ import { redactOutbound, redactText } from '../../cli/bin/security.js';
 import {
   clientIp,
   createRateLimiter,
+  isPaidAIEnabled,
   positiveEnvInteger,
   sharedAIRequestGuard,
   validateChatBody,
@@ -16,6 +17,7 @@ export const chatRouter = Router();
 const conversations = new Map();
 
 const AI_CONFIG = getAIConfig();
+const AI_ENABLED = isPaidAIEnabled(AI_CONFIG);
 const chatLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.CHAT_RATE_LIMIT, 30),
   windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
@@ -58,7 +60,7 @@ chatRouter.post('/chat', async (req, res) => {
     if (!chatLimiter.consume(clientIp(req)).allowed) {
       return res.status(429).json({ error: 'Too many chat requests' });
     }
-    if (AI_CONFIG.apiKey) {
+    if (AI_ENABLED) {
       const capacity = sharedAIRequestGuard.acquire(req);
       if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
       release = capacity.release;
@@ -104,8 +106,8 @@ chatRouter.post('/chat', async (req, res) => {
     ];
 
     // Check if AI is available
-    if (!AI_CONFIG.apiKey) {
-      const fallback = 'AI chat is not available (no API key configured on the server). Use `fix <id>` to apply pattern-matched fixes, or describe your issue and check back later.';
+    if (!AI_ENABLED) {
+      const fallback = 'AI chat is not available on this server. Use `fix <id>` to apply pattern-matched fixes, or ask the operator to configure authenticated AI or explicitly enable public AI.';
       conv.messages.push({ role: 'assistant', content: fallback });
       return res.json({ response: fallback, conversationId });
     }
