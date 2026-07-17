@@ -109,7 +109,43 @@ function numericConfigValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function hasCompetingGatewayPortOwner(diag) {
+  const listenerPid = Number(diag.ports?.gateway?.pid);
+  if (diag.ports?.gateway?.listening !== true || !Number.isSafeInteger(listenerPid) || listenerPid < 1) {
+    return false;
+  }
+
+  const gatewayPid = Number.parseInt(String(diag.openclaw?.gatewayPid || ''), 10);
+  if (Number.isSafeInteger(gatewayPid) && gatewayPid > 0) return listenerPid !== gatewayPid;
+  return diag.openclaw?.processExists === false;
+}
+
+function hasAgentDefaultsTelemetry(diag) {
+  return !!diag.config?.agents?.defaults
+    && typeof diag.config.agents.defaults === 'object';
+}
+
 export const KNOWN_ISSUES = [
+  {
+    id: 'openclaw-node-engine-mismatch',
+    severity: 'critical',
+    title: 'Node.js runtime is incompatible with this OpenClaw release',
+    description: 'OpenClaw is installed, but its CLI refuses to start because the active Node.js version is outside the release\'s supported engine range. npm may install the package with only a warning, leaving a broken runtime behind.',
+    detect: (diag) => (
+      diag.openclaw?.runtimeCompatible === false &&
+      typeof diag.openclaw?.runtimeRequired === 'string' &&
+      diag.openclaw.runtimeRequired.length > 0
+    ),
+    fix: `# Repair guidance: upgrade Node.js with your existing version manager
+echo "Current Node: $(node --version 2>/dev/null || echo unavailable)"
+echo "OpenClaw requirement was reported by the installed CLI."
+echo "Install a supported Node release, open a fresh shell, then verify:"
+echo "  node --version"
+echo "  openclaw --version"
+echo "  openclaw doctor --lint --json"
+echo "No runtime changes were made automatically because Node installation methods vary by host."`,
+  },
+
   {
     id: 'mem0-graph-free',
     severity: 'critical',
@@ -248,52 +284,13 @@ echo "Smoke test should show agentHarnessId=codex and fallbackUsed=false."`,
     description: 'The gateway is using native Codex, but the Codex app-server cannot write session files under ~/.codex/sessions. On macOS this can happen when the LaunchAgent process sandbox cannot access the default Codex home even though ownership and file modes look correct.',
     detect: (diag) => {
       const logs = logText(diag);
-      const sandbox = codexAppServer(diag.config).sandbox;
-      return /Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(logs) ||
-             (hasNativeCodexRoute(diag.config) && sandbox === 'workspace-write');
+      return /Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(logs);
     },
-    fix: `# Fix: Give the OpenClaw gateway a dedicated writable Codex home
-CONFIG="$HOME/.openclaw/openclaw.json"
-TS=$(date +%Y%m%d-%H%M%S)
-CODEX_HOME_DIR="$HOME/.openclaw/codex-home"
-WRAPPER="$HOME/.openclaw/bin/openclaw-gateway-codex-wrapper"
-
-cp "$CONFIG" "$CONFIG.pre-codex-home-$TS"
-mkdir -p "$CODEX_HOME_DIR" "$HOME/.openclaw/bin"
-
-for file in auth.json config.toml config.json credentials.json; do
-  if [ -f "$HOME/.codex/$file" ] && [ ! -f "$CODEX_HOME_DIR/$file" ]; then
-    cp -p "$HOME/.codex/$file" "$CODEX_HOME_DIR/$file"
-  fi
-done
-
-OPENCLAW_BIN=$(command -v openclaw || true)
-if [ -z "$OPENCLAW_BIN" ]; then
-  if [ -x /opt/homebrew/bin/openclaw ]; then
-    OPENCLAW_BIN=/opt/homebrew/bin/openclaw
-  else
-    echo "openclaw binary not found in PATH"
-    exit 1
-  fi
-fi
-
-cat > "$WRAPPER" <<EOF
-#!/bin/sh
-set -eu
-
-export CODEX_HOME="\\$HOME/.openclaw/codex-home"
-
-exec "$OPENCLAW_BIN" "\\$@"
-EOF
-chmod +x "$WRAPPER"
-
-openclaw config set plugins.entries.codex.config.appServer.sandbox danger-full-access
-openclaw gateway install --force --wrapper "$WRAPPER"
-openclaw config validate
-openclaw gateway status --deep
-
-echo "Dedicated Codex home installed for the gateway."
-echo "Run a Codex smoke test and confirm sessions appear under ~/.openclaw/codex-home/sessions."`,
+    fix: `# Advisory only: Codex reported a concrete session-store permission failure
+echo "No automatic repair was applied."
+echo "Keep the Codex sandbox at workspace-write while reviewing the failing path."
+echo "Inspect ownership and service-manager access to the configured Codex home."
+echo "Changing to danger-full-access weakens isolation and requires separate explicit high-risk approval."`,
   },
 
   {
@@ -419,11 +416,13 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
     detect: (diag) => {
       const status = diag.openclaw?.gatewayStatus || '';
       // Check for explicit "running" indicators first — ignore config warnings
-      if (/running.*pid|state active|listening/i.test(status)) return false;
+      if (/running.*pid|state active|listening/i.test(status) ||
+          (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) return false;
+      if (hasCompetingGatewayPortOwner(diag)) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;
       return (/not running|failed to start|stopped|inactive/i.test(status)) ||
-             (!diag.openclaw?.gatewayPid && !/warning/i.test(status));
+             diag.openclaw?.processExists === false;
     },
     fix: `# Fix: Restart the gateway
 # Try standard restart first
@@ -454,20 +453,14 @@ curl -sf "http://localhost:\$PORT/health" && echo "✅ Gateway is healthy" || ec
     severity: 'critical',
     title: 'Port conflict (EADDRINUSE)',
     description: 'The gateway port is already in use by another process. This prevents OpenClaw from starting.',
-    detect: (diag) => {
-      const logs = diag.logs?.errors || '';
-      return /EADDRINUSE/i.test(logs);
-    },
-    fix: `# Fix: Kill the process using the gateway port and restart
+    detect: (diag) => hasCompetingGatewayPortOwner(diag),
+    fix: `# Review: identify the process using the gateway port before stopping anything
 PORT=$(jq -r '.gateway.port // 18789' ~/.openclaw/openclaw.json)
-PID=$(lsof -ti :$PORT 2>/dev/null)
-if [ -n "$PID" ]; then
-  echo "Killing process $PID on port $PORT"
-  kill $PID
-  sleep 1
-fi
-openclaw gateway restart
-echo "✅ Port conflict resolved"`,
+echo "Listener on port $PORT:"
+lsof -nP -iTCP:$PORT -sTCP:LISTEN 2>/dev/null || ss -ltnp "sport = :$PORT" 2>/dev/null
+echo
+echo "No process was stopped. Confirm the owner, stop it through its service manager,"
+echo "then run: openclaw gateway restart"`,
   },
 
   {
@@ -497,8 +490,9 @@ echo "✅ Browser ports cleared"`,
     description: 'Your memory search is using basic vector search only. Enabling hybrid search (vector + BM25) significantly improves recall, especially for exact matches like wallet addresses, error codes, and names.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable hybrid search with recommended weights
 jq '.agents.defaults.memorySearch.query.hybrid = {
@@ -518,8 +512,9 @@ echo "✅ Hybrid search enabled (vector 0.6 + BM25 0.4 + temporal decay)"`,
     description: 'Without context pruning, old messages pile up and waste your context window. This makes conversations more expensive and can cause compactions to happen more often.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.contextPruning;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable context pruning (cache-ttl mode, 6 hour TTL)
 jq '.agents.defaults.contextPruning = {
@@ -538,8 +533,9 @@ echo "✅ Context pruning enabled (6h TTL, keeps last 3 assistant messages)"`,
     description: 'When your context window fills up and compaction happens, important information will be lost. Memory flush automatically saves a summary before compacting.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.compaction?.memoryFlush?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable memory flush with smart prompt
 jq '.agents.defaults.compaction = {
@@ -560,7 +556,7 @@ echo "✅ Memory flush enabled — context compaction will save summaries"`,
     severity: 'low',
     title: 'No SOUL.md found',
     description: 'SOUL.md defines your agent\'s personality and behavior. Without it, your agent is generic and lacks character.',
-    detect: (diag) => !diag.workspace?.hasSoul,
+    detect: (diag) => diag.workspace?.hasSoul === false && diag.workspace?.exists !== false,
     fix: `# Fix: Create a basic SOUL.md
 WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
 cat > "$WORKSPACE/SOUL.md" << 'SOUL'
@@ -686,9 +682,10 @@ find "$WORKSPACE" -name "*.md" -size +10k -not -path "*/node_modules/*" 2>/dev/n
     description: 'Your context compaction has no reserveTokensFloor configured. When the context window fills up, important context may be lost without warning.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         const compaction = diag.config?.agents?.defaults?.compaction;
         return !compaction?.reserveTokensFloor && !compaction?.mode;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Set compaction safeguards
 jq '.agents.defaults.compaction.mode = "safeguard" |
@@ -703,7 +700,7 @@ echo "✅ Compaction safeguard enabled (32K token reserve)"`,
     severity: 'low',
     title: 'No AGENTS.md found',
     description: 'AGENTS.md provides instructions for your agent on how to use the workspace, handle memory, and behave in different contexts. Without it, your agent lacks operational guidance.',
-    detect: (diag) => !diag.workspace?.hasAgents,
+    detect: (diag) => diag.workspace?.hasAgents === false && diag.workspace?.exists !== false,
     fix: `# Fix: Create a basic AGENTS.md
 WORKSPACE=$(jq -r '.agents.defaults.workspace // "~/.openclaw/workspace"' ~/.openclaw/openclaw.json)
 cat > "$WORKSPACE/AGENTS.md" << 'EOF'
@@ -749,8 +746,9 @@ echo "✅ Heartbeat model set to Sonnet (cheaper than default)"`,
     description: 'Enabling session transcript indexing improves memory recall by making past conversation content searchable.',
     detect: (diag) => {
       try {
+        if (!hasAgentDefaultsTelemetry(diag)) return false;
         return !diag.config?.agents?.defaults?.memorySearch?.sessionTranscripts?.enabled;
-      } catch { return true; }
+      } catch { return false; }
     },
     fix: `# Fix: Enable session transcript indexing
 jq '.agents.defaults.memorySearch.sessionTranscripts.enabled = true' \\
@@ -1653,6 +1651,51 @@ echo "  grep -c '^[A-Z_]' ~/.openclaw/.env"`,
   },
 ];
 
+const OPTIMIZATION_ISSUE_IDS = new Set([
+  'codex-service-tier-not-fast',
+  'no-hybrid-search',
+  'no-context-pruning',
+  'no-memory-flush',
+  'no-soul',
+  'no-memory-files',
+  'heartbeat-no-model-override',
+  'gateway-watchdog-missing',
+]);
+
+export function classifyKnownIssue(issue) {
+  if (OPTIMIZATION_ISSUE_IDS.has(issue.id)) return 'optimization';
+  if (issue.severity === 'critical' || issue.severity === 'high') return 'failure';
+  return 'warning';
+}
+
+function normalizeLocalIssueText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function matchLocalKnownIssues(localIssues, existingIssues = []) {
+  if (!Array.isArray(localIssues)) return [];
+  const knownById = new Map(KNOWN_ISSUES.map(issue => [issue.id, issue]));
+  const knownByTitle = new Map(KNOWN_ISSUES.map(issue => [normalizeLocalIssueText(issue.title), issue]));
+  const matchedIds = new Set(existingIssues.map(issue => issue.id));
+  const matches = [];
+
+  for (const local of localIssues) {
+    if (!local || typeof local !== 'object') continue;
+    const explicitId = local.knownIssueId || local.issueId || local.id;
+    const known = (typeof explicitId === 'string' ? knownById.get(explicitId) : null)
+      || knownByTitle.get(normalizeLocalIssueText(local.text));
+    if (!known || matchedIds.has(known.id)) continue;
+
+    matches.push({
+      ...known,
+      severity: local.severity || known.severity,
+      kind: local.kind || classifyKnownIssue({ ...known, severity: local.severity || known.severity }),
+    });
+    matchedIds.add(known.id);
+  }
+  return matches;
+}
+
 /**
  * Run all pattern detections against a diagnostic payload
  */
@@ -1668,6 +1711,7 @@ export function detectIssues(diagnostic) {
     .map(issue => ({
       id: issue.id,
       severity: issue.severity,
+      kind: classifyKnownIssue(issue),
       title: issue.title,
       description: issue.description,
       fix: issue.fix,

@@ -1,46 +1,41 @@
-name: Release CLI
-
-# Runs on semver tag pushes only (`v0.9.0`, `v1.0.0-rc.1`, etc.).
-# Publishes cli/ to npm and creates a GitHub Release with auto-generated notes.
+name: CI
 
 on:
+  pull_request:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  publish-cli:
+  test:
+    name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Setup Node 22
+      - name: Setup Node
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: ${{ matrix.node }}
           cache: npm
 
-      - name: Install dependencies from lockfile
+      - name: Install dependencies
         run: npm ci
 
       - name: Install repair validators
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
-
-      - name: Verify tag and package versions
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          ROOT=$(node -p "require('./package.json').version")
-          CLI=$(node -p "require('./cli/package.json').version")
-          if [ "$TAG" != "$CLI" ] || [ "$ROOT" != "$CLI" ]; then
-            echo "::error ::Tag v$TAG, root version $ROOT, and CLI version $CLI must match"
-            exit 1
-          fi
 
       - name: Syntax-check CLI and tooling
         run: |
@@ -69,14 +64,24 @@ jobs:
           npm pack ./cli --dry-run --json --cache /tmp/clawfix-npm-cache > "$manifest"
           node scripts/verify-cli-package.mjs "$manifest"
 
-      - name: Publish CLI to npm
-        working-directory: cli
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  container:
+    name: Production container
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          name: Release ${{ github.ref_name }}
+      - name: Build production image
+        run: docker build -t clawfix:ci .
+
+      - name: Smoke-test production image
+        run: |
+          container=$(docker run --detach --env PORT=3210 --publish 3210:3210 clawfix:ci)
+          trap 'docker logs "$container"; docker rm --force "$container"' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error http://127.0.0.1:3210/api/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1

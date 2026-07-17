@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { safeJsonForHtml, validateFixId } from '../../cli/bin/security.js';
 
 export const resultsRouter = Router();
 
@@ -7,8 +8,10 @@ export const resultsRouter = Router();
  * Flow: user runs curl command → gets a fix ID → visits /results/:fixId in browser
  */
 resultsRouter.get('/results/:fixId', (req, res) => {
+  const fixId = validateFixId(req.params.fixId);
+  if (!fixId) return res.status(400).type('text/plain').send('Invalid fix ID');
   res.setHeader('Content-Type', 'text/html');
-  res.send(resultsPage(req.params.fixId));
+  res.send(resultsPage(fixId));
 });
 
 function resultsPage(fixId) {
@@ -118,7 +121,7 @@ function resultsPage(fixId) {
   </div>
 
   <script>
-    const fixId = "${fixId}";
+    const fixId = ${safeJsonForHtml(fixId)};
     const API_BASE = window.location.origin;
 
     async function loadResults() {
@@ -146,7 +149,12 @@ function resultsPage(fixId) {
 
     function renderResults(data) {
       const issues = data.knownIssues || [];
-      const count = data.issuesFound || issues.length;
+      const count = typeof data.issuesFound === 'number'
+        ? data.issuesFound
+        : issues.filter(issue => issue.kind !== 'optimization').length;
+      const optimizationCount = typeof data.optimizationsFound === 'number'
+        ? data.optimizationsFound
+        : issues.filter(issue => issue.kind === 'optimization').length;
 
       let html = '';
 
@@ -168,17 +176,21 @@ function resultsPage(fixId) {
 
       // Summary
       html += '<div class="summary">';
-      html += '<h2>' + (count === 0 ? '✅ No Issues Found' : '🔍 Found ' + count + ' Issue' + (count > 1 ? 's' : '')) + '</h2>';
-      html += '<p style="color:var(--muted)">' + (data.analysis || 'Pattern matching analysis complete.') + '</p>';
+      html += '<h2>' + (count === 0
+        ? '✅ Healthy' + (optimizationCount > 0 ? ' — ' + optimizationCount + ' Optional Optimization' + (optimizationCount > 1 ? 's' : '') : '')
+        : '🔍 Found ' + count + ' Issue' + (count > 1 ? 's' : '') + (optimizationCount > 0 ? ' and ' + optimizationCount + ' Optimization' + (optimizationCount > 1 ? 's' : '') : '')) + '</h2>';
+      html += '<p style="color:var(--muted)">' + escapeHtml(data.analysis || 'Pattern matching analysis complete.') + '</p>';
       html += '</div>';
 
       // Issues list
       if (issues.length > 0) {
         issues.forEach(issue => {
-          var borderColor = {critical: 'var(--red)', high: '#f97316', medium: 'var(--yellow)', low: 'var(--blue)'}[issue.severity] || 'var(--border)';
+          var severity = ['critical', 'high', 'medium', 'low'].includes(issue.severity) ? issue.severity : 'medium';
+          var optional = issue.kind === 'optimization';
+          var borderColor = optional ? 'var(--blue)' : ({critical: 'var(--red)', high: '#f97316', medium: 'var(--yellow)', low: 'var(--blue)'}[severity] || 'var(--border)');
           html += '<div class="issue" style="border-left:3px solid ' + borderColor + '">';
-          html += '<h3><span class="badge badge-' + issue.severity + '" style="font-size:0.8rem;padding:3px 10px">' + issue.severity.toUpperCase() + '</span> ' + issue.title + '</h3>';
-          html += '<p>' + issue.description + '</p>';
+          html += '<h3><span class="badge badge-' + severity + '" style="font-size:0.8rem;padding:3px 10px">' + (optional ? 'OPTIONAL' : severity.toUpperCase()) + '</span> ' + escapeHtml(issue.title || 'Finding') + '</h3>';
+          html += '<p>' + escapeHtml(issue.description || '') + '</p>';
           html += '</div>';
         });
       }
@@ -220,8 +232,8 @@ function resultsPage(fixId) {
       }
 
       // Meta
-      html += '<p class="meta">Fix ID: ' + data.fixId + ' · Generated: ' + new Date(data.timestamp).toLocaleString();
-      html += ' · Model: ' + (data.model || 'pattern-matching');
+      html += '<p class="meta">Fix ID: ' + escapeHtml(data.fixId || fixId) + ' · Generated: ' + escapeHtml(new Date(data.timestamp).toLocaleString());
+      html += ' · Model: ' + escapeHtml(data.model || 'pattern-matching');
       html += '<br><a href="/">← Back to ClawFix</a></p>';
 
       document.getElementById('content').innerHTML = html;
@@ -231,7 +243,7 @@ function resultsPage(fixId) {
     }
 
     function escapeHtml(str) {
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
 
     function copyScript() {

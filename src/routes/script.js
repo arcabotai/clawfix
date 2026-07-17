@@ -52,7 +52,7 @@ set -euo pipefail
 
 # --- Config ---
 API_URL="\${CLAWFIX_API:-https://clawfix.dev}"
-VERSION="0.4.0"
+VERSION="0.9.0"
 
 # --- Colors ---
 RED='\\033[0;31m'
@@ -139,7 +139,9 @@ echo ""
 echo -e "\${BLUE}🔒 Reading config (secrets will be redacted)...\${NC}"
 
 SANITIZED_CONFIG="{}"
+CONFIG_EXISTS=false
 if [ -n "\$OPENCLAW_CONFIG" ]; then
+  CONFIG_EXISTS=true
   # Redact anything that looks like a key, token, secret, or password
   SANITIZED_CONFIG=\$(jq '
     walk(
@@ -378,6 +380,7 @@ DIAGNOSTIC=\$(cat <<EOF
     "version": "\${OC_VERSION:-unknown}",
     "binary": "\${OPENCLAW_BIN:-not found}",
     "configDir": "\${OPENCLAW_DIR:-not found}",
+    "configExists": \$CONFIG_EXISTS,
     "gatewayStatus": \$(echo "\$GATEWAY_STATUS" | jq -Rs .),
     "gatewayPid": "\${GATEWAY_PID:-none}",
     "gatewayPort": "\${GATEWAY_PORT:-18789}",
@@ -447,17 +450,17 @@ if echo "\$SANITIZED_CONFIG" | jq -e '.plugins.entries["openclaw-mem0"].config.e
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Mem0 enableGraph requires Pro plan (will silently fail)\${NC}\\n"
 fi
 
-if ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.memorySearch.query.hybrid.enabled == true' &>/dev/null; then
+if [ "\$CONFIG_EXISTS" = true ] && echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults' &>/dev/null && ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.memorySearch.query.hybrid.enabled == true' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Hybrid search not enabled (recommended)\${NC}\\n"
 fi
 
-if ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.contextPruning' &>/dev/null; then
+if [ "\$CONFIG_EXISTS" = true ] && echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults' &>/dev/null && ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.contextPruning' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  No context pruning configured\${NC}\\n"
 fi
 
-if ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.compaction.memoryFlush.enabled == true' &>/dev/null; then
+if [ "\$CONFIG_EXISTS" = true ] && echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults' &>/dev/null && ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.compaction.memoryFlush.enabled == true' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Memory flush not enabled (data loss on compaction)\${NC}\\n"
 fi
@@ -510,12 +513,14 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • Recent error logs (last 30 lines matching error/warn)"
   echo "  • Plugin status (enabled/disabled only)"
   echo "  • Gateway status"
+  echo "  • Source IP is processed transiently by ClawFix for abuse prevention"
+  echo "  • Redacted diagnostic data is analyzed by ClawFix and OpenRouter"
   echo ""
   echo -e "\${YELLOW}NOT sent:\${NC}"
   echo "  • API keys, tokens, passwords (all redacted)"
   echo "  • File contents (SOUL.md, AGENTS.md, etc.)"
   echo "  • Chat history or messages"
-  echo "  • IP address or real hostname (hashed to 8 chars)"
+  echo "  • Real hostname (only an 8-character one-way hash is sent)"
   echo ""
   echo -e "\${YELLOW}To inspect the full payload first:\${NC}"
   echo "  npx clawfix --dry-run"

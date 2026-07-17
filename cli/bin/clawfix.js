@@ -15,9 +15,38 @@ import { homedir, platform, arch, release, hostname } from 'node:os';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
+import {
+  collectListeningPort,
+  collectNativeConfigValidation,
+  collectNativeDoctor,
+  collectNativeSecurityAudit,
+  collectNativeStatus,
+  collectOpenClawVersion,
+} from './native-diagnostics.js';
+import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
+import { countMarkdownFiles } from './workspace.js';
 
 // --- Config ---
-const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
+const args = process.argv.slice(2);
+const serverArgIndex = args.indexOf('--server');
+const inlineServerArg = args.find(arg => arg.startsWith('--server='));
+const serverArg = inlineServerArg?.slice('--server='.length)
+  || (serverArgIndex >= 0 && !args[serverArgIndex + 1]?.startsWith('-') ? args[serverArgIndex + 1] : '');
+const rawApiUrl = serverArg || process.env.CLAWFIX_API || 'https://clawfix.dev';
+let API_URL = rawApiUrl;
+let API_URL_ERROR = '';
+try {
+  const parsedApiUrl = new URL(rawApiUrl);
+  if (!['http:', 'https:'].includes(parsedApiUrl.protocol)) throw new Error('must use http or https');
+  API_URL = parsedApiUrl.href.replace(/\/$/, '');
+} catch (error) {
+  API_URL_ERROR = `Invalid ClawFix API URL: ${error.message}`;
+}
+const API_TOKEN = process.env.CLAWFIX_API_TOKEN || '';
+const API_HEADERS = Object.freeze({
+  'Content-Type': 'application/json',
+  ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+});
 const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -27,13 +56,15 @@ const VERSION = (() => {
 })();
 
 // --- Flags ---
-const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run') || args.includes('-n');
+const NO_SEND = args.includes('--no-send') || args.includes('--local-only');
 const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
 const AUTO_SEND = process.env.CLAWFIX_AUTO === '1' || args.includes('--yes') || args.includes('-y');
 const SHOW_HELP = args.includes('--help') || args.includes('-h');
 const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
-const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || DRY_RUN;
+const JSON_ONLY = args.includes('--json');
+const LOCAL_ONLY = DRY_RUN || NO_SEND || JSON_ONLY;
+const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || SHOW_DATA || LOCAL_ONLY;
 
 // --- Colors ---
 const c = {
@@ -66,31 +97,9 @@ function hashStr(s) {
 
 function sanitizeConfig(config) {
   if (!config || typeof config !== 'object') return config;
-
-  const redact = (obj) => {
-    if (typeof obj === 'string') {
-      if (obj.length > 20 && /^(sk-|xai-|eyJ|ghp_|gho_|npm_|m0-|AIza|ntn_)/.test(obj)) return '***REDACTED***';
-      if (obj.length > 40 && /^[A-Za-z0-9+/=]+$/.test(obj)) return '***REDACTED***';
-      return obj;
-    }
-    if (Array.isArray(obj)) return obj.map(redact);
-    if (obj && typeof obj === 'object') {
-      const result = {};
-      for (const [k, v] of Object.entries(obj)) {
-        if (/key|token|secret|password|jwt|apikey|accesstoken/i.test(k)) {
-          result[k] = '***REDACTED***';
-        } else if (k === 'env') {
-          continue;
-        } else {
-          result[k] = redact(v);
-        }
-      }
-      return result;
-    }
-    return obj;
-  };
-
-  return redact(config);
+  const copy = { ...config };
+  delete copy.env;
+  return redactOutbound(copy);
 }
 
 // ============================================================
@@ -206,20 +215,12 @@ const BUILTIN_FIXES = {
   },
 
   'port-conflict': {
-    description: 'Kill process on gateway port and restart',
+    description: 'Review the process occupying the gateway port',
     risk: 'medium',
-    needsConfig: true,
-    needsRestart: true,
-    informational: false,
-    apply: (config) => {
-      const port = config?.gateway?.port || 18789;
-      const pid = run(`lsof -ti :${port} 2>/dev/null`);
-      if (pid) {
-        try { execSync(`kill ${pid.split('\\n')[0]}`, { timeout: 5000 }); } catch {}
-        return { changes: [`Killed process ${pid.split('\\n')[0]} on port ${port}`] };
-      }
-      return { changes: [`No process found on port ${port}`] };
-    }
+    needsConfig: false,
+    needsRestart: false,
+    informational: true,
+    apply: () => ({ changes: ['No process stopped; review the listener evidence first'] })
   },
 
   'mem0-graph-free': {
@@ -623,10 +624,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const npmVersion = run('npm --version');
   const hostHash = hashStr(hostname());
 
-  let ocVersion = '';
-  if (openclawBin) {
-    ocVersion = run(`"${openclawBin}" --version`);
-  }
+  const versionProbe = openclawBin
+    ? collectOpenClawVersion(openclawBin)
+    : { version: '', runtimeCompatible: false, error: 'OpenClaw binary not found' };
+  const ocVersion = versionProbe.version;
 
   log(`   OS: ${osName} ${osVersion} (${osArch})`);
   log(`   Node: ${nodeVersion}`);
@@ -790,8 +791,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
     hasAgents = await exists(join(workspaceDir, 'AGENTS.md'));
 
     try {
-      const files = run(`find "${workspaceDir}" -name "*.md" 2>/dev/null | wc -l`);
-      mdFiles = parseInt(files) || 0;
+      mdFiles = await countMarkdownFiles(workspaceDir);
     } catch {}
 
     const memDir = join(workspaceDir, 'memory');
@@ -814,11 +814,20 @@ async function collectDiagnostics({ quiet = false } = {}) {
   log(c.blue('🔗 Checking port availability...'));
 
   const portResults = {};
+  const portEvidence = {};
   const checkPort = (port, name) => {
-    const inUse = run(`lsof -i :${port} 2>/dev/null | grep LISTEN`) ||
-                  run(`ss -tlnp 2>/dev/null | grep :${port}`);
-    if (inUse) {
-      log(c.yellow(`   ⚠️  Port ${port} (${name}) — IN USE`));
+    const evidence = collectListeningPort(port);
+    portEvidence[port] = evidence;
+    if (!evidence.valid) {
+      log(c.red(`   ❌ Port ${String(port)} (${name}) — invalid configuration`));
+      portResults[port] = false;
+      return false;
+    }
+    if (evidence.listening) {
+      const owner = evidence.process && evidence.pid
+        ? ` by ${evidence.process} (PID ${evidence.pid})`
+        : '';
+      log(c.yellow(`   ⚠️  Port ${port} (${name}) — IN USE${owner}`));
       portResults[port] = true;
       return true;
     } else {
@@ -832,8 +841,61 @@ async function collectDiagnostics({ quiet = false } = {}) {
   checkPort(18800, 'browser CDP');
   checkPort(18791, 'browser control');
 
+  // --- Native OpenClaw Doctor (read-only structured findings) ---
+  log('');
+  log(c.blue('🩺 Running OpenClaw native health checks...'));
+  const nativeDoctor = openclawBin
+    ? collectNativeDoctor(openclawBin)
+    : { available: false, checksRun: 0, checksSkipped: 0, findings: [] };
+  if (nativeDoctor.available) {
+    const icon = nativeDoctor.findings.length > 0 ? c.yellow('⚠️') : c.green('✅');
+    log(`   ${icon} Doctor: ${nativeDoctor.checksRun} checks, ${nativeDoctor.findings.length} relevant finding(s)`);
+  } else {
+    log(c.dim('   Native Doctor JSON unavailable on this OpenClaw version'));
+  }
+
+  const canRunNativeEvidence = Boolean(openclawBin && versionProbe.runtimeCompatible);
+  const nativeConfig = canRunNativeEvidence
+    ? collectNativeConfigValidation(openclawBin)
+    : { available: false, valid: null, warnings: [], errors: [] };
+  const nativeStatus = canRunNativeEvidence
+    ? collectNativeStatus(openclawBin)
+    : { available: false };
+  const nativeSecurity = canRunNativeEvidence
+    ? collectNativeSecurityAudit(openclawBin)
+    : { available: false, findings: [] };
+
+  if (nativeConfig.available) {
+    const icon = nativeConfig.valid === true ? c.green('✅') :
+      nativeConfig.valid === false ? c.red('❌') : c.yellow('⚠️');
+    const label = nativeConfig.valid === true ? 'valid' :
+      nativeConfig.valid === false ? 'invalid' : 'unknown';
+    log(`   ${icon} Config schema: ${label}`);
+  }
+  if (nativeStatus.available) {
+    const icon = nativeStatus.gateway.reachable ? c.green('✅') : c.yellow('⚠️');
+    log(`   ${icon} Gateway reachability: ${nativeStatus.gateway.reachable ? 'reachable' : 'unreachable'}`);
+  }
+  if (nativeSecurity.available) {
+    const critical = nativeSecurity.summary.critical;
+    const warning = nativeSecurity.summary.warning;
+    const icon = critical > 0 ? c.red('❌') : warning > 0 ? c.yellow('⚠️') : c.green('✅');
+    log(`   ${icon} Security audit: ${critical} critical, ${warning} warning`);
+  }
+
   // --- Local Issue Detection ---
   const issues = [];
+  const gatewayPortFinding = portEvidence[gatewayPort]?.finding;
+  if (gatewayPortFinding) {
+    issues.push({
+      severity: 'high',
+      kind: 'failure',
+      text: gatewayPortFinding.message,
+      source: 'clawfix-port-probe',
+      nativeCheckId: gatewayPortFinding.checkId,
+      path: gatewayPortFinding.path,
+    });
+  }
   const activeModelRefs = [];
   const addActiveModelRef = (value) => {
     if (!value) return;
@@ -882,11 +944,25 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
   const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
-  if (gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) {
+  const listenerPid = Number(portEvidence[gatewayPort]?.pid);
+  const expectedGatewayPid = Number.parseInt(String(gatewayPid || ''), 10);
+  const competingPortOwner = portEvidence[gatewayPort]?.listening === true &&
+    Number.isSafeInteger(listenerPid) && listenerPid > 0 && (
+      (Number.isSafeInteger(expectedGatewayPid) && expectedGatewayPid > 0 && listenerPid !== expectedGatewayPid) ||
+      !gatewayPid
+    );
+  if ((gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) && !competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Gateway is not running' });
   }
-  if (/EADDRINUSE/i.test(errorLogs)) {
+  if (competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Port conflict detected' });
+  }
+  if (versionProbe.runtimeCompatible === false && versionProbe.runtimeRequired) {
+    issues.push({
+      severity: 'critical',
+      text: `OpenClaw requires Node ${versionProbe.runtimeRequired} (current: ${versionProbe.runtimeCurrent || nodeVersion})`,
+      source: 'openclaw-runtime',
+    });
   }
   if ((config?.plugins?.load?.paths || []).some(path => (
     typeof path === 'string' && /openclaw\/dist\/extensions\//.test(path)
@@ -894,19 +970,18 @@ async function collectDiagnostics({ quiet = false } = {}) {
     issues.push({ severity: 'medium', text: 'Stale bundled plugin load paths configured' });
   }
   if (codexPluginEnabled && (activeModelRefs.some(ref => String(ref).startsWith('openai-codex/')) || hasPiFallback)) {
-    issues.push({ severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
+    issues.push({ knownIssueId: 'pi-backed-openai-codex-route', severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
   }
-  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs) ||
-      (hasNativeCodexRuntime && codexAppServer.sandbox === 'workspace-write')) {
-    issues.push({ severity: 'high', text: 'Codex session-store permission failure' });
+  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs)) {
+    issues.push({ knownIssueId: 'codex-session-store-permission', severity: 'high', text: 'Codex session-store permission failure' });
   }
   if (codexPluginEnabled && hasNativeCodexRuntime && !shellCodexHomeMatchesExpected) {
-    issues.push({ severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
+    issues.push({ knownIssueId: 'codex-shell-home-mismatch', severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
   }
   if (codexPluginEnabled &&
       (hasNativeCodexRuntime || activeModelRefs.some(ref => String(ref).startsWith('openai/'))) &&
       codexAppServer.serviceTier !== 'fast') {
-    issues.push({ severity: 'low', text: 'Codex app-server fast tier is not enabled' });
+    issues.push({ knownIssueId: 'codex-service-tier-not-fast', severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
   }
   const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
   const activeMemoryTimeoutMs = Number(config?.plugins?.entries?.['active-memory']?.config?.timeoutMs ?? NaN);
@@ -917,7 +992,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
       hasNativeCodexRuntime &&
       codexTimeoutSymptoms &&
       (codexRequestTimeoutMs <= 60000 || activeMemoryTimeoutMs <= 60000)) {
-    issues.push({ severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
+    issues.push({ knownIssueId: 'native-codex-timeout-boundary', severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
   }
 
   const sigtermCount = (gatewayLogTail.match(/signal SIGTERM/gi) || []).length;
@@ -956,24 +1031,100 @@ async function collectDiagnostics({ quiet = false } = {}) {
   if (config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
   }
-  if (!config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled) {
-    issues.push({ severity: 'medium', text: 'Hybrid search not enabled (recommended)' });
+  if (config?.agents?.defaults && !config.agents.defaults.memorySearch?.query?.hybrid?.enabled) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)' });
   }
-  if (!config?.agents?.defaults?.contextPruning) {
-    issues.push({ severity: 'medium', text: 'No context pruning configured' });
+  if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
   }
-  if (!config?.agents?.defaults?.compaction?.memoryFlush?.enabled) {
-    issues.push({ severity: 'medium', text: 'Memory flush not enabled (data loss on compaction)' });
+  if (config?.agents?.defaults && !config.agents.defaults.compaction?.memoryFlush?.enabled) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Memory flush not enabled (data loss on compaction)' });
   }
   if (!hasSoul && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No SOUL.md found (agent has no personality)' });
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
   }
   if (memoryFiles === 0 && workspaceDir) {
-    issues.push({ severity: 'low', text: 'No memory files found' });
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No memory files found' });
+  }
+
+  if (nativeConfig.available && nativeConfig.valid === false) {
+    issues.push({
+      severity: 'high',
+      text: nativeConfig.errors[0]?.message || 'OpenClaw config schema validation failed',
+      source: 'openclaw-config',
+      nativeCheckId: 'config/schema-invalid',
+      path: nativeConfig.errors[0]?.path || null,
+    });
+  }
+
+  if (
+    nativeStatus.available &&
+    nativeStatus.gateway.reachable === false &&
+    !issues.some(issue => /gateway.*not running|gateway.*unreachable/i.test(issue.text))
+  ) {
+    issues.push({
+      severity: 'critical',
+      text: nativeStatus.gateway.error || 'OpenClaw gateway is unreachable',
+      source: 'openclaw-status',
+      nativeCheckId: 'status/gateway-unreachable',
+    });
+  }
+
+  if (
+    competingPortOwner &&
+    nativeStatus.available &&
+    nativeStatus.gateway.reachable === false
+  ) {
+    const owner = portEvidence[gatewayPort].process;
+    const pid = portEvidence[gatewayPort].pid;
+    issues.push({
+      severity: 'critical',
+      text: `Gateway port ${gatewayPort} is occupied${owner ? ` by ${owner}` : ''}${pid ? ` (PID ${pid})` : ''}, but OpenClaw cannot reach it`,
+      source: 'clawfix-port-probe',
+      nativeCheckId: 'runtime/gateway-port-conflict',
+    });
+  }
+
+  for (const finding of nativeSecurity.findings) {
+    if (finding.severity === 'info') continue;
+    issues.push({
+      severity: finding.severity === 'critical' ? 'critical' :
+        finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.title || finding.message,
+      description: finding.message,
+      source: finding.source,
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
+  }
+
+  for (const finding of nativeDoctor.findings) {
+    const duplicate = issues.some(issue => (
+      issue.nativeCheckId === finding.checkId ||
+      issue.text.toLowerCase() === finding.message.toLowerCase()
+    ));
+    if (duplicate) continue;
+    issues.push({
+      severity: finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.message,
+      source: 'openclaw-doctor',
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
+  }
+
+  for (const issue of issues) {
+    if (!issue.kind) {
+      issue.kind = issue.severity === 'critical' || issue.severity === 'high'
+        ? 'failure'
+        : 'warning';
+    }
   }
 
   // --- Build Payload ---
-  const diagnostic = {
+  const diagnostic = redactOutbound({
     version: VERSION,
     timestamp: new Date().toISOString(),
     hostHash,
@@ -988,11 +1139,26 @@ async function collectDiagnostics({ quiet = false } = {}) {
       version: ocVersion || 'unknown',
       binary: openclawBin || 'not found',
       configDir: openclawDir || 'not found',
+      configExists: config !== null,
       gatewayStatus,
       gatewayPid: gatewayPid || 'none',
       gatewayPort,
+      processExists: Boolean(gatewayPid),
+      portListening: portResults[gatewayPort] === true,
+      runtimeCompatible: versionProbe.runtimeCompatible,
+      runtimeRequired: versionProbe.runtimeRequired,
+      runtimeCurrent: versionProbe.runtimeCurrent,
     },
     config: sanitizedConfig,
+    nativeConfig,
+    nativeDoctor,
+    nativeStatus,
+    nativeSecurity,
+    ports: {
+      gateway: { port: gatewayPort, ...portEvidence[gatewayPort] },
+      browserCdp: { port: 18800, ...portEvidence[18800] },
+      browserControl: { port: 18791, ...portEvidence[18791] },
+    },
     logs: {
       errors: errorLogs,
       stderr: stderrLogs,
@@ -1003,6 +1169,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
     service: serviceHealth,
     workspace: {
       path: workspaceDir || 'unknown',
+      exists: Boolean(workspaceDir && await exists(workspaceDir)),
       mdFiles,
       memoryFiles,
       hasSoul,
@@ -1016,7 +1183,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
       shellCodexHomeSet,
       shellCodexHomeMatchesExpected,
     },
-  };
+  });
 
   // Build summary for TUI display
   const gatewayIcon = gatewayRunning ? c.green('✓') : c.red('✗');
@@ -1025,8 +1192,12 @@ async function collectDiagnostics({ quiet = false } = {}) {
     : 'not running';
   const configIcon = config ? c.green('✓') : c.yellow('⚠');
   const configLabel = config ? 'loaded' : 'not found';
-  const issueIcon = issues.length === 0 ? c.green('✓') : c.yellow('⚠');
-  const issueLabel = issues.length === 0 ? 'No issues' : `${issues.length} issue(s) detected`;
+  const actionableIssueCount = issues.filter(issue => issue.kind !== 'optimization').length;
+  const optimizationCount = issues.length - actionableIssueCount;
+  const issueIcon = actionableIssueCount === 0 ? c.green('✓') : c.yellow('⚠');
+  const issueLabel = actionableIssueCount === 0
+    ? optimizationCount > 0 ? `Healthy; ${optimizationCount} optimization(s)` : 'No issues'
+    : `${actionableIssueCount} issue(s), ${optimizationCount} optimization(s)`;
 
   const summary = {
     gateway: { icon: gatewayIcon, label: gatewayLabel },
@@ -1044,9 +1215,24 @@ async function collectDiagnostics({ quiet = false } = {}) {
 // One-shot mode (legacy: --scan, --dry-run, --no-interactive)
 // ============================================================
 async function runOneShotMode() {
+  if (JSON_ONLY) {
+    const result = await collectDiagnostics({ quiet: true });
+    if (result.error) {
+      console.log(JSON.stringify({ ok: false, error: result.error }, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+    console.log(JSON.stringify({
+      ok: true,
+      diagnostic: result.diagnostic,
+      issues: result.issues,
+    }, null, 2));
+    return;
+  }
+
   console.log('');
   console.log(c.cyan(`🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic`));
-  if (DRY_RUN) console.log(c.yellow('   🔍 DRY RUN MODE — nothing will be sent'));
+  if (LOCAL_ONLY) console.log(c.yellow('   🔍 LOCAL-ONLY MODE — nothing will be sent'));
   console.log(c.cyan('━'.repeat(50)));
   console.log('');
 
@@ -1059,6 +1245,8 @@ async function runOneShotMode() {
   }
 
   const { diagnostic, issues } = result;
+  const actionableIssues = issues.filter(issue => issue.kind !== 'optimization');
+  const optimizations = issues.filter(issue => issue.kind === 'optimization');
 
   // --- Display issues ---
   console.log('');
@@ -1067,16 +1255,24 @@ async function runOneShotMode() {
   console.log(c.cyan('━'.repeat(50)));
   console.log('');
 
-  if (issues.length === 0) {
+  if (actionableIssues.length === 0) {
     console.log(c.green('✅ No issues detected! Your OpenClaw looks healthy.'));
   } else {
-    console.log(c.red(`Found ${issues.length} issue(s):`));
+    console.log(c.red(`Found ${actionableIssues.length} issue(s):`));
     console.log('');
-    for (const issue of issues) {
+    for (const issue of actionableIssues) {
       const icon = issue.severity === 'critical' ? c.red('❌') :
                    issue.severity === 'high' ? c.red('❌') :
                    c.yellow('⚠️');
       console.log(`   ${icon} [${issue.severity.toUpperCase()}] ${issue.text}`);
+    }
+  }
+
+  if (optimizations.length > 0) {
+    console.log('');
+    console.log(c.blue(`Optional optimizations (${optimizations.length}):`));
+    for (const issue of optimizations) {
+      console.log(`   ${c.blue('💡')} ${issue.text}`);
     }
   }
 
@@ -1085,7 +1281,7 @@ async function runOneShotMode() {
   console.log('');
 
   // --- Show collected data ---
-  if (DRY_RUN || SHOW_DATA) {
+  if (LOCAL_ONLY || SHOW_DATA) {
     console.log('');
     console.log(c.bold('📦 Data that would be sent:'));
     console.log(c.cyan('━'.repeat(50)));
@@ -1094,8 +1290,8 @@ async function runOneShotMode() {
     console.log('');
   }
 
-  if (DRY_RUN) {
-    console.log(c.yellow('🔍 Dry run complete — nothing was sent.'));
+  if (LOCAL_ONLY) {
+    console.log(c.yellow('🔍 Local scan complete — nothing was sent.'));
     console.log('');
     console.log('To send this data for AI analysis:');
     console.log(c.cyan('  npx clawfix'));
@@ -1106,8 +1302,11 @@ async function runOneShotMode() {
     return;
   }
 
-  if (issues.length === 0) {
-    console.log(c.green('Your OpenClaw is looking good! No fixes needed.'));
+  if (actionableIssues.length === 0) {
+    console.log(c.green('Your OpenClaw is looking good! No repairs needed.'));
+    if (optimizations.length > 0) {
+      console.log(`${optimizations.length} optional optimization(s) were listed above.`);
+    }
     console.log(`If you're still having issues, run with --show-data to see what would be collected.`);
     console.log('');
     console.log(c.cyan(`🦞 ClawFix — made by Arca (arcabot.eth)`));
@@ -1118,7 +1317,8 @@ async function runOneShotMode() {
 
   console.log(c.bold('Want AI-powered fixes? Send this diagnostic for analysis.'));
   console.log('');
-  console.log(c.dim('Data sent:     OS, versions, OpenClaw config (secrets redacted), error logs'));
+  console.log(c.dim('Data recipient: ClawFix and OpenRouter (AI analysis provider)'));
+  console.log(c.dim('Data sent:      OS, versions, OpenClaw config (secrets redacted), error logs'));
   console.log(c.dim('NOT sent:      API keys, file contents, chat history, real hostname'));
   console.log(c.dim('Inspect first: npx clawfix --dry-run'));
   console.log('');
@@ -1147,8 +1347,9 @@ async function runOneShotMode() {
   try {
     const response = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(diagnostic),
+      headers: API_HEADERS,
+      body: JSON.stringify(redactOutbound(diagnostic)),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -1159,7 +1360,7 @@ async function runOneShotMode() {
     const fixId = result.fixId;
 
     console.log('');
-    console.log(c.green(`✅ Diagnosis complete! Found ${result.issuesFound} issue(s).`));
+    console.log(c.green(`✅ Diagnosis complete! Found ${result.issuesFound} issue(s) and ${result.optimizationsFound || 0} optimization(s).`));
     console.log('');
 
     if (result.knownIssues) {
@@ -1212,6 +1413,25 @@ async function runInteractiveMode() {
   let diagnostic = null;
   let summary = null;
   let serverIssues = null; // issues returned from server after /api/diagnose
+  let sendConsent = AUTO_SEND;
+
+  async function uploadDiagnostic() {
+    if (!sendConsent) return;
+    const payload = redactOutbound({
+      ...diagnostic,
+      _localIssues: projectLocalIssuesForUpload(issues),
+    });
+    const resp = await fetch(`${API_URL}/api/diagnose`, {
+      method: 'POST',
+      headers: API_HEADERS,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    diagnosticId = data.fixId;
+    serverIssues = data.knownIssues || [];
+  }
 
   // --- Concurrency guard ---
   let busy = false;
@@ -1243,22 +1463,24 @@ async function runInteractiveMode() {
   issues = scanResult.issues;
   summary = scanResult.summary;
 
-  // --- Send diagnostic to server for AI context ---
-  try {
-    // Include locally-detected issues so server can match them to known fixes
-    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
-    const resp = await fetch(`${API_URL}/api/diagnose`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+  // Explicit consent is required before the first upload. This decision is
+  // retained for manual rescans and post-repair verification scans.
+  if (!sendConsent) {
+    console.log(c.dim('Optional AI analysis sends the redacted diagnostic to ClawFix and OpenRouter.'));
+    const consentRl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise(resolve => {
+      consentRl.question('Send redacted diagnostic for AI analysis? [y/N] ', resolve);
     });
-    if (resp.ok) {
-      const data = await resp.json();
-      diagnosticId = data.fixId;
-      serverIssues = data.knownIssues || [];
+    consentRl.close();
+    sendConsent = /^y(es)?$/i.test(answer.trim());
+  }
+
+  if (sendConsent) {
+    try {
+      await uploadDiagnostic();
+    } catch {
+      // Server unavailable — continue in local-only mode without changing consent.
     }
-  } catch {
-    // Server unavailable — continue in local-only mode
   }
 
   // --- Render TUI ---
@@ -1304,20 +1526,10 @@ async function runInteractiveMode() {
         issues = result.issues;
         summary = result.summary;
 
-        // Re-send to server
-        try {
-          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
-          const resp = await fetch(`${API_URL}/api/diagnose`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          if (resp.ok) {
-            const data = await resp.json();
-            diagnosticId = data.fixId;
-            serverIssues = data.knownIssues || [];
-          }
-        } catch {}
+        // Preserve the startup consent decision for rescans.
+        if (sendConsent) {
+          try { await uploadDiagnostic(); } catch {}
+        }
       }
       renderStatus(summary, issues, serverIssues);
       rl.prompt();
@@ -1344,20 +1556,10 @@ async function runInteractiveMode() {
           diagnostic = result.diagnostic;
           issues = result.issues;
           summary = result.summary;
-          // Re-send to server for updated known issues
-          try {
-            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
-            const resp = await fetch(`${API_URL}/api/diagnose`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-            if (resp.ok) {
-              const data = await resp.json();
-              diagnosticId = data.fixId;
-              serverIssues = data.knownIssues || [];
-            }
-          } catch {}
+          // Preserve the startup consent decision for post-fix rescans.
+          if (sendConsent) {
+            try { await uploadDiagnostic(); } catch {}
+          }
           return { issues, serverIssues };
         }
         return null;
@@ -1387,19 +1589,9 @@ async function runInteractiveMode() {
               diagnostic = result.diagnostic;
               issues = result.issues;
               summary = result.summary;
-              try {
-                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, text: i.text })) };
-                const resp = await fetch(`${API_URL}/api/diagnose`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
-                });
-                if (resp.ok) {
-                  const data = await resp.json();
-                  diagnosticId = data.fixId;
-                  serverIssues = data.knownIssues || [];
-                }
-              } catch {}
+              if (sendConsent) {
+                try { await uploadDiagnostic(); } catch {}
+              }
               return { issues, serverIssues };
             }
             return null;
@@ -1446,6 +1638,14 @@ async function runInteractiveMode() {
     }
 
     // --- Natural language → send to /chat ---
+    if (!sendConsent) {
+      console.log('');
+      console.log(c.yellow('  AI chat is local-only until you restart and explicitly opt in to upload.'));
+      console.log(c.dim('  Local commands still work: fix <#>, fix-all, scan, issues'));
+      console.log('');
+      rl.prompt();
+      return;
+    }
     console.log('');
     busy = true;
     try {
@@ -1537,11 +1737,13 @@ function renderIssues(issues, serverIssues) {
     return;
   }
 
-  console.log(c.bold('Detected Issues:'));
+  console.log(c.bold('Findings:'));
   for (let i = 0; i < all.length; i++) {
     const issue = all[i];
     const sev = issue.severity || 'medium';
-    const label = sev === 'critical' || sev === 'high'
+    const label = issue.kind === 'optimization'
+      ? c.blue('[OPTIONAL]')
+      : sev === 'critical' || sev === 'high'
       ? c.red(`[${sev.toUpperCase()}]`)
       : sev === 'medium'
         ? c.yellow(`[${sev.toUpperCase()}]`)
@@ -1619,8 +1821,9 @@ async function streamChat(message, diagnosticId, conversationId, rl) {
   try {
     const resp = await fetch(`${API_URL}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify({ diagnosticId, message, conversationId }),
+      signal: AbortSignal.timeout(95_000),
     });
 
     // Non-SSE fallback (e.g. AI not available)
@@ -1774,13 +1977,17 @@ Modes:
 
 Options:
   --dry-run, -n    Scan locally only — shows what would be collected, sends nothing
+  --no-send        Local-only scan; never uploads (alias: --local-only)
+  --json           Machine-readable local scan; sends nothing
   --show-data, -d  Display the full diagnostic payload before asking to send
+  --server URL     Use a custom ClawFix API server (http or https)
   --yes, -y        Skip confirmation prompt and send automatically
   --version, -v    Show version
   --help, -h       Show this help message
 
 Environment:
   CLAWFIX_API      Override API URL (default: https://clawfix.dev)
+  CLAWFIX_API_TOKEN  Optional bearer token for a protected ClawFix server
   CLAWFIX_AUTO=1   Same as --yes
 
 Interactive Commands:
@@ -1797,7 +2004,7 @@ Security:
   • All API keys, tokens, and passwords are automatically redacted
   • Your hostname is SHA-256 hashed (only first 8 chars sent)
   • No file contents are read (only existence checks)
-  • Nothing is sent without your explicit approval (unless --yes)
+  • ClawFix discloses OpenRouter and asks before the first upload (unless --yes)
   • Source code: https://github.com/arcabotai/clawfix
 
 Examples:
@@ -1806,6 +2013,17 @@ Examples:
   npx clawfix --dry-run        # See what data would be collected
   npx clawfix --yes --scan     # Auto-send for CI/scripting
 `);
+    return;
+  }
+
+  if ((serverArgIndex >= 0 || inlineServerArg) && !serverArg) {
+    console.error('Missing value for --server');
+    process.exitCode = 2;
+    return;
+  }
+  if (API_URL_ERROR) {
+    console.error(API_URL_ERROR);
+    process.exitCode = 2;
     return;
   }
 
