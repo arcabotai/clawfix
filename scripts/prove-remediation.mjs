@@ -69,6 +69,8 @@ await check('CLI requires consent and recursively redacts every upload', async (
   assert.match(cli, /Send redacted diagnostic for AI analysis\? \[y\/N\]/);
   assert.match(cli, /body: JSON\.stringify\(redactOutbound\(diagnostic\)\)/);
   assert.match(cli, /if \(!sendConsent\)[\s\S]{0,800}consentRl\.question/);
+  assert.match(cli, /serverArgIndex = args\.indexOf\('--server'\)/);
+  assert.match(cli, /const ONE_SHOT =[^;]*SHOW_DATA/);
 });
 
 await check('container context and runtime import are closed', async () => {

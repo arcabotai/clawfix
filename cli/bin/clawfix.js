@@ -27,7 +27,21 @@ import { redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
 
 // --- Config ---
-const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
+const args = process.argv.slice(2);
+const serverArgIndex = args.indexOf('--server');
+const inlineServerArg = args.find(arg => arg.startsWith('--server='));
+const serverArg = inlineServerArg?.slice('--server='.length)
+  || (serverArgIndex >= 0 && !args[serverArgIndex + 1]?.startsWith('-') ? args[serverArgIndex + 1] : '');
+const rawApiUrl = serverArg || process.env.CLAWFIX_API || 'https://clawfix.dev';
+let API_URL = rawApiUrl;
+let API_URL_ERROR = '';
+try {
+  const parsedApiUrl = new URL(rawApiUrl);
+  if (!['http:', 'https:'].includes(parsedApiUrl.protocol)) throw new Error('must use http or https');
+  API_URL = parsedApiUrl.href.replace(/\/$/, '');
+} catch (error) {
+  API_URL_ERROR = `Invalid ClawFix API URL: ${error.message}`;
+}
 const API_TOKEN = process.env.CLAWFIX_API_TOKEN || '';
 const API_HEADERS = Object.freeze({
   'Content-Type': 'application/json',
@@ -42,7 +56,6 @@ const VERSION = (() => {
 })();
 
 // --- Flags ---
-const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run') || args.includes('-n');
 const NO_SEND = args.includes('--no-send') || args.includes('--local-only');
 const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
@@ -51,7 +64,7 @@ const SHOW_HELP = args.includes('--help') || args.includes('-h');
 const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
 const JSON_ONLY = args.includes('--json');
 const LOCAL_ONLY = DRY_RUN || NO_SEND || JSON_ONLY;
-const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || LOCAL_ONLY;
+const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || SHOW_DATA || LOCAL_ONLY;
 
 // --- Colors ---
 const c = {
@@ -1967,12 +1980,14 @@ Options:
   --no-send        Local-only scan; never uploads (alias: --local-only)
   --json           Machine-readable local scan; sends nothing
   --show-data, -d  Display the full diagnostic payload before asking to send
+  --server URL     Use a custom ClawFix API server (http or https)
   --yes, -y        Skip confirmation prompt and send automatically
   --version, -v    Show version
   --help, -h       Show this help message
 
 Environment:
   CLAWFIX_API      Override API URL (default: https://clawfix.dev)
+  CLAWFIX_API_TOKEN  Optional bearer token for a protected ClawFix server
   CLAWFIX_AUTO=1   Same as --yes
 
 Interactive Commands:
@@ -1998,6 +2013,17 @@ Examples:
   npx clawfix --dry-run        # See what data would be collected
   npx clawfix --yes --scan     # Auto-send for CI/scripting
 `);
+    return;
+  }
+
+  if ((serverArgIndex >= 0 || inlineServerArg) && !serverArg) {
+    console.error('Missing value for --server');
+    process.exitCode = 2;
+    return;
+  }
+  if (API_URL_ERROR) {
+    console.error(API_URL_ERROR);
+    process.exitCode = 2;
     return;
   }
 
