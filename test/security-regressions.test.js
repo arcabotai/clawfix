@@ -105,6 +105,13 @@ test('rate limiter and concurrency gate fail closed at configured budgets', asyn
   now += 1001;
   assert.equal(limiter.consume('ip').allowed, true);
 
+  const bounded = createRateLimiter({ limit: 1, windowMs: 1000, maxKeys: 2, now: () => now });
+  assert.equal(bounded.consume('a').allowed, true);
+  assert.equal(bounded.consume('b').allowed, true);
+  assert.equal(bounded.consume('c').allowed, false);
+  now += 1001;
+  assert.equal(bounded.consume('c').allowed, true);
+
   const gate = createConcurrencyGate(1);
   const release = gate.tryAcquire();
   assert.equal(typeof release, 'function');

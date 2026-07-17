@@ -26,18 +26,25 @@ export function validateChatBody(body) {
   return { ok: true };
 }
 
-export function createRateLimiter({ limit, windowMs, now = Date.now } = {}) {
+export function createRateLimiter({ limit, windowMs, now = Date.now, maxKeys = 10_000 } = {}) {
   const buckets = new Map();
+  let nextSweepAt = 0;
   return {
     consume(key) {
       const time = now();
+      if (time >= nextSweepAt) {
+        for (const [entryKey, entry] of buckets) {
+          if (time >= entry.resetAt) buckets.delete(entryKey);
+        }
+        nextSweepAt = time + windowMs;
+      }
       let bucket = buckets.get(key);
+      if (!bucket && buckets.size >= maxKeys) {
+        return { allowed: false, remaining: 0, resetAt: nextSweepAt };
+      }
       if (!bucket || time >= bucket.resetAt) bucket = { count: 0, resetAt: time + windowMs };
       bucket.count += 1;
       buckets.set(key, bucket);
-      if (buckets.size > 10_000) {
-        for (const [entryKey, entry] of buckets) if (time >= entry.resetAt) buckets.delete(entryKey);
-      }
       return { allowed: bucket.count <= limit, remaining: Math.max(0, limit - bucket.count), resetAt: bucket.resetAt };
     },
   };
