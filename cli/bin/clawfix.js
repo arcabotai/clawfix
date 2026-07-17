@@ -51,7 +51,7 @@ const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   } catch {
-    return '0.9.0';
+    return '0.9.1';
   }
 })();
 
