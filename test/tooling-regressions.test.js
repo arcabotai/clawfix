@@ -38,9 +38,10 @@ test('release installs from lockfile and runs every pre-publish gate', async () 
 });
 
 test('Docker build is strict, least-privilege, and copies only runtime inputs', async () => {
-  const [dockerfile, dockerignore] = await Promise.all([
+  const [dockerfile, dockerignore, ci] = await Promise.all([
     read('Dockerfile'),
     read('.dockerignore'),
+    read('.github/workflows/ci.yml'),
   ]);
 
   assert.match(dockerfile, /npm ci --omit=dev/);
@@ -49,12 +50,14 @@ test('Docker build is strict, least-privilege, and copies only runtime inputs', 
   assert.match(dockerfile, /COPY --chown=node:node cli\/bin\/security\.js \.\/cli\/bin\/security\.js/);
   assert.match(dockerfile, /RUN node -e .*import\('\.\/src\/server\.js'\)/);
   assert.match(dockerfile, /^HEALTHCHECK /m);
+  assert.match(dockerfile, /process\.env\.PORT \|\| '3001'/);
+  assert.match(ci, /--env PORT=3210 --publish 3210:3210/);
+  assert.match(ci, /127\.0\.0\.1:3210\/api\/health/);
   assert.doesNotMatch(dockerfile, /^COPY \. \.$/m);
   assert.match(dockerignore, /^\*$/m);
   for (const allowed of ['!package.json', '!package-lock.json', '!src/**', '!cli/bin/security.js']) {
     assert.match(dockerignore, new RegExp(`^${allowed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   }
-  const ci = await read('.github/workflows/ci.yml');
   assert.match(ci, /docker run .*clawfix:ci/);
   assert.match(ci, /curl --fail .*\/api\/health/);
 });

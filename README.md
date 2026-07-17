@@ -158,7 +158,7 @@ CLAWFIX_API=http://localhost:3001 npx clawfix
 | `AI_MAX_TOKENS` | `3000` | Maximum generated tokens per AI request |
 | `AI_TIMEOUT_MS` | `90000` | Upstream AI request timeout in milliseconds |
 | `CLAWFIX_API_TOKEN` | — | Optional bearer token required by AI endpoints; set the same value in the CLI environment |
-| `AI_DAILY_REQUEST_LIMIT` | `200` | Shared daily cap across paid AI diagnosis and chat requests |
+| `AI_DAILY_REQUEST_LIMIT` | `200` | Per-process daily cap across paid AI diagnosis and chat requests; use a provider spending cap or shared store across replicas |
 | `AI_MAX_CONCURRENCY` | `4` | Shared maximum in-flight paid AI requests |
 | `DIAGNOSE_RATE_LIMIT` | `10` | Per-client diagnosis requests per rate-limit window |
 | `CHAT_RATE_LIMIT` | `30` | Per-client chat requests per rate-limit window |

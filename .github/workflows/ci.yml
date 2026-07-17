@@ -76,10 +76,10 @@ jobs:
 
       - name: Smoke-test production image
         run: |
-          container=$(docker run --detach --publish 3001:3001 clawfix:ci)
+          container=$(docker run --detach --env PORT=3210 --publish 3210:3210 clawfix:ci)
           trap 'docker logs "$container"; docker rm --force "$container"' EXIT
           for attempt in $(seq 1 20); do
-            if curl --fail --silent --show-error http://127.0.0.1:3001/api/health >/dev/null; then
+            if curl --fail --silent --show-error http://127.0.0.1:3210/api/health >/dev/null; then
               exit 0
             fi
             sleep 1

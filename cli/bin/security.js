@@ -3,6 +3,18 @@ import { homedir } from 'node:os';
 export const FIX_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/;
 const REDACTED = '***REDACTED***';
 const SENSITIVE_KEY = /(?:^|_)(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|cookie|credential|jwt|password|private[_-]?key|secret|session[_-]?token|token)(?:$|_)/i;
+const ISSUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+
+function normalizeKey(value) {
+  return String(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^A-Za-z0-9]+/g, '_')
+    .toLowerCase();
+}
+
+function isSensitiveKey(value) {
+  return SENSITIVE_KEY.test(normalizeKey(value));
+}
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -30,18 +42,36 @@ export function redactOutbound(value, options = {}) {
   const walk = (item, key = '') => {
     if (item === null || item === undefined || typeof item === 'boolean' || typeof item === 'number') return item;
     if (typeof item === 'bigint') return item.toString();
-    if (typeof item === 'string') return SENSITIVE_KEY.test(key) ? REDACTED : redactText(item, options);
+    if (typeof item === 'string') return isSensitiveKey(key) ? REDACTED : redactText(item, options);
     if (typeof item !== 'object') return redactText(String(item), options);
     if (seen.has(item)) return '[Circular]';
     seen.add(item);
     if (Array.isArray(item)) return item.map(entry => walk(entry));
     const result = {};
     for (const [childKey, childValue] of Object.entries(item)) {
-      result[childKey] = SENSITIVE_KEY.test(childKey) ? REDACTED : walk(childValue, childKey);
+      result[childKey] = isSensitiveKey(childKey) ? REDACTED : walk(childValue, childKey);
     }
     return result;
   };
   return walk(value);
+}
+
+export function projectLocalIssuesForUpload(issues) {
+  if (!Array.isArray(issues)) return [];
+  return issues.slice(0, 100).map(issue => {
+    const projected = {
+      severity: issue?.severity,
+      kind: issue?.kind,
+      text: issue?.text,
+    };
+    if (typeof issue?.knownIssueId === 'string' && ISSUE_ID_PATTERN.test(issue.knownIssueId)) {
+      projected.knownIssueId = issue.knownIssueId;
+    }
+    if (typeof issue?.nativeCheckId === 'string' && ISSUE_ID_PATTERN.test(issue.nativeCheckId)) {
+      projected.nativeCheckId = issue.nativeCheckId;
+    }
+    return projected;
+  });
 }
 
 export function validateFixId(value) {

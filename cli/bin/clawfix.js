@@ -23,7 +23,7 @@ import {
   collectNativeStatus,
   collectOpenClawVersion,
 } from './native-diagnostics.js';
-import { redactOutbound } from './security.js';
+import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
 
 // --- Config ---
@@ -1419,7 +1419,7 @@ async function runInteractiveMode() {
     if (!sendConsent) return;
     const payload = redactOutbound({
       ...diagnostic,
-      _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })),
+      _localIssues: projectLocalIssuesForUpload(issues),
     });
     const resp = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',

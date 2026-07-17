@@ -7,6 +7,7 @@ import test from 'node:test';
 import { app } from '../src/server.js';
 import {
   FIX_ID_PATTERN,
+  projectLocalIssuesForUpload,
   redactOutbound,
   safeJsonForHtml,
   validateFixId,
@@ -25,6 +26,14 @@ test('recursive outbound redaction covers credentials, private keys, env assignm
   const home = process.env.HOME;
   const input = {
     config: { nested: { password: 'correct horse battery staple' } },
+    compoundKeys: {
+      clientSecret: 'client-secret-opaque',
+      botToken: 'bot-token-opaque',
+      githubToken: 'github-token-opaque',
+      refreshToken: 'refresh-token-opaque',
+      databasePassword: 'database-password-opaque',
+      array: [{ sessionToken: 'nested-session-token' }],
+    },
     log: [
       'Authorization: Bearer bearer-secret-value',
       'clone https://alice:super-secret@example.com/org/repo.git',
@@ -42,6 +51,35 @@ test('recursive outbound redaction covers credentials, private keys, env assignm
   }
   assert.match(redacted.log, /Authorization: Bearer \*\*\*REDACTED\*\*\*/);
   assert.match(redacted.log, /~\/\.openclaw/);
+  for (const value of Object.values(redacted.compoundKeys).flatMap(item => (
+    Array.isArray(item) ? item.map(entry => entry.sessionToken) : [item]
+  ))) {
+    assert.equal(value, '***REDACTED***');
+  }
+});
+
+test('local issue upload projection preserves only validated matcher IDs', () => {
+  const projected = projectLocalIssuesForUpload([
+    {
+      severity: 'high',
+      kind: 'failure',
+      text: 'Native Codex timeout can force gateway fallback',
+      knownIssueId: 'native-codex-timeout-boundary',
+      nativeCheckId: 'core/doctor/gateway-config',
+      issueId: 'discard-me',
+      repair: 'discard-me-too',
+    },
+    { text: 'invalid IDs', knownIssueId: '../escape', nativeCheckId: 'bad id' },
+  ]);
+  assert.deepEqual(projected[0], {
+    severity: 'high',
+    kind: 'failure',
+    text: 'Native Codex timeout can force gateway fallback',
+    knownIssueId: 'native-codex-timeout-boundary',
+    nativeCheckId: 'core/doctor/gateway-config',
+  });
+  assert.equal('knownIssueId' in projected[1], false);
+  assert.equal('nativeCheckId' in projected[1], false);
 });
 
 test('redaction does not mutate caller data and handles cycles safely', () => {
