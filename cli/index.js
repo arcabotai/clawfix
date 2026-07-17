@@ -14,7 +14,7 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const VERSION = '0.9.0';
+const VERSION = '0.9.1';
 const DEFAULT_API = 'https://clawfix.dev';
 const ARGS = process.argv.slice(2);
 const JSON_MODE = ARGS.includes('--json');

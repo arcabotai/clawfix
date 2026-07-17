@@ -52,7 +52,7 @@ set -euo pipefail
 
 # --- Config ---
 API_URL="\${CLAWFIX_API:-https://clawfix.dev}"
-VERSION="0.9.0"
+VERSION="0.9.1"
 
 # --- Colors ---
 RED='\\033[0;31m'
