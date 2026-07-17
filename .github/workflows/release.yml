@@ -53,6 +53,9 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Prove remediation contracts
+        run: npm run prove:remediation
+
       - name: Validate repair catalog
         run: npm run validate:repairs
 

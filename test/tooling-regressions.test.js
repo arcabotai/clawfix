@@ -29,6 +29,7 @@ test('release installs from lockfile and runs every pre-publish gate', async () 
   const release = await read('.github/workflows/release.yml');
   assert.match(release, /run: npm ci/);
   assert.match(release, /run: npm test/);
+  assert.match(release, /npm run prove:remediation/);
   assert.match(release, /npm run validate:repairs/);
   assert.match(release, /npm audit --omit=dev/);
   assert.match(release, /node --check cli\/bin\/native-diagnostics\.js/);
