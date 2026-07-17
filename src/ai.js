@@ -33,12 +33,8 @@ export const AI_ANALYSIS_SCHEMA = {
           required: ['severity', 'title', 'description', 'evidence'],
         },
       },
-      additionalFixes: {
-        type: 'string',
-        description: 'A safe, idempotent bash snippet for additional issues, or an empty string.',
-      },
     },
-    required: ['summary', 'insights', 'additionalIssues', 'additionalFixes'],
+    required: ['summary', 'insights', 'additionalIssues'],
   },
 };
 
@@ -126,27 +122,9 @@ function stripMarkdownFence(value) {
 }
 
 export function sanitizeAIRepairScript(value) {
-  if (typeof value !== 'string' || value.trim() === '') return '';
-
-  const script = stripMarkdownFence(value);
-  if (script.length > 12_000) {
-    throw new Error('AI repair script exceeds the safety limit');
-  }
-
-  const blocked = [
-    /\brm\s+[^\n]*(?:-rf|-fr)\b/i,
-    /\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:bash|sh)\b/i,
-    /\b(?:mkfs(?:\.[a-z0-9]+)?|fdisk|diskutil\s+erase|dd\s+if=)\b/i,
-    /\b(?:shutdown|reboot|halt|poweroff)\b/i,
-    /\beval\s+["'$({`]/i,
-    /(?:^|\s)(?:>|tee\s+)(?:\/etc\/|\/System\/|\/usr\/)/im,
-  ];
-
-  if (blocked.some(pattern => pattern.test(script))) {
-    throw new Error('AI repair script contains a blocked destructive command');
-  }
-
-  return script;
+  // Compatibility boundary: historical providers may still return this field.
+  // Model-authored shell is never executable, downloadable, or persisted.
+  return '';
 }
 
 export function parseAIAnalysis(content) {
@@ -176,6 +154,6 @@ export function parseAIAnalysis(content) {
     summary,
     insights: typeof parsed.insights === 'string' ? parsed.insights.trim() : '',
     additionalIssues,
-    additionalFixes: sanitizeAIRepairScript(parsed.additionalFixes),
+    additionalFixes: '',
   };
 }

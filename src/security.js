@@ -1,0 +1,69 @@
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHORT_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/;
+
+function byteLength(value) {
+  return Buffer.byteLength(String(value ?? ''), 'utf8');
+}
+
+export function validateDiagnosticBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false };
+  if (!body.system || typeof body.system !== 'object' || Array.isArray(body.system)) return { ok: false };
+  const os = body.system.os;
+  if (typeof os !== 'string' || os.length < 1 || os.length > 100) return { ok: false };
+  if (byteLength(JSON.stringify(body)) > 512_000) return { ok: false };
+  if (byteLength(body.logs?.errors) > 100_000 || byteLength(body.logs?.stderr) > 100_000 || byteLength(body.logs?.gatewayLog) > 100_000) return { ok: false };
+  if (Array.isArray(body._localIssues) && body._localIssues.length > 100) return { ok: false };
+  return { ok: true };
+}
+
+export function validateChatBody(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false };
+  if (typeof body.message !== 'string' || body.message.trim().length < 1 || byteLength(body.message) > 4_000) return { ok: false };
+  if (typeof body.conversationId !== 'string' || !UUID_PATTERN.test(body.conversationId)) return { ok: false };
+  if (body.diagnosticId != null && (typeof body.diagnosticId !== 'string' || !SHORT_ID_PATTERN.test(body.diagnosticId))) return { ok: false };
+  return { ok: true };
+}
+
+export function createRateLimiter({ limit, windowMs, now = Date.now } = {}) {
+  const buckets = new Map();
+  return {
+    consume(key) {
+      const time = now();
+      let bucket = buckets.get(key);
+      if (!bucket || time >= bucket.resetAt) bucket = { count: 0, resetAt: time + windowMs };
+      bucket.count += 1;
+      buckets.set(key, bucket);
+      if (buckets.size > 10_000) {
+        for (const [entryKey, entry] of buckets) if (time >= entry.resetAt) buckets.delete(entryKey);
+      }
+      return { allowed: bucket.count <= limit, remaining: Math.max(0, limit - bucket.count), resetAt: bucket.resetAt };
+    },
+  };
+}
+
+export function createConcurrencyGate(limit) {
+  let active = 0;
+  return {
+    tryAcquire() {
+      if (active >= limit) return null;
+      active += 1;
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          active -= 1;
+        }
+      };
+    },
+    get active() { return active; },
+  };
+}
+
+export function positiveEnvInteger(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function clientIp(req) {
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}

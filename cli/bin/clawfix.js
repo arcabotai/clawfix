@@ -23,6 +23,8 @@ import {
   collectNativeStatus,
   collectOpenClawVersion,
 } from './native-diagnostics.js';
+import { redactOutbound } from './security.js';
+import { countMarkdownFiles } from './workspace.js';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
@@ -37,12 +39,14 @@ const VERSION = (() => {
 // --- Flags ---
 const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run') || args.includes('-n');
+const NO_SEND = args.includes('--no-send') || args.includes('--local-only');
 const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
 const AUTO_SEND = process.env.CLAWFIX_AUTO === '1' || args.includes('--yes') || args.includes('-y');
 const SHOW_HELP = args.includes('--help') || args.includes('-h');
 const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
 const JSON_ONLY = args.includes('--json');
-const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || DRY_RUN || JSON_ONLY;
+const LOCAL_ONLY = DRY_RUN || NO_SEND || JSON_ONLY;
+const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || LOCAL_ONLY;
 
 // --- Colors ---
 const c = {
@@ -75,31 +79,9 @@ function hashStr(s) {
 
 function sanitizeConfig(config) {
   if (!config || typeof config !== 'object') return config;
-
-  const redact = (obj) => {
-    if (typeof obj === 'string') {
-      if (obj.length > 20 && /^(sk-|xai-|eyJ|ghp_|gho_|npm_|m0-|AIza|ntn_)/.test(obj)) return '***REDACTED***';
-      if (obj.length > 40 && /^[A-Za-z0-9+/=]+$/.test(obj)) return '***REDACTED***';
-      return obj;
-    }
-    if (Array.isArray(obj)) return obj.map(redact);
-    if (obj && typeof obj === 'object') {
-      const result = {};
-      for (const [k, v] of Object.entries(obj)) {
-        if (/key|token|secret|password|jwt|apikey|accesstoken/i.test(k)) {
-          result[k] = '***REDACTED***';
-        } else if (k === 'env') {
-          continue;
-        } else {
-          result[k] = redact(v);
-        }
-      }
-      return result;
-    }
-    return obj;
-  };
-
-  return redact(config);
+  const copy = { ...config };
+  delete copy.env;
+  return redactOutbound(copy);
 }
 
 // ============================================================
@@ -791,8 +773,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
     hasAgents = await exists(join(workspaceDir, 'AGENTS.md'));
 
     try {
-      const files = run(`find "${workspaceDir}" -name "*.md" 2>/dev/null | wc -l`);
-      mdFiles = parseInt(files) || 0;
+      mdFiles = await countMarkdownFiles(workspaceDir);
     } catch {}
 
     const memDir = join(workspaceDir, 'memory');
@@ -973,8 +954,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
   if (codexPluginEnabled && (activeModelRefs.some(ref => String(ref).startsWith('openai-codex/')) || hasPiFallback)) {
     issues.push({ knownIssueId: 'pi-backed-openai-codex-route', severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
   }
-  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs) ||
-      (hasNativeCodexRuntime && codexAppServer.sandbox === 'workspace-write')) {
+  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs)) {
     issues.push({ knownIssueId: 'codex-session-store-permission', severity: 'high', text: 'Codex session-store permission failure' });
   }
   if (codexPluginEnabled && hasNativeCodexRuntime && !shellCodexHomeMatchesExpected) {
@@ -1126,7 +1106,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
 
   // --- Build Payload ---
-  const diagnostic = {
+  const diagnostic = redactOutbound({
     version: VERSION,
     timestamp: new Date().toISOString(),
     hostHash,
@@ -1185,7 +1165,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
       shellCodexHomeSet,
       shellCodexHomeMatchesExpected,
     },
-  };
+  });
 
   // Build summary for TUI display
   const gatewayIcon = gatewayRunning ? c.green('✓') : c.red('✗');
@@ -1234,7 +1214,7 @@ async function runOneShotMode() {
 
   console.log('');
   console.log(c.cyan(`🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic`));
-  if (DRY_RUN) console.log(c.yellow('   🔍 DRY RUN MODE — nothing will be sent'));
+  if (LOCAL_ONLY) console.log(c.yellow('   🔍 LOCAL-ONLY MODE — nothing will be sent'));
   console.log(c.cyan('━'.repeat(50)));
   console.log('');
 
@@ -1283,7 +1263,7 @@ async function runOneShotMode() {
   console.log('');
 
   // --- Show collected data ---
-  if (DRY_RUN || SHOW_DATA) {
+  if (LOCAL_ONLY || SHOW_DATA) {
     console.log('');
     console.log(c.bold('📦 Data that would be sent:'));
     console.log(c.cyan('━'.repeat(50)));
@@ -1292,8 +1272,8 @@ async function runOneShotMode() {
     console.log('');
   }
 
-  if (DRY_RUN) {
-    console.log(c.yellow('🔍 Dry run complete — nothing was sent.'));
+  if (LOCAL_ONLY) {
+    console.log(c.yellow('🔍 Local scan complete — nothing was sent.'));
     console.log('');
     console.log('To send this data for AI analysis:');
     console.log(c.cyan('  npx clawfix'));
@@ -1319,7 +1299,8 @@ async function runOneShotMode() {
 
   console.log(c.bold('Want AI-powered fixes? Send this diagnostic for analysis.'));
   console.log('');
-  console.log(c.dim('Data sent:     OS, versions, OpenClaw config (secrets redacted), error logs'));
+  console.log(c.dim('Data recipient: ClawFix and OpenRouter (AI analysis provider)'));
+  console.log(c.dim('Data sent:      OS, versions, OpenClaw config (secrets redacted), error logs'));
   console.log(c.dim('NOT sent:      API keys, file contents, chat history, real hostname'));
   console.log(c.dim('Inspect first: npx clawfix --dry-run'));
   console.log('');
@@ -1350,6 +1331,7 @@ async function runOneShotMode() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(diagnostic),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -1413,6 +1395,25 @@ async function runInteractiveMode() {
   let diagnostic = null;
   let summary = null;
   let serverIssues = null; // issues returned from server after /api/diagnose
+  let sendConsent = AUTO_SEND;
+
+  async function uploadDiagnostic() {
+    if (!sendConsent) return;
+    const payload = redactOutbound({
+      ...diagnostic,
+      _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })),
+    });
+    const resp = await fetch(`${API_URL}/api/diagnose`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    diagnosticId = data.fixId;
+    serverIssues = data.knownIssues || [];
+  }
 
   // --- Concurrency guard ---
   let busy = false;
@@ -1444,22 +1445,24 @@ async function runInteractiveMode() {
   issues = scanResult.issues;
   summary = scanResult.summary;
 
-  // --- Send diagnostic to server for AI context ---
-  try {
-    // Include locally-detected issues so server can match them to known fixes
-    const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
-    const resp = await fetch(`${API_URL}/api/diagnose`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+  // Explicit consent is required before the first upload. This decision is
+  // retained for manual rescans and post-repair verification scans.
+  if (!sendConsent) {
+    console.log(c.dim('Optional AI analysis sends the redacted diagnostic to ClawFix and OpenRouter.'));
+    const consentRl = createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await new Promise(resolve => {
+      consentRl.question('Send redacted diagnostic for AI analysis? [y/N] ', resolve);
     });
-    if (resp.ok) {
-      const data = await resp.json();
-      diagnosticId = data.fixId;
-      serverIssues = data.knownIssues || [];
+    consentRl.close();
+    sendConsent = /^y(es)?$/i.test(answer.trim());
+  }
+
+  if (sendConsent) {
+    try {
+      await uploadDiagnostic();
+    } catch {
+      // Server unavailable — continue in local-only mode without changing consent.
     }
-  } catch {
-    // Server unavailable — continue in local-only mode
   }
 
   // --- Render TUI ---
@@ -1505,20 +1508,10 @@ async function runInteractiveMode() {
         issues = result.issues;
         summary = result.summary;
 
-        // Re-send to server
-        try {
-          const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
-          const resp = await fetch(`${API_URL}/api/diagnose`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          if (resp.ok) {
-            const data = await resp.json();
-            diagnosticId = data.fixId;
-            serverIssues = data.knownIssues || [];
-          }
-        } catch {}
+        // Preserve the startup consent decision for rescans.
+        if (sendConsent) {
+          try { await uploadDiagnostic(); } catch {}
+        }
       }
       renderStatus(summary, issues, serverIssues);
       rl.prompt();
@@ -1545,20 +1538,10 @@ async function runInteractiveMode() {
           diagnostic = result.diagnostic;
           issues = result.issues;
           summary = result.summary;
-          // Re-send to server for updated known issues
-          try {
-            const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
-            const resp = await fetch(`${API_URL}/api/diagnose`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-            });
-            if (resp.ok) {
-              const data = await resp.json();
-              diagnosticId = data.fixId;
-              serverIssues = data.knownIssues || [];
-            }
-          } catch {}
+          // Preserve the startup consent decision for post-fix rescans.
+          if (sendConsent) {
+            try { await uploadDiagnostic(); } catch {}
+          }
           return { issues, serverIssues };
         }
         return null;
@@ -1588,19 +1571,9 @@ async function runInteractiveMode() {
               diagnostic = result.diagnostic;
               issues = result.issues;
               summary = result.summary;
-              try {
-                const payload = { ...diagnostic, _localIssues: issues.map(i => ({ severity: i.severity, kind: i.kind, text: i.text })) };
-                const resp = await fetch(`${API_URL}/api/diagnose`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify(payload),
-                });
-                if (resp.ok) {
-                  const data = await resp.json();
-                  diagnosticId = data.fixId;
-                  serverIssues = data.knownIssues || [];
-                }
-              } catch {}
+              if (sendConsent) {
+                try { await uploadDiagnostic(); } catch {}
+              }
               return { issues, serverIssues };
             }
             return null;
@@ -1647,6 +1620,14 @@ async function runInteractiveMode() {
     }
 
     // --- Natural language → send to /chat ---
+    if (!sendConsent) {
+      console.log('');
+      console.log(c.yellow('  AI chat is local-only until you restart and explicitly opt in to upload.'));
+      console.log(c.dim('  Local commands still work: fix <#>, fix-all, scan, issues'));
+      console.log('');
+      rl.prompt();
+      return;
+    }
     console.log('');
     busy = true;
     try {
@@ -1824,6 +1805,7 @@ async function streamChat(message, diagnosticId, conversationId, rl) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ diagnosticId, message, conversationId }),
+      signal: AbortSignal.timeout(95_000),
     });
 
     // Non-SSE fallback (e.g. AI not available)
@@ -1977,6 +1959,7 @@ Modes:
 
 Options:
   --dry-run, -n    Scan locally only — shows what would be collected, sends nothing
+  --no-send        Local-only scan; never uploads (alias: --local-only)
   --json           Machine-readable local scan; sends nothing
   --show-data, -d  Display the full diagnostic payload before asking to send
   --yes, -y        Skip confirmation prompt and send automatically
@@ -2001,7 +1984,7 @@ Security:
   • All API keys, tokens, and passwords are automatically redacted
   • Your hostname is SHA-256 hashed (only first 8 chars sent)
   • No file contents are read (only existence checks)
-  • Nothing is sent without your explicit approval (unless --yes)
+  • ClawFix discloses OpenRouter and asks before the first upload (unless --yes)
   • Source code: https://github.com/arcabotai/clawfix
 
 Examples:

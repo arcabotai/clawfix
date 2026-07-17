@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { redactText } from './security.js';
 
 function cleanText(value, maxLength = 1000) {
   return String(value || '')
@@ -9,11 +10,7 @@ function cleanText(value, maxLength = 1000) {
 }
 
 export function redactDiagnosticText(value) {
-  return String(value || '')
-    .replace(/\b(?:sk|xai|ghp|gho|ghu|ghs|ghr|npm|m0|ntn)_[A-Za-z0-9_-]{12,}\b/gi, '***REDACTED***')
-    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/gi, '***REDACTED***')
-    .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, '***REDACTED***')
-    .replace(/((?:api[_-]?key|access[_-]?token|token|secret|password|jwt)\s*[=:]\s*)([^\s,;]+)/gi, '$1***REDACTED***');
+  return redactText(value);
 }
 
 function cleanPath(value) {
@@ -107,7 +104,7 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
             ? finding.severity
             : 'warning',
           message: redactDiagnosticText(cleanText(finding.message, 2000)),
-          path: cleanText(finding.path, 500) || null,
+          path: cleanPath(finding.path) || null,
           fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
         }))
       : [];

@@ -1,6 +1,14 @@
 import { Router } from 'express';
 import { getDiagnosis } from '../db.js';
 import { getAIConfig, requestAI } from '../ai.js';
+import { redactOutbound, redactText } from '../../cli/bin/security.js';
+import {
+  clientIp,
+  createConcurrencyGate,
+  createRateLimiter,
+  positiveEnvInteger,
+  validateChatBody,
+} from '../security.js';
 
 export const chatRouter = Router();
 
@@ -8,6 +16,13 @@ export const chatRouter = Router();
 const conversations = new Map();
 
 const AI_CONFIG = getAIConfig();
+const chatLimiter = createRateLimiter({
+  limit: positiveEnvInteger(process.env.CHAT_RATE_LIMIT, 30),
+  windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
+});
+const chatGate = createConcurrencyGate(
+  positiveEnvInteger(process.env.AI_MAX_CONCURRENCY, 4),
+);
 
 const CHAT_SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
 You're in an interactive debugging session with a user. You have their full diagnostic data available.
@@ -24,9 +39,9 @@ Your expertise:
 
 Rules:
 1. Be concise and direct — the user is in a terminal, not a web browser
-2. When suggesting fixes, provide exact commands they can copy-paste
+2. Provide advisory troubleshooting only; never generate shell or executable code
 3. Reference their actual diagnostic data when relevant
-4. If you generate a bash script, wrap it in \`\`\`bash blocks
+4. Deterministic trusted repairs are handled outside chat
 5. Never include secrets, tokens, or API keys
 6. Ask clarifying questions if the problem description is vague
 7. You are ClawFix by Arca (arcabot.eth) — https://clawfix.dev`;
@@ -37,19 +52,25 @@ Rules:
  * Response: SSE stream of AI response chunks
  */
 chatRouter.post('/chat', async (req, res) => {
+  let release = null;
   try {
-    const { diagnosticId, message, conversationId } = req.body;
-
-    if (!message || !conversationId) {
-      return res.status(400).json({ error: 'message and conversationId are required' });
+    if (!validateChatBody(req.body).ok) {
+      return res.status(400).json({ error: 'Invalid chat request' });
     }
+    if (!chatLimiter.consume(clientIp(req)).allowed) {
+      return res.status(429).json({ error: 'Too many chat requests' });
+    }
+    release = chatGate.tryAcquire();
+    if (!release) return res.status(503).json({ error: 'Chat service is busy' });
+    const { diagnosticId, message, conversationId } = req.body;
+    const safeMessage = redactText(message).slice(0, 4000);
 
     // Retrieve diagnostic context if provided
     let diagnosticContext = '';
     if (diagnosticId) {
       const diag = await getDiagnosis(diagnosticId);
       if (diag) {
-        diagnosticContext = `\n\nUser's diagnostic data (fixId: ${diagnosticId}):\n${JSON.stringify(diag, null, 2)}`;
+        diagnosticContext = `\n\nUser's redacted diagnostic data (fixId: ${diagnosticId}):\n${JSON.stringify(redactOutbound(diag), null, 2)}`;
       }
     }
 
@@ -62,13 +83,16 @@ chatRouter.post('/chat', async (req, res) => {
       });
     }
     const conv = conversations.get(conversationId);
+    if (conv.diagnosticId !== diagnosticId) {
+      return res.status(409).json({ error: 'Conversation diagnostic mismatch' });
+    }
 
     // Add user message
-    conv.messages.push({ role: 'user', content: message });
+    conv.messages.push({ role: 'user', content: safeMessage });
 
-    // Keep conversation history manageable (last 20 messages)
-    if (conv.messages.length > 20) {
-      conv.messages = conv.messages.slice(-20);
+    // Keep conversation history and provider spend bounded.
+    if (conv.messages.length > 12) {
+      conv.messages = conv.messages.slice(-12);
     }
 
     // Build messages array for AI
@@ -153,13 +177,15 @@ chatRouter.post('/chat', async (req, res) => {
       }
     }
   } catch (error) {
-    console.error('Chat error:', error.message);
+    console.error('Chat error:', redactText(error?.message || 'unknown error'));
     if (!res.headersSent) {
-      res.status(500).json({ error: 'Chat failed', message: error.message });
+      res.status(500).json({ error: 'Chat failed' });
     } else {
-      res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      res.write(`data: ${JSON.stringify({ error: 'Chat failed' })}\n\n`);
       res.write('data: [DONE]\n\n');
       res.end();
     }
+  } finally {
+    release?.();
   }
 });

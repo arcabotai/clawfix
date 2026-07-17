@@ -284,52 +284,13 @@ echo "Smoke test should show agentHarnessId=codex and fallbackUsed=false."`,
     description: 'The gateway is using native Codex, but the Codex app-server cannot write session files under ~/.codex/sessions. On macOS this can happen when the LaunchAgent process sandbox cannot access the default Codex home even though ownership and file modes look correct.',
     detect: (diag) => {
       const logs = logText(diag);
-      const sandbox = codexAppServer(diag.config).sandbox;
-      return /Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(logs) ||
-             (hasNativeCodexRoute(diag.config) && sandbox === 'workspace-write');
+      return /Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(logs);
     },
-    fix: `# Fix: Give the OpenClaw gateway a dedicated writable Codex home
-CONFIG="$HOME/.openclaw/openclaw.json"
-TS=$(date +%Y%m%d-%H%M%S)
-CODEX_HOME_DIR="$HOME/.openclaw/codex-home"
-WRAPPER="$HOME/.openclaw/bin/openclaw-gateway-codex-wrapper"
-
-cp "$CONFIG" "$CONFIG.pre-codex-home-$TS"
-mkdir -p "$CODEX_HOME_DIR" "$HOME/.openclaw/bin"
-
-for file in auth.json config.toml config.json credentials.json; do
-  if [ -f "$HOME/.codex/$file" ] && [ ! -f "$CODEX_HOME_DIR/$file" ]; then
-    cp -p "$HOME/.codex/$file" "$CODEX_HOME_DIR/$file"
-  fi
-done
-
-OPENCLAW_BIN=$(command -v openclaw || true)
-if [ -z "$OPENCLAW_BIN" ]; then
-  if [ -x /opt/homebrew/bin/openclaw ]; then
-    OPENCLAW_BIN=/opt/homebrew/bin/openclaw
-  else
-    echo "openclaw binary not found in PATH"
-    exit 1
-  fi
-fi
-
-cat > "$WRAPPER" <<EOF
-#!/bin/sh
-set -eu
-
-export CODEX_HOME="\\$HOME/.openclaw/codex-home"
-
-exec "$OPENCLAW_BIN" "\\$@"
-EOF
-chmod +x "$WRAPPER"
-
-openclaw config set plugins.entries.codex.config.appServer.sandbox danger-full-access
-openclaw gateway install --force --wrapper "$WRAPPER"
-openclaw config validate
-openclaw gateway status --deep
-
-echo "Dedicated Codex home installed for the gateway."
-echo "Run a Codex smoke test and confirm sessions appear under ~/.openclaw/codex-home/sessions."`,
+    fix: `# Advisory only: Codex reported a concrete session-store permission failure
+echo "No automatic repair was applied."
+echo "Keep the Codex sandbox at workspace-write while reviewing the failing path."
+echo "Inspect ownership and service-manager access to the configured Codex home."
+echo "Changing to danger-full-access weakens isolation and requires separate explicit high-risk approval."`,
   },
 
   {
