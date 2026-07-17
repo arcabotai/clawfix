@@ -1,3 +1,5 @@
+import { timingSafeEqual } from 'node:crypto';
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHORT_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/;
 
@@ -67,3 +69,44 @@ export function positiveEnvInteger(value, fallback) {
 export function clientIp(req) {
   return req.ip || req.socket?.remoteAddress || 'unknown';
 }
+
+function bearerToken(req) {
+  const value = req?.headers?.authorization;
+  return typeof value === 'string' && value.startsWith('Bearer ') ? value.slice(7) : '';
+}
+
+function tokensEqual(expected, received) {
+  const left = Buffer.from(String(expected));
+  const right = Buffer.from(String(received));
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+export function createAIRequestGuard({
+  token = '',
+  dailyLimit = 200,
+  concurrency = 4,
+  now = Date.now,
+} = {}) {
+  const budget = createRateLimiter({ limit: dailyLimit, windowMs: 86_400_000, now });
+  const gate = createConcurrencyGate(concurrency);
+  return {
+    acquire(req) {
+      if (token && !tokensEqual(token, bearerToken(req))) {
+        return { allowed: false, status: 401, error: 'Unauthorized' };
+      }
+      const release = gate.tryAcquire();
+      if (!release) return { allowed: false, status: 503, error: 'AI service is busy' };
+      if (!budget.consume('global').allowed) {
+        release();
+        return { allowed: false, status: 429, error: 'Daily AI request budget exhausted' };
+      }
+      return { allowed: true, release };
+    },
+  };
+}
+
+export const sharedAIRequestGuard = createAIRequestGuard({
+  token: process.env.CLAWFIX_API_TOKEN || '',
+  dailyLimit: positiveEnvInteger(process.env.AI_DAILY_REQUEST_LIMIT, 200),
+  concurrency: positiveEnvInteger(process.env.AI_MAX_CONCURRENCY, 4),
+});

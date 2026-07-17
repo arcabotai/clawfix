@@ -13,9 +13,9 @@ import { APP_VERSION } from '../version.js';
 import { redactOutbound, validateFixId } from '../../cli/bin/security.js';
 import {
   clientIp,
-  createConcurrencyGate,
   createRateLimiter,
   positiveEnvInteger,
+  sharedAIRequestGuard,
   validateDiagnosticBody,
 } from '../security.js';
 
@@ -29,9 +29,7 @@ const diagnoseLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.DIAGNOSE_RATE_LIMIT, 10),
   windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
 });
-const diagnoseGate = createConcurrencyGate(
-  positiveEnvInteger(process.env.AI_MAX_CONCURRENCY, 4),
-);
+
 
 const SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
 You analyze redacted diagnostic data from users' OpenClaw setups and provide advisory findings.
@@ -120,8 +118,11 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     if (!diagnoseLimiter.consume(clientIp(req)).allowed) {
       return res.status(429).json({ error: 'Too many diagnosis requests' });
     }
-    release = diagnoseGate.tryAcquire();
-    if (!release) return res.status(503).json({ error: 'Diagnosis service is busy' });
+    if (AI_CONFIG.apiKey) {
+      const capacity = sharedAIRequestGuard.acquire(req);
+      if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
+      release = capacity.release;
+    }
 
     // Redact again at the service boundary before AI, persistence, or response.
     const diagnostic = redactOutbound(req.body);

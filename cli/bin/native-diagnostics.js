@@ -73,9 +73,7 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
     '--lint',
     '--json',
     '--severity-min', 'warning',
-    '--only', 'core/doctor/gateway-config',
-    '--only', 'core/doctor/session-locks',
-    '--only', 'core/doctor/legacy-state',
+    '--skip', 'core/doctor/skills-readiness',
     '--no-workspace-suggestions',
   ], {
     encoding: 'utf8',

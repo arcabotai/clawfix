@@ -86,8 +86,9 @@ We take security seriously. ClawFix is designed around the principle of **inform
 - ❌ API keys, tokens, or passwords (all auto-redacted)
 - ❌ File contents (SOUL.md, AGENTS.md, memory files, chat history)
 - ❌ Environment variable values (the config `env` block is skipped; Codex checks only send match booleans)
-- ❌ IP address or real hostname
-- ❌ Personal data of any kind
+- ❌ Real hostname (only a short one-way host hash is sent)
+- IP addresses are used transiently for abuse throttling and are not included in diagnostic records
+- Error logs are unstructured and may contain identifiers the redactor cannot recognize; inspect with `--dry-run` before consenting
 
 ### Verification Tools
 
@@ -107,7 +108,8 @@ curl -s clawfix.dev/fix/sha256
 
 - **Consent required**: Diagnostic data is only sent after you type "y" at the prompt
 - **Fix scripts are not auto-executed**: They're saved to `/tmp` for your review
-- **Repair validation**: Generated scripts must pass blocked-command policy and `bash -n`; hosted builds also run ShellCheck
+- **No model-authored shell**: AI output is advisory only; executable repairs come from reviewed deterministic snippets
+- **Repair validation**: Combined deterministic scripts must pass `bash -n`; hosted builds also run ShellCheck and fail closed on validator errors
 - **Feedback is opt-in**: Repair scripts only report outcomes when run with `CLAWFIX_SEND_FEEDBACK=1`
 - **Auto-backup**: Every fix script backs up `openclaw.json` before modifying
 - **Open source**: [100% of the code](https://github.com/arcabotai/clawfix) is public — CLI, server, diagnostic script
@@ -155,6 +157,12 @@ CLAWFIX_API=http://localhost:3001 npx clawfix
 | `AI_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible API base URL |
 | `AI_MAX_TOKENS` | `3000` | Maximum generated tokens per AI request |
 | `AI_TIMEOUT_MS` | `90000` | Upstream AI request timeout in milliseconds |
+| `CLAWFIX_API_TOKEN` | — | Optional bearer token required by AI endpoints; set the same value in the CLI environment |
+| `AI_DAILY_REQUEST_LIMIT` | `200` | Shared daily cap across paid AI diagnosis and chat requests |
+| `AI_MAX_CONCURRENCY` | `4` | Shared maximum in-flight paid AI requests |
+| `DIAGNOSE_RATE_LIMIT` | `10` | Per-client diagnosis requests per rate-limit window |
+| `CHAT_RATE_LIMIT` | `30` | Per-client chat requests per rate-limit window |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Per-client rate-limit window |
 | `DATABASE_URL` | — | PostgreSQL URL for persistence |
 
 ## OpenClaw Sandbox Lab

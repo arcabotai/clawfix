@@ -8,6 +8,8 @@ export const EXPECTED_CLI_FILES = Object.freeze([
   'README.md',
   'bin/clawfix.js',
   'bin/native-diagnostics.js',
+  'bin/security.js',
+  'bin/workspace.js',
   'package.json',
 ]);
 

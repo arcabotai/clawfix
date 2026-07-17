@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import helmet from 'helmet';
 import { pathToFileURL } from 'node:url';
 import { diagnoseRouter } from './routes/diagnose.js';
@@ -30,8 +29,8 @@ app.use(helmet({
     },
   },
 }));
-app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+// Browser clients are same-origin. Do not expose paid AI routes cross-origin.
+app.use(express.json({ limit: '512kb' }));
 
 // Request logging
 app.use((req, res, next) => {

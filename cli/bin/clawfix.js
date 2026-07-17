@@ -28,6 +28,11 @@ import { countMarkdownFiles } from './workspace.js';
 
 // --- Config ---
 const API_URL = process.env.CLAWFIX_API || 'https://clawfix.dev';
+const API_TOKEN = process.env.CLAWFIX_API_TOKEN || '';
+const API_HEADERS = Object.freeze({
+  'Content-Type': 'application/json',
+  ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
+});
 const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -1329,8 +1334,8 @@ async function runOneShotMode() {
   try {
     const response = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(diagnostic),
+      headers: API_HEADERS,
+      body: JSON.stringify(redactOutbound(diagnostic)),
       signal: AbortSignal.timeout(30_000),
     });
 
@@ -1405,7 +1410,7 @@ async function runInteractiveMode() {
     });
     const resp = await fetch(`${API_URL}/api/diagnose`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(30_000),
     });
@@ -1803,7 +1808,7 @@ async function streamChat(message, diagnosticId, conversationId, rl) {
   try {
     const resp = await fetch(`${API_URL}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: API_HEADERS,
       body: JSON.stringify({ diagnosticId, message, conversationId }),
       signal: AbortSignal.timeout(95_000),
     });

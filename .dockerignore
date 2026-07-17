@@ -3,3 +3,8 @@
 !package-lock.json
 !src/
 !src/**
+!cli/
+cli/*
+!cli/bin/
+cli/bin/*
+!cli/bin/security.js

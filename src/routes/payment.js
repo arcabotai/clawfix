@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { validateFixId } from '../../cli/bin/security.js';
 
 export const paymentRouter = Router();
 
@@ -26,14 +27,15 @@ const LS_CONFIG = {
   webhookSecret: process.env.LEMONSQUEEZY_WEBHOOK_SECRET,
 };
 
-const WALLET = process.env.PAYMENT_WALLET || '';
+const configuredWallet = process.env.PAYMENT_WALLET || '';
+const WALLET = /^0x[a-fA-F0-9]{40}$/.test(configuredWallet) ? configuredWallet : '';
 
 // Create a checkout session for a fix
 paymentRouter.post('/checkout', async (req, res) => {
-  const { fixId } = req.body;
+  const fixId = validateFixId(req.body?.fixId);
 
   if (!fixId) {
-    return res.status(400).json({ error: 'fixId is required' });
+    return res.status(400).json({ error: 'A valid fixId is required' });
   }
 
   if (!LS_CONFIG.apiKey || !LS_CONFIG.storeId || !LS_CONFIG.variantId) {
@@ -152,7 +154,8 @@ paymentRouter.post('/webhook/lemonsqueezy', async (req, res) => {
 
 // Payment status page
 paymentRouter.get('/pay/:fixId', (req, res) => {
-  const { fixId } = req.params;
+  const fixId = validateFixId(req.params.fixId);
+  if (!fixId) return res.status(400).type('text/plain').send('Invalid fix ID');
   const lsConfigured = !!(LS_CONFIG.apiKey && LS_CONFIG.storeId && LS_CONFIG.variantId);
 
   res.setHeader('Content-Type', 'text/html');

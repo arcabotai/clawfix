@@ -70,3 +70,15 @@ jobs:
 
       - name: Build production image
         run: docker build -t clawfix:ci .
+
+      - name: Smoke-test production image
+        run: |
+          container=$(docker run --detach --publish 3001:3001 clawfix:ci)
+          trap 'docker logs "$container"; docker rm --force "$container"' EXIT
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --show-error http://127.0.0.1:3001/api/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1

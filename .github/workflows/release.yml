@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   publish-cli:
@@ -55,6 +56,9 @@ jobs:
       - name: Validate repair catalog
         run: npm run validate:repairs
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev
+
       - name: Pack and verify CLI publish manifest
         run: |
           manifest=$(mktemp)
@@ -64,7 +68,7 @@ jobs:
 
       - name: Publish CLI to npm
         working-directory: cli
-        run: npm publish --access public
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

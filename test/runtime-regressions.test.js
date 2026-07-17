@@ -13,7 +13,7 @@ import { createServerStarter } from '../src/server-start.js';
 
 const successfulSpawn = (stdout = '') => ({ status: 0, signal: null, stdout, stderr: '' });
 
-test('native doctor uses repeatable supported selectors and no unknown include flag', () => {
+test('native doctor runs the broad lint set and skips only workspace-heavy readiness checks', () => {
   let args;
   const result = collectNativeDoctor('/usr/local/bin/openclaw', (_command, received) => {
     args = received;
@@ -24,7 +24,11 @@ test('native doctor uses repeatable supported selectors and no unknown include f
   });
 
   assert.equal(args.includes('--include'), false);
-  assert.equal(args.filter(arg => arg === '--only').length >= 2, true);
+  assert.equal(args.includes('--only'), false);
+  assert.deepEqual(args.slice(args.indexOf('--skip'), args.indexOf('--skip') + 2), [
+    '--skip',
+    'core/doctor/skills-readiness',
+  ]);
   assert.equal(result.available, true);
 });
 

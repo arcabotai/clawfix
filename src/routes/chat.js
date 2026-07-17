@@ -4,9 +4,9 @@ import { getAIConfig, requestAI } from '../ai.js';
 import { redactOutbound, redactText } from '../../cli/bin/security.js';
 import {
   clientIp,
-  createConcurrencyGate,
   createRateLimiter,
   positiveEnvInteger,
+  sharedAIRequestGuard,
   validateChatBody,
 } from '../security.js';
 
@@ -20,9 +20,7 @@ const chatLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.CHAT_RATE_LIMIT, 30),
   windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
 });
-const chatGate = createConcurrencyGate(
-  positiveEnvInteger(process.env.AI_MAX_CONCURRENCY, 4),
-);
+
 
 const CHAT_SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
 You're in an interactive debugging session with a user. You have their full diagnostic data available.
@@ -60,8 +58,11 @@ chatRouter.post('/chat', async (req, res) => {
     if (!chatLimiter.consume(clientIp(req)).allowed) {
       return res.status(429).json({ error: 'Too many chat requests' });
     }
-    release = chatGate.tryAcquire();
-    if (!release) return res.status(503).json({ error: 'Chat service is busy' });
+    if (AI_CONFIG.apiKey) {
+      const capacity = sharedAIRequestGuard.acquire(req);
+      if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
+      release = capacity.release;
+    }
     const { diagnosticId, message, conversationId } = req.body;
     const safeMessage = redactText(message).slice(0, 4000);
 

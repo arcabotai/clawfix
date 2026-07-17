@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { app } from '../src/server.js';
 import {
   FIX_ID_PATTERN,
   redactOutbound,
@@ -13,6 +14,7 @@ import {
 import { countMarkdownFiles } from '../cli/bin/workspace.js';
 import { parseAIAnalysis } from '../src/ai.js';
 import {
+  createAIRequestGuard,
   createConcurrencyGate,
   createRateLimiter,
   validateChatBody,
@@ -109,4 +111,61 @@ test('rate limiter and concurrency gate fail closed at configured budgets', asyn
   assert.equal(gate.tryAcquire(), null);
   release();
   assert.equal(typeof gate.tryAcquire(), 'function');
+});
+
+test('shared AI request guard enforces bearer auth, daily spend, and concurrency', () => {
+  let now = 1_000;
+  const guard = createAIRequestGuard({
+    token: 'server-secret',
+    dailyLimit: 2,
+    concurrency: 1,
+    now: () => now,
+  });
+  assert.equal(guard.acquire({ headers: {} }).status, 401);
+  assert.equal(guard.acquire({ headers: { authorization: 'Bearer wrong' } }).status, 401);
+
+  const req = { headers: { authorization: 'Bearer server-secret' } };
+  const first = guard.acquire(req);
+  assert.equal(first.allowed, true);
+  assert.equal(guard.acquire(req).status, 503);
+  first.release();
+
+  const second = guard.acquire(req);
+  assert.equal(second.allowed, true);
+  second.release();
+  assert.equal(guard.acquire(req).status, 429);
+
+  now += 86_400_001;
+  const reset = guard.acquire(req);
+  assert.equal(reset.allowed, true);
+  reset.release();
+});
+
+test('HTML routes reject attacker-controlled fix IDs and do not enable cross-origin API calls', async (t) => {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
+
+  for (const route of ['/results/%22%3Balert(1)%3B%2F%2F', '/pay/%22%3Balert(1)%3B%2F%2F']) {
+    const response = await fetch(base + route);
+    assert.equal(response.status, 400, route);
+    assert.equal((await response.text()).includes('alert(1)'), false, route);
+  }
+
+  const checkout = await fetch(base + '/api/checkout', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fixId: '";alert(1);//' }),
+  });
+  assert.equal(checkout.status, 400);
+
+  const crossOrigin = await fetch(base + '/api/stats', {
+    headers: { Origin: 'https://attacker.example' },
+  });
+  assert.equal(crossOrigin.headers.has('access-control-allow-origin'), false);
 });

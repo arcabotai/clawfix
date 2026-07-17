@@ -30,8 +30,10 @@ test('release installs from lockfile and runs every pre-publish gate', async () 
   assert.match(release, /run: npm ci/);
   assert.match(release, /run: npm test/);
   assert.match(release, /npm run validate:repairs/);
+  assert.match(release, /npm audit --omit=dev/);
   assert.match(release, /node --check cli\/bin\/native-diagnostics\.js/);
   assert.match(release, /verify-cli-package\.mjs/);
+  assert.match(release, /npm publish --access public --provenance/);
 });
 
 test('Docker build is strict, least-privilege, and copies only runtime inputs', async () => {
@@ -43,11 +45,17 @@ test('Docker build is strict, least-privilege, and copies only runtime inputs', 
   assert.match(dockerfile, /npm ci --omit=dev/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /COPY --chown=node:node src \.\/src/);
+  assert.match(dockerfile, /COPY --chown=node:node cli\/bin\/security\.js \.\/cli\/bin\/security\.js/);
+  assert.match(dockerfile, /RUN node -e .*import\('\.\/src\/server\.js'\)/);
+  assert.match(dockerfile, /^HEALTHCHECK /m);
   assert.doesNotMatch(dockerfile, /^COPY \. \.$/m);
   assert.match(dockerignore, /^\*$/m);
-  for (const allowed of ['!package.json', '!package-lock.json', '!src/**']) {
+  for (const allowed of ['!package.json', '!package-lock.json', '!src/**', '!cli/bin/security.js']) {
     assert.match(dockerignore, new RegExp(`^${allowed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   }
+  const ci = await read('.github/workflows/ci.yml');
+  assert.match(ci, /docker run .*clawfix:ci/);
+  assert.match(ci, /curl --fail .*\/api\/health/);
 });
 
 test('Blaxel provisioning requires and verifies an exact detached commit', async () => {
@@ -118,6 +126,8 @@ test('scenario scripts wire fail-closed contracts into every fault and restorati
 
 test('CLI package manifest validator rejects additions and omissions', async () => {
   const { EXPECTED_CLI_FILES, validateCliPackageManifest } = await import('../scripts/verify-cli-package.mjs');
+  assert.ok(EXPECTED_CLI_FILES.includes('bin/security.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('bin/workspace.js'));
   const manifest = [{ name: 'clawfix', version: '0.9.0', files: EXPECTED_CLI_FILES.map(path => ({ path })) }];
 
   assert.doesNotThrow(() => validateCliPackageManifest(manifest, { name: 'clawfix', version: '0.9.0' }));
