@@ -43,6 +43,18 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
+test('landing page presents the signed 0.9.1 release instead of a stale beta hero', async () => {
+  const landing = await read('src/landing.js');
+  assert.match(landing, /npx clawfix@0\.9\.1/);
+  assert.match(landing, /GitHub OIDC publish/);
+  assert.match(landing, /npm attestation verified/);
+  assert.match(landing, /7-file allowlisted package/);
+  assert.match(landing, /Evidence before repair/);
+  assert.match(landing, /releases\/tag\/v0\.9\.1/);
+  assert.doesNotMatch(landing, /class="beta-banner"/);
+  assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
+});
+
 test('Docker build is strict, least-privilege, and copies only runtime inputs', async () => {
   const [dockerfile, dockerignore, ci] = await Promise.all([
     read('Dockerfile'),
