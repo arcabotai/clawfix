@@ -26,6 +26,14 @@ function runJsonCommand(openclawBin, args, spawn, timeout = 30_000) {
   const stdout = cleanText(result.stdout, 500_000);
   const stderr = redactDiagnosticText(cleanText(result.stderr || result.error?.message, 2000));
 
+  if (result.error || result.signal || !Number.isInteger(result.status)) {
+    return {
+      result,
+      parsed: null,
+      error: stderr || (result.signal ? `Command terminated by ${result.signal}` : 'Command failed before completion'),
+    };
+  }
+
   try {
     return { result, parsed: JSON.parse(stdout), error: stderr };
   } catch {
@@ -82,6 +90,19 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
   });
 
   const stdout = cleanText(result.stdout, 250_000);
+  if (result.error || result.signal || !Number.isInteger(result.status)) {
+    return {
+      available: false,
+      exitCode: result.status,
+      error: redactDiagnosticText(cleanText(
+        result.stderr || result.error?.message || (result.signal ? `Doctor terminated by ${result.signal}` : 'Doctor failed before completion'),
+        1000,
+      )),
+      checksRun: 0,
+      checksSkipped: 0,
+      findings: [],
+    };
+  }
   if (!stdout) {
     return {
       available: false,

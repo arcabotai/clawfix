@@ -74,6 +74,22 @@ test('native config validation keeps compatible string and object errors', () =>
   });
 });
 
+test('native collectors reject partial JSON from timed-out subprocesses', () => {
+  const timedOut = {
+    status: null,
+    signal: 'SIGTERM',
+    stdout: JSON.stringify({ valid: true, ok: true, findings: [] }),
+    stderr: '',
+    error: { code: 'ETIMEDOUT', message: 'timed out' },
+  };
+  const config = collectNativeConfigValidation('/usr/local/bin/openclaw', () => timedOut);
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => timedOut);
+  assert.equal(config.available, false);
+  assert.equal(config.valid, null);
+  assert.equal(doctor.available, false);
+  assert.equal(doctor.findings.length, 0);
+});
+
 test('listening-port collection returns schema evidence for invalid configured ports', () => {
   for (const port of ['18789', 'not-a-port', 0, 65536, null]) {
     let spawned = false;
