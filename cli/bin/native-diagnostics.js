@@ -76,7 +76,9 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
     '--lint',
     '--json',
     '--severity-min', 'warning',
-    '--skip', 'core/doctor/skills-readiness',
+    '--only', 'core/doctor/gateway-config',
+    '--only', 'core/doctor/session-locks',
+    '--only', 'core/doctor/legacy-state',
     '--no-workspace-suggestions',
   ], {
     encoding: 'utf8',
@@ -147,7 +149,9 @@ export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
     };
   }
 
-  const rawErrors = Array.isArray(parsed.errors) ? parsed.errors : [];
+  const rawErrors = Array.isArray(parsed.issues)
+    ? parsed.issues
+    : Array.isArray(parsed.errors) ? parsed.errors : [];
   const rawWarnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
   const valid = typeof parsed.valid === 'boolean'
     ? parsed.valid
@@ -160,11 +164,15 @@ export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
     warnings: rawWarnings.slice(0, 50).map(item => (
       redactDiagnosticText(cleanText(item?.message || item, 2000))
     )),
-    errors: rawErrors.slice(0, 50).map(item => ({
-      kind: cleanText(item?.kind, 100) || 'schema',
-      path: cleanPath(item?.path || item?.ref) || null,
-      message: redactDiagnosticText(cleanText(item?.message || item, 2000)),
-    })),
+    errors: rawErrors.slice(0, 50).map(item => {
+      const rawPath = item?.path || item?.ref;
+      const path = Array.isArray(rawPath) ? rawPath.join('.') : rawPath;
+      return {
+        kind: cleanText(item?.kind || item?.code, 100) || 'schema',
+        path: cleanPath(path) || null,
+        message: redactDiagnosticText(cleanText(item?.message || item?.error || item, 2000)),
+      };
+    }),
   };
 }
 
@@ -244,7 +252,20 @@ export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
 
 export function collectListeningPort(port, spawn = spawnSync) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new TypeError('port must be an integer between 1 and 65535');
+    return {
+      valid: false,
+      listening: false,
+      process: null,
+      pid: null,
+      endpoint: null,
+      collector: null,
+      finding: {
+        checkId: 'config/gateway-port-invalid',
+        severity: 'error',
+        path: 'gateway.port',
+        message: `Gateway port must be an integer between 1 and 65535; received ${cleanText(port, 100) || String(port)}`,
+      },
+    };
   }
 
   const lsof = spawn('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
@@ -257,6 +278,7 @@ export function collectListeningPort(port, spawn = spawnSync) {
     const fields = lsofLines[1].trim().split(/\s+/);
     const endpoint = lsofLines[1].match(/\b(?:TCP|UDP)\s+(\S+)/)?.[1];
     return {
+      valid: true,
       listening: true,
       process: cleanText(fields[0], 100) || null,
       pid: Number.parseInt(fields[1], 10) || null,
@@ -275,6 +297,7 @@ export function collectListeningPort(port, spawn = spawnSync) {
   const endpointMatch = ssOutput.match(/LISTEN\s+\d+\s+\d+\s+(\S+):\d+/);
   if (ss.status === 0 && /\bLISTEN\b/.test(ssOutput)) {
     return {
+      valid: true,
       listening: true,
       process: cleanText(processMatch?.[1], 100) || null,
       pid: Number.parseInt(processMatch?.[2], 10) || null,
@@ -283,5 +306,5 @@ export function collectListeningPort(port, spawn = spawnSync) {
     };
   }
 
-  return { listening: false, process: null, pid: null, endpoint: null, collector: null };
+  return { valid: true, listening: false, process: null, pid: null, endpoint: null, collector: null };
 }

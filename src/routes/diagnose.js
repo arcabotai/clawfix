@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
-import { classifyKnownIssue, detectIssues, KNOWN_ISSUES } from '../known-issues.js';
+import { classifyKnownIssue, detectIssues, matchLocalKnownIssues } from '../known-issues.js';
 import { storeDiagnosis, storeFeedback, getStats, getDiagnosis } from '../db.js';
 import {
   AI_ANALYSIS_SCHEMA,
@@ -110,34 +110,9 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     // Step 1: Pattern matching (fast, free)
     let knownIssues = detectIssues(diagnostic);
 
-    // Step 1b: If CLI sent local issues, try to match them to known fixes by text similarity
-    if (diagnostic._localIssues?.length && knownIssues.length === 0) {
-      const matchedIds = new Set(knownIssues.map(i => i.id));
-      for (const local of diagnostic._localIssues) {
-        const text = (local.text || '').toLowerCase();
-        for (const known of KNOWN_ISSUES) {
-          if (matchedIds.has(known.id)) continue;
-          const title = (known.title || '').toLowerCase();
-          // Match if local text contains significant portion of known title or vice versa
-          if (text.includes(title.slice(0, 20)) || title.includes(text.slice(0, 20)) ||
-              (text.includes('duplicate') && title.includes('duplicate')) ||
-              (text.includes('migration') && title.includes('migration')) ||
-              (text.includes('transcript') && title.includes('transcript')) ||
-              (text.includes('reload') && title.includes('reload')) ||
-              (text.includes('restart') && title.includes('restart')) ||
-              (text.includes('watchdog') && title.includes('watchdog')) ||
-              (text.includes('zombie') && title.includes('zombie')) ||
-              (text.includes('codex') && title.includes('codex')) ||
-              (text.includes('openai-codex') && title.includes('openai-codex')) ||
-              (text.includes('plugin load paths') && title.includes('plugin load paths')) ||
-              (text.includes('metadata') && title.includes('metadata'))) {
-            knownIssues.push(known);
-            matchedIds.add(known.id);
-            break;
-          }
-        }
-      }
-    }
+    // Step 1b: Local findings only acquire a deterministic repair through an
+    // explicit known-issue id or an exact normalized title match.
+    knownIssues.push(...matchLocalKnownIssues(diagnostic._localIssues, knownIssues));
     knownIssues = knownIssues.map(issue => ({
       ...issue,
       kind: issue.kind || classifyKnownIssue(issue),

@@ -819,6 +819,11 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const checkPort = (port, name) => {
     const evidence = collectListeningPort(port);
     portEvidence[port] = evidence;
+    if (!evidence.valid) {
+      log(c.red(`   ❌ Port ${String(port)} (${name}) — invalid configuration`));
+      portResults[port] = false;
+      return false;
+    }
     if (evidence.listening) {
       const owner = evidence.process && evidence.pid
         ? ` by ${evidence.process} (PID ${evidence.pid})`
@@ -881,6 +886,17 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   // --- Local Issue Detection ---
   const issues = [];
+  const gatewayPortFinding = portEvidence[gatewayPort]?.finding;
+  if (gatewayPortFinding) {
+    issues.push({
+      severity: 'high',
+      kind: 'failure',
+      text: gatewayPortFinding.message,
+      source: 'clawfix-port-probe',
+      nativeCheckId: gatewayPortFinding.checkId,
+      path: gatewayPortFinding.path,
+    });
+  }
   const activeModelRefs = [];
   const addActiveModelRef = (value) => {
     if (!value) return;
@@ -929,10 +945,17 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
   const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
-  if (gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) {
+  const listenerPid = Number(portEvidence[gatewayPort]?.pid);
+  const expectedGatewayPid = Number.parseInt(String(gatewayPid || ''), 10);
+  const competingPortOwner = portEvidence[gatewayPort]?.listening === true &&
+    Number.isSafeInteger(listenerPid) && listenerPid > 0 && (
+      (Number.isSafeInteger(expectedGatewayPid) && expectedGatewayPid > 0 && listenerPid !== expectedGatewayPid) ||
+      !gatewayPid
+    );
+  if ((gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) && !competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Gateway is not running' });
   }
-  if (/EADDRINUSE/i.test(errorLogs)) {
+  if (competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Port conflict detected' });
   }
   if (versionProbe.runtimeCompatible === false && versionProbe.runtimeRequired) {
@@ -948,19 +971,19 @@ async function collectDiagnostics({ quiet = false } = {}) {
     issues.push({ severity: 'medium', text: 'Stale bundled plugin load paths configured' });
   }
   if (codexPluginEnabled && (activeModelRefs.some(ref => String(ref).startsWith('openai-codex/')) || hasPiFallback)) {
-    issues.push({ severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
+    issues.push({ knownIssueId: 'pi-backed-openai-codex-route', severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
   }
   if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs) ||
       (hasNativeCodexRuntime && codexAppServer.sandbox === 'workspace-write')) {
-    issues.push({ severity: 'high', text: 'Codex session-store permission failure' });
+    issues.push({ knownIssueId: 'codex-session-store-permission', severity: 'high', text: 'Codex session-store permission failure' });
   }
   if (codexPluginEnabled && hasNativeCodexRuntime && !shellCodexHomeMatchesExpected) {
-    issues.push({ severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
+    issues.push({ knownIssueId: 'codex-shell-home-mismatch', severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
   }
   if (codexPluginEnabled &&
       (hasNativeCodexRuntime || activeModelRefs.some(ref => String(ref).startsWith('openai/'))) &&
       codexAppServer.serviceTier !== 'fast') {
-    issues.push({ severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
+    issues.push({ knownIssueId: 'codex-service-tier-not-fast', severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
   }
   const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
   const activeMemoryTimeoutMs = Number(config?.plugins?.entries?.['active-memory']?.config?.timeoutMs ?? NaN);
@@ -971,7 +994,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
       hasNativeCodexRuntime &&
       codexTimeoutSymptoms &&
       (codexRequestTimeoutMs <= 60000 || activeMemoryTimeoutMs <= 60000)) {
-    issues.push({ severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
+    issues.push({ knownIssueId: 'native-codex-timeout-boundary', severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
   }
 
   const sigtermCount = (gatewayLogTail.match(/signal SIGTERM/gi) || []).length;
@@ -1050,7 +1073,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
   }
 
   if (
-    portEvidence[gatewayPort]?.listening &&
+    competingPortOwner &&
     nativeStatus.available &&
     nativeStatus.gateway.reachable === false
   ) {

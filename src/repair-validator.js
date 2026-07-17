@@ -42,31 +42,46 @@ export function validateRepairScript(script, {
       timeout: 20_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (!result.error || result.error.code !== 'ENOENT') {
+    if (result.error?.code !== 'ENOENT') {
       let findings = [];
-      try {
-        const parsed = JSON.parse(String(result.stdout || '[]'));
-        findings = Array.isArray(parsed)
-          ? parsed.slice(0, 100).map(finding => ({
-              code: Number.isSafeInteger(finding.code) ? finding.code : null,
-              level: ['error', 'warning', 'info', 'style'].includes(finding.level)
-                ? finding.level
-                : 'warning',
-              line: Number.isSafeInteger(finding.line) ? finding.line : null,
-              column: Number.isSafeInteger(finding.column) ? finding.column : null,
-              message: clean(finding.message, 1000),
-            }))
-          : [];
-      } catch {
+      let invocationError = null;
+      const expectedStatus = result.status === 0 || result.status === 1;
+
+      if (result.error || result.signal || !expectedStatus) {
+        invocationError = clean(
+          result.error?.message ||
+          (result.signal ? `ShellCheck terminated by ${result.signal}` : '') ||
+          result.stderr ||
+          `ShellCheck returned unexpected status ${String(result.status)}`,
+        );
+      } else {
+        try {
+          const parsed = JSON.parse(String(result.stdout || ''));
+          if (!Array.isArray(parsed)) throw new TypeError('ShellCheck JSON must be an array');
+          findings = parsed.slice(0, 100).map(finding => ({
+            code: Number.isSafeInteger(finding.code) ? finding.code : null,
+            level: ['error', 'warning', 'info', 'style'].includes(finding.level)
+              ? finding.level
+              : 'warning',
+            line: Number.isSafeInteger(finding.line) ? finding.line : null,
+            column: Number.isSafeInteger(finding.column) ? finding.column : null,
+            message: clean(finding.message, 1000),
+          }));
+        } catch {
+          invocationError = clean(result.stderr) || 'ShellCheck returned invalid JSON';
+        }
+      }
+
+      if (invocationError) {
         findings = [{
           code: null,
           level: 'error',
           line: null,
           column: null,
-          message: clean(result.stderr) || 'ShellCheck returned invalid JSON',
+          message: invocationError,
         }];
       }
-      shellcheck = { available: true, findings };
+      shellcheck = { available: invocationError === null, findings };
     }
   }
 

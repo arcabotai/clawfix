@@ -109,6 +109,17 @@ function numericConfigValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function hasCompetingGatewayPortOwner(diag) {
+  const listenerPid = Number(diag.ports?.gateway?.pid);
+  if (diag.ports?.gateway?.listening !== true || !Number.isSafeInteger(listenerPid) || listenerPid < 1) {
+    return false;
+  }
+
+  const gatewayPid = Number.parseInt(String(diag.openclaw?.gatewayPid || ''), 10);
+  if (Number.isSafeInteger(gatewayPid) && gatewayPid > 0) return listenerPid !== gatewayPid;
+  return diag.openclaw?.processExists === false;
+}
+
 function hasAgentDefaultsTelemetry(diag) {
   return !!diag.config?.agents?.defaults
     && typeof diag.config.agents.defaults === 'object';
@@ -446,7 +457,7 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
       // Check for explicit "running" indicators first — ignore config warnings
       if (/running.*pid|state active|listening/i.test(status) ||
           (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) return false;
-      if (diag.ports?.gateway?.listening === true && diag.nativeStatus?.gateway?.reachable === false) return false;
+      if (hasCompetingGatewayPortOwner(diag)) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;
       return (/not running|failed to start|stopped|inactive/i.test(status)) ||
@@ -481,13 +492,7 @@ curl -sf "http://localhost:\$PORT/health" && echo "✅ Gateway is healthy" || ec
     severity: 'critical',
     title: 'Port conflict (EADDRINUSE)',
     description: 'The gateway port is already in use by another process. This prevents OpenClaw from starting.',
-    detect: (diag) => {
-      const logs = diag.logs?.errors || '';
-      return /EADDRINUSE/i.test(logs) || (
-        diag.ports?.gateway?.listening === true &&
-        diag.nativeStatus?.gateway?.reachable === false
-      );
-    },
+    detect: (diag) => hasCompetingGatewayPortOwner(diag),
     fix: `# Review: identify the process using the gateway port before stopping anything
 PORT=$(jq -r '.gateway.port // 18789' ~/.openclaw/openclaw.json)
 echo "Listener on port $PORT:"
@@ -1700,6 +1705,34 @@ export function classifyKnownIssue(issue) {
   if (OPTIMIZATION_ISSUE_IDS.has(issue.id)) return 'optimization';
   if (issue.severity === 'critical' || issue.severity === 'high') return 'failure';
   return 'warning';
+}
+
+function normalizeLocalIssueText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function matchLocalKnownIssues(localIssues, existingIssues = []) {
+  if (!Array.isArray(localIssues)) return [];
+  const knownById = new Map(KNOWN_ISSUES.map(issue => [issue.id, issue]));
+  const knownByTitle = new Map(KNOWN_ISSUES.map(issue => [normalizeLocalIssueText(issue.title), issue]));
+  const matchedIds = new Set(existingIssues.map(issue => issue.id));
+  const matches = [];
+
+  for (const local of localIssues) {
+    if (!local || typeof local !== 'object') continue;
+    const explicitId = local.knownIssueId || local.issueId || local.id;
+    const known = (typeof explicitId === 'string' ? knownById.get(explicitId) : null)
+      || knownByTitle.get(normalizeLocalIssueText(local.text));
+    if (!known || matchedIds.has(known.id)) continue;
+
+    matches.push({
+      ...known,
+      severity: local.severity || known.severity,
+      kind: local.kind || classifyKnownIssue({ ...known, severity: local.severity || known.severity }),
+    });
+    matchedIds.add(known.id);
+  }
+  return matches;
 }
 
 /**
