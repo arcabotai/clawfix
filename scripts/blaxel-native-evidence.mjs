@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { SandboxInstance } from '@blaxel/core';
+import { pathToFileURL } from 'node:url';
+import { assertCommandResult, parseJsonOutput } from './blaxel-contracts.mjs';
 
 const LAB_NAME = process.env.BLAXEL_LAB_NAME || 'clawfix-openclaw-lab';
 const commands = [
@@ -10,15 +11,8 @@ const commands = [
   ['policy', 'openclaw policy check --json'],
 ];
 
-function parseJson(value) {
-  try {
-    return JSON.parse(String(value || '').trim());
-  } catch {
-    return null;
-  }
-}
-
-async function main() {
+export async function main() {
+  const { SandboxInstance } = await import('@blaxel/core');
   const sandbox = await SandboxInstance.get(LAB_NAME);
   const evidence = [];
 
@@ -31,10 +25,11 @@ async function main() {
       timeout: 180,
       restartOnFailure: false,
     });
+    assertCommandResult(`native-${name}`, result);
     evidence.push({
       name,
       exitCode: result.exitCode,
-      json: parseJson(result.stdout),
+      json: parseJsonOutput(`native-${name}`, result.stdout),
       stderr: String(result.stderr || '').trim().slice(0, 2000),
     });
   }
@@ -42,7 +37,9 @@ async function main() {
   console.log(JSON.stringify(evidence, null, 2));
 }
 
-main().catch(error => {
-  console.error(`Blaxel native evidence error: ${error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(error => {
+    console.error(`Blaxel native evidence error: ${error.message}`);
+    process.exitCode = 1;
+  });
+}

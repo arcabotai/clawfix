@@ -2,19 +2,6 @@ name: Release CLI
 
 # Runs on semver tag pushes only (`v0.9.0`, `v1.0.0-rc.1`, etc.).
 # Publishes cli/ to npm and creates a GitHub Release with auto-generated notes.
-#
-# One-time setup before the first tag:
-#   1. Create an npm automation token:  https://www.npmjs.com/settings/<user>/tokens
-#   2. Add as a repo secret named NPM_TOKEN:
-#        gh secret set NPM_TOKEN -R arcabotai/clawfix --body '<token>'
-#   3. Make sure cli/package.json "version" matches the tag you're about to push.
-#
-# Typical release flow:
-#   # bump cli/package.json version to e.g. 0.9.1
-#   git commit -am "release: cli 0.9.1"
-#   git push origin main
-#   git tag v0.9.1 && git push origin v0.9.1
-#   # -> workflow publishes to npm and cuts a GH release
 
 on:
   push:
@@ -22,7 +9,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write   # needed to create the GitHub Release
+  contents: write
 
 jobs:
   publish-cli:
@@ -36,18 +23,44 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+          cache: npm
 
-      - name: Verify tag matches cli/package.json version
+      - name: Install dependencies from lockfile
+        run: npm ci
+
+      - name: Install repair validators
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Verify tag and package versions
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          PKG=$(node -p "require('./cli/package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "::error ::Tag v$TAG does not match cli/package.json version $PKG"
+          ROOT=$(node -p "require('./package.json').version")
+          CLI=$(node -p "require('./cli/package.json').version")
+          if [ "$TAG" != "$CLI" ] || [ "$ROOT" != "$CLI" ]; then
+            echo "::error ::Tag v$TAG, root version $ROOT, and CLI version $CLI must match"
             exit 1
           fi
 
-      - name: Lint CLI JS
-        run: node --check cli/bin/clawfix.js && node --check cli/index.js
+      - name: Syntax-check CLI and tooling
+        run: |
+          node --check cli/bin/clawfix.js
+          node --check cli/bin/native-diagnostics.js
+          node --check cli/index.js
+          node --check scripts/blaxel-contracts.mjs
+          node --check scripts/verify-cli-package.mjs
+
+      - name: Test
+        run: npm test
+
+      - name: Validate repair catalog
+        run: npm run validate:repairs
+
+      - name: Pack and verify CLI publish manifest
+        run: |
+          manifest=$(mktemp)
+          trap 'rm -f "$manifest"' EXIT
+          npm pack ./cli --dry-run --json --cache /tmp/clawfix-npm-cache > "$manifest"
+          node scripts/verify-cli-package.mjs "$manifest"
 
       - name: Publish CLI to npm
         working-directory: cli

@@ -37,6 +37,14 @@ jobs:
       - name: Install repair validators
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
 
+      - name: Syntax-check CLI and tooling
+        run: |
+          node --check cli/bin/clawfix.js
+          node --check cli/bin/native-diagnostics.js
+          node --check cli/index.js
+          node --check scripts/blaxel-contracts.mjs
+          node --check scripts/verify-cli-package.mjs
+
       - name: Test
         run: npm test
 
@@ -46,8 +54,12 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-      - name: Verify publish manifest
-        run: npm pack --dry-run --json --cache /tmp/clawfix-npm-cache
+      - name: Pack and verify CLI publish manifest
+        run: |
+          manifest=$(mktemp)
+          trap 'rm -f "$manifest"' EXIT
+          npm pack ./cli --dry-run --json --cache /tmp/clawfix-npm-cache > "$manifest"
+          node scripts/verify-cli-package.mjs "$manifest"
 
   container:
     name: Production container

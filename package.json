@@ -2,6 +2,7 @@
   "name": "clawfix",
   "version": "0.9.0",
   "description": "AI-powered OpenClaw diagnostic and repair service",
+  "private": true,
   "type": "module",
   "main": "src/server.js",
   "scripts": {
