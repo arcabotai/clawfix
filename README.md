@@ -5,14 +5,16 @@
 [![npm downloads](https://img.shields.io/npm/dm/clawfix.svg)](https://www.npmjs.com/package/clawfix)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**AI-powered OpenClaw diagnostic and repair service.**
+**OpenClaw diagnostics and guarded repairs.**
 
-Fix your broken OpenClaw in one command. No SSH access needed. Runs locally, sends redacted logs, gets a fix script back.
+ClawFix scans locally, redacts recognized secrets, and matches failures against deterministic rules. Optional AI analysis can explain unmatched problems when it is configured on the selected server. Model output never becomes executable shell.
+
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Security](#security--transparency) · [Self-hosting](#self-hosting) · [Contributing](#contributing)
 
 ## Quick Start
 
 ```bash
-# Recommended — auditable source on npm + GitHub
+# Recommended: auditable source on npm and GitHub
 npx clawfix
 
 # Inspect what data would be collected (sends nothing)
@@ -25,16 +27,17 @@ If you prefer, you can download and inspect the script first:
 
 ```bash
 # Download, inspect, then run
-curl -sSL clawfix.dev/fix > clawfix.sh
-cat clawfix.sh                          # Read every line
-shasum -a 256 clawfix.sh                # Verify hash
-curl -s clawfix.dev/fix/sha256          # Compare with published hash
-bash clawfix.sh                         # Run after reviewing
+curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh
+cat clawfix.sh
+shasum -a 256 clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/fix/sha256
+# Compare the printed hashes exactly before running the script.
+bash clawfix.sh
 ```
 
 ## Usage and maintenance
 
-ClawFix is a maintained open-source operator tool, not a one-off demo.
+ClawFix is an open-source operator tool with active releases and public maintenance records.
 
 Verified on July 22, 2026:
 
@@ -47,7 +50,7 @@ Maintenance records are public in the [changelog](CHANGELOG.md), [releases](http
 ## How It Works
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, ports, and listener ownership
-2. **Evidence is correlated** — Native config validation, status, Doctor, security audit, and 49 deterministic patterns run before AI handles novel problems
+2. **Evidence is correlated** — Native config validation, status, Doctor, security audit, and 49 deterministic patterns run first. Optional AI analysis can explain unmatched problems when available
 3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
 
 Failures and warnings are counted as issues. Performance and quality tuning is shown separately as optional optimization advice.
@@ -80,7 +83,7 @@ Failures and warnings are counted as issues. Performance and quality tuning is s
 
 ## Security & Transparency
 
-We take security seriously. ClawFix is designed around the principle of **informed consent** — you see everything before anything happens.
+ClawFix prompts before upload by default. Use `--dry-run` or `--show-data` to inspect the diagnostic payload; explicit automation flags can skip the prompt.
 
 ### What Data Is Collected
 
@@ -93,16 +96,16 @@ We take security seriously. ClawFix is designed around the principle of **inform
 | Security audit | Summary, redacted finding text, remediation hint, suppression count | Potentially low risk; inspect with `--dry-run` |
 | Ports | Listening state, process name, PID, and endpoint | Low risk |
 | Codex | Expected OpenClaw Codex home path and shell-match booleans | No |
-| Config | Structure only — **all secrets redacted** | Redacted |
-| Logs | Last 30 lines matching error/warn patterns | Low risk |
+| Config | Configuration fields and non-secret values; recognized secrets are redacted and the top-level config `env` block is omitted | Redacted |
+| Logs | Node CLI: up to 30 matching `gateway.log` lines and 200 recent `gateway.err.log` lines. Bash fallback: up to 30 matching gateway lines and 50 recent stderr lines | Potentially sensitive; inspect with `--dry-run` |
 | Workspace | File counts, existence checks (SOUL.md etc.) | No |
 | Identity | Hostname **SHA-256 hashed** (first 8 chars only) | Anonymized |
 
-### What Is NOT Collected
+### What is excluded or redacted
 
-- ❌ API keys, tokens, or passwords (all auto-redacted)
+- Recognized API keys, tokens, and passwords are redacted before upload
 - ❌ File contents (SOUL.md, AGENTS.md, memory files, chat history)
-- ❌ Environment variable values (the config `env` block is skipped; Codex checks only send match booleans)
+- The top-level config `env` block is omitted; nested configuration values may remain unless recognized by the redactor
 - ❌ Real hostname (only a short one-way host hash is sent)
 - IP addresses are used transiently for abuse throttling and are not included in diagnostic records
 - Error logs are unstructured and may contain identifiers the redactor cannot recognize; inspect with `--dry-run` before consenting
@@ -116,20 +119,20 @@ npx clawfix --dry-run
 # Show the full payload, then ask to send
 npx clawfix --show-data
 
-# Verify the curl script hash
-curl -sSL clawfix.dev/fix | shasum -a 256
-curl -s clawfix.dev/fix/sha256
+# Verify the reviewed local copy. The printed hashes must match exactly.
+shasum -a 256 clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/fix/sha256
 ```
 
 ### Design Decisions
 
-- **Consent required**: Diagnostic data is only sent after you type "y" at the prompt
+- **Consent by default**: The CLI asks before upload unless you explicitly use `--yes`, `-y`, or `CLAWFIX_AUTO=1`
 - **Fix scripts are not auto-executed**: They're saved to `/tmp` for your review
 - **No model-authored shell**: AI output is advisory only; executable repairs come from reviewed deterministic snippets
 - **Repair validation**: Combined deterministic scripts must pass `bash -n`; hosted builds also run ShellCheck and fail closed on validator errors
 - **Feedback is opt-in**: Repair scripts only report outcomes when run with `CLAWFIX_SEND_FEEDBACK=1`
 - **Auto-backup**: Every fix script backs up `openclaw.json` before modifying
-- **Open source**: [100% of the code](https://github.com/arcabotai/clawfix) is public — CLI, server, diagnostic script
+- **Open source**: [The CLI, server, and diagnostic script](https://github.com/arcabotai/clawfix) are public under the MIT license
 - **npx over curl**: We recommend `npx clawfix` as the primary method because the source is auditable on [npm](https://www.npmjs.com/package/clawfix) and GitHub
 
 ### CLI Options
@@ -152,7 +155,7 @@ Don't trust our server? Run your own:
 ```bash
 git clone https://github.com/arcabotai/clawfix
 cd clawfix
-npm install
+npm ci
 npm start
 ```
 
@@ -217,14 +220,9 @@ The scenario suite restores changed configuration and processes in a `finally` b
 | `/api/feedback/:fixId` | POST | Report if fix worked |
 | `/results/:fixId` | GET | Web-based results page |
 
-## Pricing
+## Hosted service
 
-**Free.** Every feature — pattern-matching scan, AI analysis, generated
-fix scripts — is free while we figure out what's worth charging for.
-
-We may introduce paid tiers later (likely usage-based for heavy AI calls,
-or a hosted monitoring SKU). We'll announce before anything changes and
-grandfather anyone using the tool today.
+The CLI and server are MIT licensed. `clawfix.dev` is currently free to use. Hosted limits may change; self-hosting remains available under the MIT license.
 
 ## Contributing
 

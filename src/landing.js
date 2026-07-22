@@ -7,9 +7,9 @@ landingRouter.get('/', (req, res) => {
   if (req.headers.accept?.includes('application/json') && !req.headers.accept?.includes('text/html')) {
     return res.json({
       name: 'ClawFix',
-      tagline: 'AI-powered OpenClaw repair',
+      tagline: 'OpenClaw diagnostics and guarded repairs',
       version: '0.9.1',
-      fix: 'curl -sSL clawfix.dev/fix | bash',
+      fix: 'npx clawfix@0.9.1',
     });
   }
 
@@ -419,7 +419,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         <a href="#release">v0.9.1</a>
         <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
-        <a href="#pricing" class="nav-optional">Pricing</a>
+        <a href="#pricing" class="nav-optional">Hosted Service</a>
         <a href="https://github.com/arcabotai/clawfix" class="nav-optional">GitHub</a>
       </nav>
     </div>
@@ -431,8 +431,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         <span class="hero-emoji">🦞</span>
         <h1>Fix your OpenClaw<br>in <span class="highlight">one command</span></h1>
         <p class="subtitle">
-          AI-powered diagnostic and repair. No SSH access needed. 
-          Runs locally, sends redacted logs, gets a fix script back.
+          Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
         </p>
 
         <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.9.1">
@@ -499,8 +498,8 @@ const LANDING_HTML = `<!DOCTYPE html>
           </div>
           <div class="step">
             <div class="step-num">2</div>
-            <h3>AI Analyzes</h3>
-            <p>Pattern matching catches known issues instantly. AI handles novel problems with deep analysis of your specific setup.</p>
+            <h3>Deterministic Checks First</h3>
+            <p>49 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
@@ -654,14 +653,14 @@ const LANDING_HTML = `<!DOCTYPE html>
 
     <section class="section" id="pricing">
       <div class="container">
-        <h2 class="section-title">Pricing</h2>
+        <h2 class="section-title">Hosted Service</h2>
         <div class="pricing-cards" style="grid-template-columns: minmax(300px, 520px); justify-content: center;">
           <div class="price-card featured">
-            <span class="badge" style="background:var(--green);">For now</span>
+            <span class="badge" style="background:var(--green);">Hosted</span>
             <div class="price free-tag">Free</div>
-            <h3>Every feature, for everyone</h3>
-            <p>Pattern-matching scan, AI analysis, generated fix scripts — all free while we're figuring out what&apos;s worth charging for.</p>
-            <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">We may introduce paid tiers later (likely usage-based for heavy AI calls, or a hosted monitoring SKU). We&apos;ll announce before anything changes.</p>
+            <h3>MIT source, optional hosting</h3>
+            <p>The CLI and server are MIT licensed. <code>clawfix.dev</code> is currently free to use.</p>
+            <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">Hosted limits may change. Self-hosting remains available under the MIT license.</p>
           </div>
         </div>
       </div>
@@ -684,29 +683,29 @@ const LANDING_HTML = `<!DOCTYPE html>
           <div class="trust-item">
             <span class="trust-icon">🔓</span>
             <div>
-              <h4>100% Open Source</h4>
-              <p><a href="https://github.com/arcabotai/clawfix" style="color:var(--blue)">Every line on GitHub</a>. CLI source, server code, diagnostic script — all public. Audit it.</p>
+              <h4>Open Source</h4>
+              <p><a href="https://github.com/arcabotai/clawfix" style="color:var(--blue)">The CLI, server, and diagnostic script are public</a> under the MIT license.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">🔒</span>
             <div>
-              <h4>Secrets Auto-Redacted</h4>
-              <p>API keys, tokens, passwords — all replaced with <code>***REDACTED***</code> before anything leaves your machine. The <code>env</code> block is skipped entirely.</p>
+              <h4>Recognized Secrets Redacted</h4>
+              <p>Recognized API keys, tokens, passwords, private keys, and home paths are redacted before upload. The top-level config <code>env</code> block is omitted. Inspect <code>--dry-run</code> before sending.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">🚫</span>
             <div>
-              <h4>No File Contents Read</h4>
-              <p>ClawFix checks if SOUL.md exists — it never reads what's inside. No chat history, no memory files, no personal data.</p>
+              <h4>Workspace Documents Stay Local</h4>
+              <p>ClawFix checks whether workspace documents such as SOUL.md exist, but it does not read their contents. Config fields and matching error lines may be collected.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">👀</span>
             <div>
-              <h4>Consent Required</h4>
-              <p>The diagnostic asks <code>[y/N]</code> before sending anything. No data leaves your machine without you typing "y".</p>
+              <h4>Consent by Default</h4>
+              <p>The diagnostic asks <code>[y/N]</code> before uploading. Automatic upload only happens when you explicitly pass <code>--yes</code>, <code>-y</code>, or set <code>CLAWFIX_AUTO=1</code>.</p>
             </div>
           </div>
           <div class="trust-item">
@@ -721,27 +720,26 @@ const LANDING_HTML = `<!DOCTYPE html>
           <h3 style="font-size:1rem;margin-bottom:12px;">📦 What Exactly Is Sent</h3>
           <div class="sent-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
             <div>
-              <p style="color:var(--green);font-weight:600;font-size:0.85rem;margin-bottom:8px;">✅ SENT (redacted)</p>
+              <p style="color:var(--green);font-weight:600;font-size:0.85rem;margin-bottom:8px;">SENT (redacted where recognized)</p>
               <ul style="color:var(--muted);font-size:0.85rem;list-style:none;padding:0;">
                 <li>• OS type, version, architecture</li>
                 <li>• Node.js and npm versions</li>
                 <li>• OpenClaw version</li>
-                <li>• Config structure (all secrets redacted)</li>
-                <li>• Recent error log lines</li>
+                <li>• Config fields and non-secret values; recognized secrets are redacted</li>
+                <li>• Recent gateway log matches and stderr lines; limits vary by npm CLI and bash fallback</li>
                 <li>• Plugin names + enabled status</li>
                 <li>• Gateway status</li>
                 <li>• Hostname hash (8 chars of SHA-256)</li>
               </ul>
             </div>
             <div>
-              <p style="color:var(--accent);font-weight:600;font-size:0.85rem;margin-bottom:8px;">❌ NEVER SENT</p>
+              <p style="color:var(--accent);font-weight:600;font-size:0.85rem;margin-bottom:8px;">OMITTED OR NOT COLLECTED</p>
               <ul style="color:var(--muted);font-size:0.85rem;list-style:none;padding:0;">
-                <li>• API keys, tokens, passwords</li>
-                <li>• File contents (SOUL.md, memory, etc.)</li>
+                <li>• Top-level config env block</li>
+                <li>• Workspace document contents (SOUL.md, memory, etc.)</li>
                 <li>• Chat history or messages</li>
-                <li>• IP address or real hostname</li>
-                <li>• Environment variables</li>
-                <li>• Personal data of any kind</li>
+                <li>• Real hostname (an 8-character hash is sent)</li>
+                <li>• Source IP is used transiently for abuse throttling and is not stored in diagnostic records</li>
               </ul>
             </div>
           </div>

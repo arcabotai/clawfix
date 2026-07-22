@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 
 export const scriptRouter = Router();
 
-// Serve the diagnostic script: curl -sSL clawfix.dev/fix | bash
+// Serve the diagnostic script for download, review, and local execution.
 scriptRouter.get('/fix', (req, res) => {
   res.setHeader('Content-Type', 'text/plain');
   res.setHeader('X-Script-SHA256', SCRIPT_HASH);
@@ -14,33 +14,34 @@ scriptRouter.get('/fix', (req, res) => {
 scriptRouter.get('/fix/sha256', (req, res) => {
   res.json({
     sha256: SCRIPT_HASH,
-    verify: 'curl -sSL clawfix.dev/fix | shasum -a 256',
-    note: 'Compare this hash with the one in the GitHub repo: https://github.com/arcabotai/clawfix/blob/main/SCRIPT_HASH',
+    verify: 'curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh && shasum -a 256 clawfix.sh',
+    note: 'Compare the printed hashes exactly before running the script. GitHub reference: https://github.com/arcabotai/clawfix/blob/main/SCRIPT_HASH',
   });
 });
 
 const DIAGNOSTIC_SCRIPT = `#!/usr/bin/env bash
-# ClawFix — AI-Powered OpenClaw Diagnostic
+# ClawFix: OpenClaw diagnostics and guarded repairs
 # https://clawfix.dev
 # 
 # WHAT THIS SCRIPT DOES:
 #   1. Checks your OpenClaw installation (config, logs, plugins, ports)
 #   2. Detects common issues via pattern matching
-#   3. Optionally sends redacted diagnostic data for AI analysis (asks first)
+#   3. Optionally sends diagnostic data with recognized secrets redacted (asks first)
 #
 # WHAT THIS SCRIPT DOES NOT DO:
 #   ✗ Modify any files
 #   ✗ Send data without your explicit approval
-#   ✗ Collect API keys, tokens, or passwords (all redacted)
-#   ✗ Read file contents (only checks if files exist)
+#   ✗ Read workspace document contents (only checks existence and counts)
 #   ✗ Send your real hostname (SHA-256 hashed)
+#   The top-level config env block is omitted; recognized secrets elsewhere are redacted.
 #
 # VERIFY THIS SCRIPT:
-#   curl -sSL clawfix.dev/fix > clawfix.sh    # Download first
-#   cat clawfix.sh                              # Read it
-#   shasum -a 256 clawfix.sh                    # Check hash
-#   curl -s clawfix.dev/fix/sha256              # Compare with published hash
-#   bash clawfix.sh                             # Run after reviewing
+#   curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh
+#   cat clawfix.sh
+#   shasum -a 256 clawfix.sh
+#   curl --fail --show-error --silent https://clawfix.dev/fix/sha256
+#   Compare the printed hashes exactly before running the script.
+#   bash clawfix.sh
 #
 # PREFER NPX (auditable source on npm/GitHub):
 #   npx clawfix                 # Interactive scan
@@ -64,7 +65,7 @@ NC='\\033[0m'
 BOLD='\\033[1m'
 
 echo ""
-echo -e "\${CYAN}🦞 ClawFix v\${VERSION} — AI-Powered OpenClaw Diagnostic\${NC}"
+echo -e "\${CYAN}🦞 ClawFix v\${VERSION}: OpenClaw Diagnostics and Guarded Repairs\${NC}"
 echo -e "\${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\${NC}"
 echo ""
 
@@ -134,9 +135,9 @@ echo -e "   OS: \$OS_NAME \$OS_VERSION (\$OS_ARCH)"
 echo -e "   Node: \$NODE_VERSION"
 echo -e "   OpenClaw: \${OC_VERSION:-not found}"
 
-# --- Sanitize Config (REDACT ALL SECRETS) ---
+# --- Sanitize Config (REDACT RECOGNIZED SECRETS) ---
 echo ""
-echo -e "\${BLUE}🔒 Reading config (secrets will be redacted)...\${NC}"
+echo -e "\${BLUE}🔒 Reading config (recognized secrets will be redacted)...\${NC}"
 
 SANITIZED_CONFIG="{}"
 CONFIG_EXISTS=false
@@ -504,20 +505,20 @@ echo ""
 
 # --- Ask to send for AI analysis ---
 if [ \$ISSUES -gt 0 ]; then
-  echo -e "\${BOLD}Want AI-powered fixes? Send this diagnostic for analysis.\${NC}"
+  echo -e "\${BOLD}Optional AI analysis can explain problems not covered by deterministic checks.\${NC}"
   echo ""
   echo -e "\${YELLOW}Data that will be sent:\${NC}"
   echo "  • OS type, version, architecture"
   echo "  • Node/npm versions"
-  echo "  • OpenClaw version and config (secrets redacted)"
-  echo "  • Recent error logs (last 30 lines matching error/warn)"
+  echo "  • OpenClaw version and config (recognized secrets redacted; top-level env omitted)"
+  echo "  • Recent logs (up to 30 matching gateway log lines and up to 50 recent stderr lines)"
   echo "  • Plugin status (enabled/disabled only)"
   echo "  • Gateway status"
   echo "  • Source IP is processed transiently by ClawFix for abuse prevention"
   echo "  • Redacted diagnostic data is analyzed by ClawFix and OpenRouter"
   echo ""
   echo -e "\${YELLOW}NOT sent:\${NC}"
-  echo "  • API keys, tokens, passwords (all redacted)"
+  echo "  • Top-level config env block"
   echo "  • File contents (SOUL.md, AGENTS.md, etc.)"
   echo "  • Chat history or messages"
   echo "  • Real hostname (only an 8-character one-way hash is sent)"
@@ -578,8 +579,8 @@ if [ \$ISSUES -gt 0 ]; then
   fi
 else
   echo -e "\${GREEN}Your OpenClaw is looking good! No fixes needed.\${NC}"
-  echo -e "If you're still having issues, run with verbose mode:"
-  echo -e "  curl -sSL \$API_URL/fix | VERBOSE=1 bash"
+  echo -e "If you're still having issues, re-run your reviewed local copy with verbose mode:"
+  echo -e "  VERBOSE=1 bash clawfix.sh"
 fi
 
 echo ""

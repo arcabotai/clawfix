@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * ClawFix CLI — AI-powered OpenClaw diagnostic and repair
+ * ClawFix CLI: OpenClaw diagnostics and guarded repairs
  * 
  * Usage: npx clawfix
  *        npx clawfix --json     (machine-readable output)
@@ -25,10 +25,10 @@ const API_URL = ARGS.find(a => a.startsWith('--server='))?.split('=')[1]
 
 if (ARGS.includes('--help') || ARGS.includes('-h')) {
   console.log(`
-🦞 ClawFix v${VERSION} — AI-powered OpenClaw diagnostic and repair
+🦞 ClawFix v${VERSION}: OpenClaw diagnostics and guarded repairs
 
 Usage:
-  npx clawfix              Run diagnostic and get AI fix
+  npx clawfix              Run diagnostics and get repair guidance
   npx clawfix --json       Machine-readable JSON output
   npx clawfix --no-send    Scan only (don't send to API)
   npx clawfix --dry-run    Same as --no-send (inspect data only)
@@ -115,7 +115,7 @@ function sanitizeConfig(config) {
 
 // --- Main ---
 async function main() {
-  log(c.cyan(`\n🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic`));
+  log(c.cyan(`\n🦞 ClawFix v${VERSION}: OpenClaw Diagnostics and Guarded Repairs`));
   log(c.cyan('━'.repeat(52)));
   log();
 

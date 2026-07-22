@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * ClawFix CLI — AI-powered OpenClaw diagnostic & repair
+ * ClawFix CLI: OpenClaw diagnostics and guarded repairs
  * https://clawfix.dev
  *
  * Usage: npx clawfix          (interactive TUI)
@@ -1231,7 +1231,7 @@ async function runOneShotMode() {
   }
 
   console.log('');
-  console.log(c.cyan(`🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic`));
+  console.log(c.cyan(`🦞 ClawFix v${VERSION}: OpenClaw Diagnostics and Guarded Repairs`));
   if (LOCAL_ONLY) console.log(c.yellow('   🔍 LOCAL-ONLY MODE — nothing will be sent'));
   console.log(c.cyan('━'.repeat(50)));
   console.log('');
@@ -1315,11 +1315,11 @@ async function runOneShotMode() {
     return;
   }
 
-  console.log(c.bold('Want AI-powered fixes? Send this diagnostic for analysis.'));
+  console.log('Optional AI analysis can explain problems that deterministic checks do not cover.');
   console.log('');
   console.log(c.dim('Data recipient: ClawFix and OpenRouter (AI analysis provider)'));
-  console.log(c.dim('Data sent:      OS, versions, OpenClaw config (secrets redacted), error logs'));
-  console.log(c.dim('NOT sent:      API keys, file contents, chat history, real hostname'));
+  console.log(c.dim('Data sent:      OS, versions, OpenClaw config (recognized secrets redacted), error logs'));
+  console.log(c.dim('Data omitted:   Top-level config env block, workspace documents, chat history, real hostname'));
   console.log(c.dim('Inspect first: npx clawfix --dry-run'));
   console.log('');
 
@@ -1393,8 +1393,8 @@ async function runOneShotMode() {
   } catch (err) {
     console.log(c.red(`❌ Error: ${err.message}`));
     console.log('');
-    console.log('Try the web version instead:');
-    console.log(c.cyan('  curl -sSL clawfix.dev/fix | bash'));
+    console.log('Review the diagnostic locally or retry with a custom server:');
+    console.log(c.cyan('  npx clawfix --dry-run'));
   }
 
   console.log('');
@@ -1766,7 +1766,7 @@ function renderHelp() {
   console.log('');
   console.log(c.bold('Chat:'));
   console.log(`  Just type naturally — e.g. ${c.dim('"my discord bot isn\'t responding"')}`);
-  console.log(`  ClawFix AI will analyze using your diagnostic context.`);
+  console.log('  If AI is enabled on the selected server, ClawFix can analyze your diagnostic context.');
   console.log('');
 }
 
@@ -1966,12 +1966,12 @@ async function main() {
 
   if (SHOW_HELP) {
     console.log(`
-🦞 ClawFix v${VERSION} — AI-Powered OpenClaw Diagnostic
+🦞 ClawFix v${VERSION}: OpenClaw diagnostics and guarded repairs
 
 Usage: npx clawfix [options]
 
 Modes:
-  (default)            Interactive TUI — scan + chat + fix
+  (default)            Interactive TUI: scan, review, fix, and optional chat
   --scan               One-shot scan (legacy mode)
   --no-interactive     Same as --scan
 
@@ -1998,18 +1998,18 @@ Interactive Commands:
   help             Show help
   exit             Quit
 
-  Or just type naturally to chat with ClawFix AI.
+  AI analysis is optional and only works when enabled on the selected server.
 
 Security:
-  • All API keys, tokens, and passwords are automatically redacted
+  • Recognized API keys, tokens, and passwords are redacted; inspect --dry-run before upload
   • Your hostname is SHA-256 hashed (only first 8 chars sent)
-  • No file contents are read (only existence checks)
+  • Workspace documents are checked by existence only; config and matching error lines may be collected
   • ClawFix discloses OpenRouter and asks before the first upload (unless --yes)
   • Source code: https://github.com/arcabotai/clawfix
 
 Examples:
   npx clawfix                  # Interactive TUI (default)
-  npx clawfix --scan           # One-shot scan + AI analysis
+  npx clawfix --scan           # One-shot scan + repair guidance
   npx clawfix --dry-run        # See what data would be collected
   npx clawfix --yes --scan     # Auto-send for CI/scripting
 `);
