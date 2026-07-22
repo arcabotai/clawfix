@@ -18,6 +18,18 @@ test('help documents custom server and protected-server token support', () => {
   assert.match(result.stdout, /CLAWFIX_API_TOKEN/);
 });
 
+test('help describes optional AI and avoids absolute redaction guarantees', () => {
+  const result = run(['--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /OpenClaw diagnostics and guarded repairs/);
+  assert.match(result.stdout, /AI analysis is optional/);
+  assert.match(result.stdout, /Recognized API keys, tokens, and passwords are redacted/);
+  assert.match(result.stdout, /Workspace documents are checked by existence only/);
+  assert.doesNotMatch(result.stdout, /AI-Powered/);
+  assert.doesNotMatch(result.stdout, /All API keys, tokens, and passwords are automatically redacted/);
+  assert.doesNotMatch(result.stdout, /No file contents are read/);
+});
+
 test('server option rejects missing and non-HTTP values before scanning', () => {
   const missing = run(['--server']);
   assert.equal(missing.status, 2);

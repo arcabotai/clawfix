@@ -55,6 +55,48 @@ test('landing page presents the signed 0.9.1 release instead of a stale beta her
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
 });
 
+test('script download guidance requires HTTPS and review before execution', async () => {
+  const scriptRoute = await read('src/routes/script.js');
+  assert.match(scriptRoute, /curl --fail --show-error --silent --location https:\/\/clawfix\.dev\/fix/);
+  assert.match(scriptRoute, /Compare the printed hashes exactly before running the script/);
+  assert.doesNotMatch(scriptRoute, /curl[^\n]*\sclawfix\.dev\/fix/);
+  assert.doesNotMatch(scriptRoute, /curl[^\n]*\|\s*(?:ba)?sh/);
+});
+
+test('public surfaces avoid remote shell pipes and privacy absolutes', async () => {
+  const sources = await Promise.all([
+    read('src/landing.js'),
+    read('src/routes/results.js'),
+    read('src/routes/script.js'),
+    read('cli/bin/clawfix.js'),
+  ]);
+  for (const source of sources) {
+    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
+    assert.doesNotMatch(source, /all secrets redacted|all redacted|NEVER SENT|Personal data of any kind/i);
+  }
+  const landing = sources[0];
+  assert.match(landing, /recognized secrets/i);
+  assert.match(landing, /top-level config env block/i);
+});
+
+test('privacy docs disclose upload overrides and actual log limits', async () => {
+  const [readme, scriptRoute, landing] = await Promise.all([
+    read('README.md'),
+    read('src/routes/script.js'),
+    read('src/landing.js'),
+  ]);
+  assert.match(readme, /top-level config `env` block is omitted/);
+  assert.doesNotMatch(readme, /Environment variable values.*not collected|Environment variable values.*excluded/i);
+  assert.doesNotMatch(readme, /you see everything before anything happens/i);
+  assert.match(readme, /--yes/);
+  assert.match(readme, /CLAWFIX_AUTO=1/);
+  assert.match(readme, /--dry-run/);
+  assert.match(readme, /--show-data/);
+  assert.match(readme, /200 recent `gateway\.err\.log` lines/);
+  assert.match(scriptRoute, /up to 30 matching gateway log lines and up to 50 recent stderr lines/i);
+  assert.match(landing, /<code>--yes<\/code>, <code>-y<\/code>, or set <code>CLAWFIX_AUTO=1<\/code>/);
+});
+
 test('Docker build is strict, least-privilege, and copies only runtime inputs', async () => {
   const [dockerfile, dockerignore, ci] = await Promise.all([
     read('Dockerfile'),

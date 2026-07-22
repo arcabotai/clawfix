@@ -1,6 +1,6 @@
 # 🦞 ClawFix
 
-AI-powered diagnostic and repair for [OpenClaw](https://openclaw.ai) installations.
+Diagnostics and guarded repairs for [OpenClaw](https://openclaw.ai) installations.
 
 One command. No signup. No account.
 
@@ -15,7 +15,7 @@ That's it. ClawFix scans your OpenClaw setup, finds issues, and generates fix sc
 ## What it does
 
 1. **Scans** your OpenClaw installation (config, gateway, plugins, workspace, logs)
-2. **Detects** issues using pattern matching (12+ known issue detectors)
+2. **Detects** issues using 49 deterministic issue detectors
 3. **Analyzes** novel problems with AI (optional, with your consent)
 4. **Builds** a fix script from reviewed deterministic repair snippets; AI never contributes shell
 
@@ -48,10 +48,15 @@ npx clawfix --yes              # Explicitly skip confirmation and upload
 
 ## Alternative
 
-Don't want Node.js? Use the bash script directly:
+Don't want Node.js? Download and inspect the bash script before running it:
 
 ```bash
-curl -sSL clawfix.dev/fix | bash
+curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh
+cat clawfix.sh
+shasum -a 256 clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/fix/sha256
+# Compare the printed hashes exactly before running the script.
+bash clawfix.sh
 ```
 
 ## Links
@@ -63,4 +68,4 @@ curl -sSL clawfix.dev/fix | bash
 
 ## License
 
-MIT
+[MIT](LICENSE)
