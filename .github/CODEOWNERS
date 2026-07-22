@@ -1,0 +1,11 @@
+# Repository-wide review and maintenance ownership.
+* @felirami @arcabotai
+
+# Security, diagnostics, repairs, and release automation.
+/src/security.js @felirami @arcabotai
+/src/known-issues.js @felirami @arcabotai
+/src/repair-validator.js @felirami @arcabotai
+/cli/ @felirami @arcabotai
+/scripts/ @felirami @arcabotai
+/.github/workflows/ @felirami @arcabotai
+/SECURITY.md @felirami @arcabotai

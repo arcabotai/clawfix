@@ -1,0 +1,43 @@
+name: Diagnostic rule proposal
+description: Propose a reproducible OpenClaw failure for deterministic detection.
+title: "diagnostic: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Remove tokens, credentials, hostnames, private paths, and chat content before submitting.
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure mode
+      description: What breaks, and what should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Redacted reproduction
+      description: Provide the smallest safe reproduction or synthetic fixture.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Detection evidence
+      description: Which stable signals distinguish this problem from a healthy installation?
+    validations:
+      required: true
+  - type: textarea
+    id: repair
+    attributes:
+      label: Safe repair boundary
+      description: Describe a bounded and reversible repair, or explain why ClawFix should only advise.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed secrets, personal data, private paths, and chat content.
+          required: true

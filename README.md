@@ -1,5 +1,10 @@
 # 🦞 ClawFix
 
+[![CI](https://github.com/arcabotai/clawfix/actions/workflows/ci.yml/badge.svg)](https://github.com/arcabotai/clawfix/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/clawfix.svg)](https://www.npmjs.com/package/clawfix)
+[![npm downloads](https://img.shields.io/npm/dm/clawfix.svg)](https://www.npmjs.com/package/clawfix)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **AI-powered OpenClaw diagnostic and repair service.**
 
 Fix your broken OpenClaw in one command. No SSH access needed. Runs locally, sends redacted logs, gets a fix script back.
@@ -26,6 +31,18 @@ shasum -a 256 clawfix.sh                # Verify hash
 curl -s clawfix.dev/fix/sha256          # Compare with published hash
 bash clawfix.sh                         # Run after reviewing
 ```
+
+## Usage and maintenance
+
+ClawFix is a maintained open-source operator tool, not a one-off demo.
+
+Verified on July 22, 2026:
+
+- The npm CLI recorded [1,175 downloads since February 22](https://api.npmjs.org/downloads/point/2026-02-22:2026-07-22/clawfix), including [247 downloads in the previous 30-day period](https://api.npmjs.org/downloads/point/2026-06-22:2026-07-21/clawfix).
+- The hosted service reported [192 completed diagnoses](https://clawfix.dev/api/stats).
+- Current pull-request and `main` CI runs tests on Node.js 22 and 24, remediation proofs, ShellCheck-backed repair validation, a production dependency audit, npm package inspection, and a container smoke test. The release workflow repeats the Node.js 24 test, repair, audit, and package gates before publishing.
+
+Maintenance records are public in the [changelog](CHANGELOG.md), [releases](https://github.com/arcabotai/clawfix/releases), [issues](https://github.com/arcabotai/clawfix/issues), and [pull requests](https://github.com/arcabotai/clawfix/pulls).
 
 ## How It Works
 
@@ -211,7 +228,7 @@ grandfather anyone using the tool today.
 
 ## Contributing
 
-Found a new OpenClaw issue pattern? PRs welcome! Add it to `src/known-issues.js`.
+Found a new OpenClaw issue pattern? Start with the [diagnostic rule proposal](https://github.com/arcabotai/clawfix/issues/new?template=diagnostic-rule.yml), then read [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Before opening a PR:
 
@@ -223,9 +240,15 @@ npm audit --omit=dev
 
 CI runs these checks on Node.js 22 and 24, verifies the npm publish manifest, and builds the production container.
 
+Security and privacy failures should be reported privately. See [SECURITY.md](SECURITY.md).
+
+## Maintainers
+
+ClawFix is maintained by [Luis Felipe Abarca](https://github.com/felirami) and Arca's public [`arcabotai`](https://github.com/arcabotai) account. Felipe authored the [v0.9.1 repair-safety overhaul](https://github.com/arcabotai/clawfix/pull/4). [`CODEOWNERS`](.github/CODEOWNERS) names both accounts for repository-wide review, while Arca's agent identities contribute under their own public authorship.
+
 ## License
 
-MIT
+[MIT](LICENSE)
 
 ---
 

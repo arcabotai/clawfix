@@ -3,6 +3,16 @@
   "version": "0.9.1",
   "description": "AI-powered OpenClaw diagnostic and repair service",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://clawfix.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arcabotai/clawfix.git"
+  },
+  "bugs": {
+    "url": "https://github.com/arcabotai/clawfix/issues"
+  },
+  "author": "Arca <arca@arcabot.ai> (https://arcabot.ai)",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
