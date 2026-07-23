@@ -9,6 +9,7 @@ landingRouter.get('/', (req, res) => {
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
       version: '0.10.0',
+      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh && bash install-clawfix.sh',
       fix: 'npx clawfix@0.10.0',
     });
   }
@@ -442,14 +443,22 @@ const LANDING_HTML = `<!DOCTYPE html>
 
         <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-npx">npx clawfix@0.10.0</code>
-          <button type="button" class="copy-btn" id="copyBtn-npx" onclick="copyCommand('npx')">Copy</button>
+          <code id="cmd-install">curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh</code>
+          <button type="button" class="copy-btn" id="copyBtn-install" onclick="copyCommand('install')">Copy</button>
         </div>
         <p class="command-hint" style="margin-bottom: 8px;">
-          <strong style="color:var(--green)">Recommended</strong> — auditable source on <a href="https://www.npmjs.com/package/clawfix" style="color:var(--muted)">npm</a> and <a href="https://github.com/arcabotai/clawfix" style="color:var(--muted)">GitHub</a>
+          <strong style="color:var(--green)">Recommended</strong> — download, verify hash, then install with bash. No global npm.
         </p>
-        <p class="command-hint" style="margin-bottom: 4px;">Want to inspect before running? <code style="color:var(--green)">npx clawfix@0.10.0 --dry-run</code></p>
-        <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Requires Node.js 18+.</p>
+        <p class="command-hint" style="margin-bottom: 4px;">
+          Then: <code style="color:var(--green)">shasum -a 256 install-clawfix.sh</code>
+          · <code style="color:var(--green)">curl --fail --show-error --silent https://clawfix.dev/install/sha256</code>
+          · compare hashes · <code style="color:var(--green)">bash install-clawfix.sh</code>
+        </p>
+        <p class="command-hint" style="margin-bottom: 8px;">
+          Already on npm? <code id="cmd-npx" style="color:var(--muted)">npx clawfix@0.10.0</code>
+          · dry-run: <code style="color:var(--green)">npx clawfix@0.10.0 --dry-run</code>
+        </p>
+        <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Installer requires Node.js 22+.</p>
         <div class="proof-row" aria-label="Release verification">
           <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
           <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>

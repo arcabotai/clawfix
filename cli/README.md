@@ -7,10 +7,22 @@ One command. No signup. No account.
 ## Quick Start
 
 ```bash
-npx clawfix
+# Recommended: download, verify, then install with bash (no global npm)
+curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh
+cat install-clawfix.sh
+shasum -a 256 install-clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/install/sha256
+# Compare the printed hashes exactly before running the script.
+bash install-clawfix.sh
+
+clawfix
 ```
 
-That's it. ClawFix scans your OpenClaw setup, finds issues, and generates fix scripts.
+Or with npx:
+
+```bash
+npx clawfix@0.10.0
+```
 
 ## What it does
 
@@ -48,7 +60,7 @@ npx clawfix --yes              # Explicitly skip confirmation and upload
 
 ## Alternative
 
-Don't want Node.js? Download and inspect the bash script before running it:
+Legacy bash diagnostic script (scan only, not full CLI install):
 
 ```bash
 curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh

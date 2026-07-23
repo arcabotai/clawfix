@@ -4,6 +4,9 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Added a verified bash installer at `/install` that downloads a pinned package tarball, checks integrity, and installs into `~/.clawfix` + `~/.local/bin` without global npm.
+- Made download-verify-bash the recommended install path on the landing page and README. `npx` remains supported.
+
 ## 0.10.0 - 2026-07-23
 
 - Added a real diagnostic core with cancellation, deadlines, revisioned result envelopes, and stable finding identity.

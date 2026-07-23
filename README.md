@@ -14,19 +14,31 @@ ClawFix scans locally, redacts recognized secrets, and matches failures against 
 ## Quick Start
 
 ```bash
-# Recommended: auditable source on npm and GitHub
-npx clawfix
+# Recommended: download, verify, then install with bash (no global npm)
+curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh
+cat install-clawfix.sh
+shasum -a 256 install-clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/install/sha256
+# Compare the printed hashes exactly before running the script.
+bash install-clawfix.sh
 
-# Inspect what data would be collected (sends nothing)
-npx clawfix --dry-run
+# Then run
+clawfix --dry-run
+clawfix
 ```
 
-### Alternative: curl
-
-If you prefer, you can download and inspect the script first:
+### Alternative: npx
 
 ```bash
-# Download, inspect, then run
+npx clawfix@0.10.0
+npx clawfix@0.10.0 --dry-run
+```
+
+### Legacy diagnostic script
+
+If you only want the older bash diagnostics script (not the full CLI install):
+
+```bash
 curl --fail --show-error --silent --location https://clawfix.dev/fix --output clawfix.sh
 cat clawfix.sh
 shasum -a 256 clawfix.sh

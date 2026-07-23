@@ -9,6 +9,7 @@ RUN npm ci --omit=dev \
 
 COPY --chown=node:node src ./src
 COPY --chown=node:node cli/bin/security.js ./cli/bin/security.js
+COPY --chown=node:node scripts/install.sh ./scripts/install.sh
 RUN node -e "import('./src/server.js')"
 
 USER node
