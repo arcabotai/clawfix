@@ -55,6 +55,271 @@ function toSafeErrorMessage(error) {
   return typeof message === 'string' && message.length > 0 ? message : 'Unknown internal error';
 }
 
+// deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
+// Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
+// reasons about (config, per-band collection results) is read from the `collected` argument, and
+// it performs no filesystem/process/console/clock/network access and touches no ambient global.
+// It also never mutates its input — every pushed issue is a freshly-constructed object, and the
+// trailing `kind` defaulting loop below mutates only those freshly-constructed local objects, not
+// anything reachable from `collected`.
+export function deriveIssues(collected) {
+  const {
+    config,
+    system,
+    gateway,
+    logs,
+    serviceHealth,
+    workspace,
+    ports,
+    nativeDoctor,
+    nativeConfig,
+    nativeStatus,
+    nativeSecurity,
+  } = collected;
+
+  const issues = [];
+
+  const gatewayPortFinding = ports.gateway?.finding;
+  if (gatewayPortFinding) {
+    issues.push({
+      severity: 'high',
+      kind: 'failure',
+      text: gatewayPortFinding.message,
+      source: 'clawfix-port-probe',
+      nativeCheckId: gatewayPortFinding.checkId,
+      path: gatewayPortFinding.path,
+    });
+  }
+
+  const activeModelRefs = [];
+  const addActiveModelRef = (value) => {
+    if (!value) return;
+    if (typeof value === 'string') {
+      activeModelRefs.push(value);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(addActiveModelRef);
+    }
+  };
+  const defaults = config?.agents?.defaults || {};
+  addActiveModelRef(defaults.model);
+  addActiveModelRef(defaults.model?.primary);
+  addActiveModelRef(defaults.model?.fallbacks);
+  addActiveModelRef(defaults.compaction?.model);
+  addActiveModelRef(defaults.heartbeat?.model);
+  addActiveModelRef(defaults.subagents?.model);
+  if (Array.isArray(config?.agents?.list)) {
+    for (const agent of config.agents.list) {
+      addActiveModelRef(agent?.model);
+      addActiveModelRef(agent?.model?.primary);
+      addActiveModelRef(agent?.model?.fallbacks);
+    }
+  }
+  const agentRuntimes = [
+    defaults.agentRuntime,
+    ...(Array.isArray(config?.agents?.list) ? config.agents.list.map((agent) => agent?.agentRuntime) : []),
+  ].filter(Boolean);
+  const hasPiFallback = agentRuntimes.some((runtime) => (
+    runtime === 'pi'
+    || runtime?.id === 'pi'
+    || runtime?.fallback === 'pi'
+  ));
+  const hasNativeCodexRuntime = agentRuntimes.some((runtime) => (
+    runtime === 'codex'
+    || runtime?.id === 'codex'
+  ));
+  const codexPlugin = config?.plugins?.entries?.codex || null;
+  const codexPluginEnabled = !!codexPlugin && codexPlugin.enabled !== false;
+  const codexAppServer = codexPlugin?.config?.appServer || {};
+  const shellCodexHomeMatchesExpected = workspace?.codexHome?.matchesExpected === true;
+  const combinedLogs = [logs.errorLogs, logs.stderrLogs, logs.gatewayLogTail, gateway.gatewayStatus]
+    .filter(Boolean).join('\n');
+
+  const { gatewayStatus } = gateway;
+  const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
+  const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
+  const listenerPid = Number(ports.gateway?.pid);
+  const expectedGatewayPid = Number.parseInt(String(gateway.gatewayPid || ''), 10);
+  const competingPortOwner = ports.gateway?.listening === true
+    && Number.isSafeInteger(listenerPid) && listenerPid > 0 && (
+      (Number.isSafeInteger(expectedGatewayPid) && expectedGatewayPid > 0 && listenerPid !== expectedGatewayPid)
+      || !gateway.gatewayPid
+    );
+  if ((gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) && !competingPortOwner) {
+    issues.push({ severity: 'critical', text: 'Gateway is not running' });
+  }
+  if (competingPortOwner) {
+    issues.push({ severity: 'critical', text: 'Port conflict detected' });
+  }
+  if (system.runtimeCompatible === false && system.runtimeRequired) {
+    issues.push({
+      severity: 'critical',
+      text: `OpenClaw requires Node ${system.runtimeRequired} (current: ${system.runtimeCurrent || system.nodeVersion})`,
+      source: 'openclaw-runtime',
+    });
+  }
+  if ((config?.plugins?.load?.paths || []).some((path) => (
+    typeof path === 'string' && /openclaw\/dist\/extensions\//.test(path)
+  )) || /ignored plugins\.load\.paths entry.*bundled plugin directory/i.test(combinedLogs)) {
+    issues.push({ severity: 'medium', text: 'Stale bundled plugin load paths configured' });
+  }
+  if (codexPluginEnabled && (activeModelRefs.some((ref) => String(ref).startsWith('openai-codex/')) || hasPiFallback)) {
+    issues.push({ knownIssueId: 'pi-backed-openai-codex-route', severity: 'high', text: 'PI-backed openai-codex route active instead of native Codex harness' });
+  }
+  if (/Codex cannot access session files.*\.codex[\/\\]sessions|Operation not permitted.*\.codex[\/\\]sessions|permission denied.*\.codex[\/\\]sessions/i.test(combinedLogs)) {
+    issues.push({ knownIssueId: 'codex-session-store-permission', severity: 'high', text: 'Codex session-store permission failure' });
+  }
+  if (codexPluginEnabled && hasNativeCodexRuntime && !shellCodexHomeMatchesExpected) {
+    issues.push({ knownIssueId: 'codex-shell-home-mismatch', severity: 'medium', text: 'Shell CODEX_HOME does not match OpenClaw Codex home' });
+  }
+  if (codexPluginEnabled
+      && (hasNativeCodexRuntime || activeModelRefs.some((ref) => String(ref).startsWith('openai/')))
+      && codexAppServer.serviceTier !== 'fast') {
+    issues.push({ knownIssueId: 'codex-service-tier-not-fast', severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
+  }
+  const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
+  const activeMemoryTimeoutMs = Number(config?.plugins?.entries?.['active-memory']?.config?.timeoutMs ?? NaN);
+  const codexTimeoutSymptoms = (
+    /EMBEDDED FALLBACK: Gateway agent failed|gateway closed \((1006|1012)\)|codex app-server startup aborted/i.test(combinedLogs)
+    || /active-memory:.*status=timeout|lane=.*active-memory.*durationMs=\d+.*codex app-server startup aborted/i.test(combinedLogs)
+  );
+  if (codexPluginEnabled && hasNativeCodexRuntime && codexTimeoutSymptoms
+      && (codexRequestTimeoutMs <= 60000 || activeMemoryTimeoutMs <= 60000)) {
+    issues.push({ knownIssueId: 'native-codex-timeout-boundary', severity: 'high', text: 'Native Codex timeout boundary can force gateway fallback' });
+  }
+
+  const sigtermCount = (logs.gatewayLogTail.match(/signal SIGTERM/gi) || []).length;
+  const restartCount = (logs.gatewayLogTail.match(/listening.*PID/gi) || []).length;
+  if (config?.update?.auto?.enabled === true && (sigtermCount >= 2 || restartCount >= 3)) {
+    issues.push({ severity: 'critical', text: 'Auto-update causing gateway restart loop' });
+  } else if (config?.update?.auto?.enabled === true) {
+    issues.push({ severity: 'medium', text: 'Auto-update enabled (risk of restart loops)' });
+  }
+
+  const reloadCount = (logs.gatewayLogTail.match(/config change detected.*evaluating reload/gi) || []).length;
+  if (reloadCount >= 3) {
+    issues.push({ severity: 'high', text: `Config reload cascade detected (${reloadCount} reloads in recent logs)` });
+  }
+
+  if (serviceHealth.runs > 2 && (serviceHealth.uptimeSeconds || 0) < 300) {
+    issues.push({ severity: 'critical', text: `Gateway crash loop — ${serviceHealth.runs} restarts, only ${serviceHealth.uptimeStr} uptime` });
+  } else if ((serviceHealth.nRestarts || 0) > 0) {
+    issues.push({ severity: 'high', text: `Gateway has restarted ${serviceHealth.nRestarts} time(s) (systemd)` });
+  }
+
+  const handshakeSpam = (logs.stderrLogs.match(/invalid handshake.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
+  if (handshakeSpam >= 5) {
+    issues.push({ severity: 'medium', text: 'Browser Relay extension spamming invalid handshakes' });
+  }
+
+  if (logs.errLogSizeMB > 50) {
+    issues.push({ severity: 'medium', text: `Error log is ${logs.errLogSizeMB}MB (should be <50MB)` });
+  }
+
+  const matrixTimeouts = (logs.stderrLogs.match(/ESOCKETTIMEDOUT/gi) || []).length;
+  if (matrixTimeouts >= 3) {
+    issues.push({ severity: 'low', text: 'Matrix sync timeouts spamming error log' });
+  }
+
+  if (config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true) {
+    issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
+  }
+  if (config?.agents?.defaults && !config.agents.defaults.memorySearch?.query?.hybrid?.enabled) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)' });
+  }
+  if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
+  }
+  if (config?.agents?.defaults && !config.agents.defaults.compaction?.memoryFlush?.enabled) {
+    issues.push({ severity: 'medium', kind: 'optimization', text: 'Memory flush not enabled (data loss on compaction)' });
+  }
+  if (!workspace.hasSoul && workspace.workspaceDir) {
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
+  }
+  if (workspace.memoryFiles === 0 && workspace.workspaceDir) {
+    issues.push({ severity: 'low', kind: 'optimization', text: 'No memory files found' });
+  }
+
+  if (nativeConfig.available && nativeConfig.valid === false) {
+    issues.push({
+      severity: 'high',
+      text: nativeConfig.errors[0]?.message || 'OpenClaw config schema validation failed',
+      source: 'openclaw-config',
+      nativeCheckId: 'config/schema-invalid',
+      path: nativeConfig.errors[0]?.path || null,
+    });
+  }
+
+  if (
+    nativeStatus.available
+    && nativeStatus.gateway.reachable === false
+    && !issues.some((issue) => /gateway.*not running|gateway.*unreachable/i.test(issue.text))
+  ) {
+    issues.push({
+      severity: 'critical',
+      text: nativeStatus.gateway.error || 'OpenClaw gateway is unreachable',
+      source: 'openclaw-status',
+      nativeCheckId: 'status/gateway-unreachable',
+    });
+  }
+
+  if (
+    competingPortOwner
+    && nativeStatus.available
+    && nativeStatus.gateway.reachable === false
+  ) {
+    const owner = ports.gateway.process;
+    const { pid } = ports.gateway;
+    issues.push({
+      severity: 'critical',
+      text: `Gateway port ${gateway.gatewayPort} is occupied${owner ? ` by ${owner}` : ''}${pid ? ` (PID ${pid})` : ''}, but OpenClaw cannot reach it`,
+      source: 'clawfix-port-probe',
+      nativeCheckId: 'runtime/gateway-port-conflict',
+    });
+  }
+
+  for (const finding of nativeSecurity.findings) {
+    if (finding.severity === 'info') continue;
+    issues.push({
+      severity: finding.severity === 'critical' ? 'critical'
+        : finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.title || finding.message,
+      description: finding.message,
+      source: finding.source,
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
+  }
+
+  for (const finding of nativeDoctor.findings) {
+    const duplicate = issues.some((issue) => (
+      issue.nativeCheckId === finding.checkId
+      || issue.text.toLowerCase() === finding.message.toLowerCase()
+    ));
+    if (duplicate) continue;
+    issues.push({
+      severity: finding.severity === 'error' ? 'high' : 'medium',
+      text: finding.message,
+      source: 'openclaw-doctor',
+      nativeCheckId: finding.checkId,
+      path: finding.path,
+      fixHint: finding.fixHint,
+    });
+  }
+
+  for (const issue of issues) {
+    if (!issue.kind) {
+      issue.kind = issue.severity === 'critical' || issue.severity === 'high'
+        ? 'failure'
+        : 'warning';
+    }
+  }
+
+  return issues;
+}
+
 // createDiagnosticsCore takes every ambient boundary the original collectDiagnostics() reached
 // for directly (filesystem, OpenClaw, OS facts, environment, clock, hashing, native probes, and
 // redaction) as a required injected dependency, so the core itself performs no ambient global
@@ -513,12 +778,43 @@ export function createDiagnosticsCore({
         },
       }));
 
+      const issues = deriveIssues({
+        config,
+        system,
+        gateway,
+        logs,
+        serviceHealth,
+        workspace,
+        ports,
+        nativeDoctor,
+        nativeConfig,
+        nativeStatus,
+        nativeSecurity,
+      });
+      const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
+      const severity = {
+        critical: issues.filter((issue) => issue.severity === 'critical').length,
+        high: issues.filter((issue) => issue.severity === 'high').length,
+        medium: issues.filter((issue) => issue.severity === 'medium').length,
+        low: issues.filter((issue) => issue.severity === 'low').length,
+      };
+      emit?.(scanStep({
+        revision,
+        phase: 'issues',
+        label: 'Deriving diagnostic issues',
+        data: {
+          total: issues.length,
+          actionable: issues.length - optimizationCount,
+          optimizations: optimizationCount,
+          severity,
+        },
+      }));
+
       const incomplete = new DiagnosticsCoreIncompleteError(
-        'cli/core/diagnostics.js now implements the discover, system, config, gateway, logs, '
-        + 'service, workspace, ports, and native collection bands (ClawFix Task 4, Slices 2-3B). '
-        + 'Pure issue derivation, envelope/summary assembly, and cancellation/deadline machinery '
-        + 'remain pending for later Task 4 slices (4-6), and the cli/bin/clawfix.js shim/renderer '
-        + 'swap-in lands in Slice 7; none of that is available yet.',
+        'cli/core/diagnostics.js now implements all collection bands plus pure issue derivation '
+        + '(ClawFix Task 4, Slices 2-4). The envelope/semantic-summary assembly and '
+        + 'cancellation/deadline machinery remain pending for later Task 4 slices (5-6), and the '
+        + 'cli/bin/clawfix.js shim/renderer swap-in lands in Slice 7; none of that is available yet.',
       );
       emitTerminal(scanError({ revision, error: { message: incomplete.message, code: 'NOT_IMPLEMENTED' } }));
       throw incomplete;

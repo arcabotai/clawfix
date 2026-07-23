@@ -12,7 +12,7 @@ import {
   scanWarning,
   SCAN_PHASES,
 } from '../cli/core/events.js';
-import { createDiagnosticsCore, DiagnosticsCoreIncompleteError } from '../cli/core/diagnostics.js';
+import { createDiagnosticsCore, deriveIssues, DiagnosticsCoreIncompleteError } from '../cli/core/diagnostics.js';
 
 // ============================================================
 // Slice 1 — event contracts (cli/core/events.js)
@@ -782,7 +782,7 @@ test('runDiagnostics never writes to the console or stdout/stderr directly', asy
   assert.deepEqual(writes, []);
 });
 
-test('DiagnosticsCoreIncompleteError explicitly names the collection bands Task 4 has not yet extracted', async () => {
+test('DiagnosticsCoreIncompleteError explicitly names only the Task 4 slices still pending', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   await assert.rejects(
@@ -790,9 +790,9 @@ test('DiagnosticsCoreIncompleteError explicitly names the collection bands Task 
     (error) => {
       assert.ok(error instanceof DiagnosticsCoreIncompleteError);
       assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.match(error.message, /gateway/);
-      assert.match(error.message, /native/);
-      assert.match(error.message, /envelope/);
+      assert.match(error.message, /envelope/i);
+      assert.match(error.message, /deadline/i);
+      assert.match(error.message, /shim|renderer/i);
       return true;
     },
   );
@@ -1281,7 +1281,7 @@ test('runDiagnostics never emits scan.completed while traversing the gateway/log
   // Slice 3B extends the traversed bands to include ports and native — this list supersedes the
   // Slice 3A version of this test (which stopped at 'workspace') the same way the Slice 2
   // DiagnosticsCoreIncompleteError message assertion was later superseded by a Slice 3A one below.
-  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native']);
+  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues']);
   assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
@@ -1305,7 +1305,7 @@ test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects 
   assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'gateway'), false);
 });
 
-test('DiagnosticsCoreIncompleteError names the still-unextracted bands after Slice 3A (ports, native, envelope) and no longer blocks on gateway/logs/service/workspace', async () => {
+test('DiagnosticsCoreIncompleteError no longer lists completed collection or issue bands as pending', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   await assert.rejects(
@@ -1313,11 +1313,10 @@ test('DiagnosticsCoreIncompleteError names the still-unextracted bands after Sli
     (error) => {
       assert.ok(error instanceof DiagnosticsCoreIncompleteError);
       assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.match(error.message, /gateway/);
-      assert.match(error.message, /native/);
-      assert.match(error.message, /envelope/);
-      assert.match(error.message, /ports/);
-      assert.match(error.message, /workspace/);
+      assert.doesNotMatch(error.message, /ports and native collection bands.*pending/i);
+      assert.match(error.message, /implements all collection bands plus pure issue derivation/i);
+      assert.doesNotMatch(error.message, /pure issue derivation, envelope\/summary assembly.*pending/i);
+      assert.match(error.message, /envelope/i);
       return true;
     },
   );
@@ -1457,7 +1456,12 @@ test('runDiagnostics ports phase preserves invalid-configuration evidence includ
 test('runDiagnostics native phase runs Doctor whenever a binary exists and runs config/status/security when the version probe is runtime-compatible', async () => {
   const { deps, calls } = fakeDeps({
     nativeDoctor: {
-      available: true, exitCode: 0, ok: true, checksRun: 7, checksSkipped: 2, findings: [{ checkId: 'x' }],
+      available: true,
+      exitCode: 0,
+      ok: true,
+      checksRun: 7,
+      checksSkipped: 2,
+      findings: [{ checkId: 'x', severity: 'warning', message: 'doctor finding x', path: null, fixHint: null }],
     },
     nativeConfig: {
       available: true, exitCode: 0, valid: true, path: '/x/openclaw.json', warnings: [], errors: [],
@@ -1479,7 +1483,15 @@ test('runDiagnostics native phase runs Doctor whenever a binary exists and runs 
       available: true,
       exitCode: 0,
       summary: { critical: 1, warning: 2, info: 3 },
-      findings: [{ checkId: 'sec' }],
+      findings: [{
+        checkId: 'sec',
+        severity: 'warning',
+        title: 'security finding sec',
+        message: 'security finding detail',
+        source: 'openclaw-security',
+        path: null,
+        fixHint: null,
+      }],
       suppressedFindingCount: 0,
       secretDiagnosticCount: 0,
     },
@@ -1620,7 +1632,7 @@ test('runDiagnostics ports/native step data are frozen, JSON-safe, and never lea
   assert.ok(!serialized.includes('raw-port-probe-error-DEF'), 'raw port collector error text must not leak into the semantic event');
 });
 
-test('runDiagnostics never emits scan.completed while traversing the ports/native bands, still emits exactly one NOT_IMPLEMENTED terminal', async () => {
+test('runDiagnostics never emits scan.completed while traversing the ports/native/issues bands, still emits exactly one NOT_IMPLEMENTED terminal', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
@@ -1629,7 +1641,7 @@ test('runDiagnostics never emits scan.completed while traversing the ports/nativ
     DiagnosticsCoreIncompleteError,
   );
   assert.deepEqual(events.map((e) => e.phase).filter(Boolean), [
-    'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native',
+    'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues',
   ]);
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
@@ -1679,19 +1691,519 @@ test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects 
   assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'native'), false);
 });
 
-test('DiagnosticsCoreIncompleteError names only issues/envelope/cancellation/deadlines/shim work as pending after Slice 3B, having implemented ports and native', async () => {
+test('DiagnosticsCoreIncompleteError names only envelope/summary, cancellation/deadlines, and shim/renderer work as pending after Slice 4, having implemented issue derivation', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-msg-3b' }),
+    core.runDiagnostics({ revision: 'rev-msg-4' }),
     (error) => {
       assert.ok(error instanceof DiagnosticsCoreIncompleteError);
       assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.match(error.message, /issue/i);
       assert.match(error.message, /envelope/);
+      assert.match(error.message, /summary/);
       assert.match(error.message, /cancellation|deadline/);
-      assert.match(error.message, /shim/);
+      assert.match(error.message, /shim|renderer/);
       return true;
     },
   );
+});
+
+// ============================================================
+// Slice 4 — deriveIssues() pure helper + createDiagnosticsCore: issues collection/derivation band
+//
+// This slice ports the original collectDiagnostics() "Local Issue Detection" block (the original
+// cli/bin/clawfix.js lines ~860-1098) into a pure, exported `deriveIssues(collected)` helper with
+// no filesystem/process/console/clock/network access and no mutation of its input. runDiagnostics
+// calls it after the native band and emits exactly one JSON-safe frozen scan.step for phase
+// 'issues' carrying deterministic semantic counts only (never raw issue text/log/config content).
+// Envelope/summary assembly and cancellation/deadline machinery remain deferred — a scan that
+// reaches past the issues phase still rejects with DiagnosticsCoreIncompleteError.
+// ============================================================
+
+// Builds a minimal, well-formed `collected` fixture for deriveIssues() with every band defaulting
+// to an inert/healthy shape, so a test only needs to override the specific facts it cares about.
+function fakeCollected(overrides = {}) {
+  return {
+    config: overrides.config === undefined ? {} : overrides.config,
+    system: {
+      nodeVersion: 'v22.9.0-fake',
+      runtimeCompatible: true,
+      runtimeRequired: null,
+      runtimeCurrent: null,
+      ...overrides.system,
+    },
+    gateway: {
+      gatewayStatus: 'runtime: ok\nrunning, pid 4242',
+      gatewayPort: 18789,
+      gatewayPid: '4242',
+      ...overrides.gateway,
+    },
+    logs: {
+      errorLogs: '',
+      stderrLogs: '',
+      gatewayLogTail: '',
+      errLogSizeMB: 0,
+      ...overrides.logs,
+    },
+    serviceHealth: {
+      runs: 0, uptimeSeconds: 0, uptimeStr: '', nRestarts: 0, ...overrides.serviceHealth,
+    },
+    workspace: {
+      workspaceDir: '',
+      hasSoul: true,
+      memoryFiles: 1,
+      codexHome: { expected: '/home/fake-user/.openclaw/codex-home', shellSet: false, matchesExpected: true },
+      ...overrides.workspace,
+    },
+    ports: {
+      gateway: {
+        valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss', ...overrides.portsGateway,
+      },
+    },
+    nativeDoctor: { available: false, checksRun: 0, checksSkipped: 0, findings: [], ...overrides.nativeDoctor },
+    nativeConfig: {
+      available: false, valid: null, warnings: [], errors: [], ...overrides.nativeConfig,
+    },
+    nativeStatus: overrides.nativeStatus === undefined ? { available: false } : overrides.nativeStatus,
+    nativeSecurity: { available: false, findings: [], ...overrides.nativeSecurity },
+  };
+}
+
+test('deriveIssues is exported as a function', () => {
+  assert.equal(typeof deriveIssues, 'function');
+});
+
+test('deriveIssues golden: comprehensive representative facts produce the exact issues array, in the original order', () => {
+  const collected = fakeCollected({
+    config: {
+      gateway: { port: 4321 },
+      plugins: {
+        load: { paths: ['/opt/openclaw/dist/extensions/foo.js'] },
+        entries: {
+          codex: { enabled: true, config: { appServer: { serviceTier: 'slow', requestTimeoutMs: 30000 } } },
+          'active-memory': { config: { timeoutMs: 15000 } },
+          'openclaw-mem0': { config: { enableGraph: true } },
+        },
+      },
+      agents: {
+        defaults: {
+          model: 'openai-codex/gpt-5',
+          agentRuntime: 'codex',
+          workspace: '/w',
+          memorySearch: { query: { hybrid: { enabled: false } } },
+          contextPruning: null,
+          compaction: { memoryFlush: { enabled: false } },
+        },
+      },
+      update: { auto: { enabled: true } },
+    },
+    system: {
+      nodeVersion: 'v18.0.0-fake', runtimeCompatible: false, runtimeRequired: '>=20.0.0', runtimeCurrent: '18.0.0',
+    },
+    gateway: { gatewayStatus: 'not running', gatewayPort: 4321, gatewayPid: '' },
+    logs: {
+      errorLogs: 'Codex cannot access session files under ~/.codex/sessions: permission denied',
+      stderrLogs: [
+        ...Array(5).fill('invalid handshake from chrome-extension://abc'),
+        ...Array(3).fill('ESOCKETTIMEDOUT while syncing matrix'),
+      ].join('\n'),
+      gatewayLogTail: [
+        ...Array(2).fill('signal SIGTERM received'),
+        ...Array(3).fill('listening on port 4321, PID 999'),
+        ...Array(3).fill('config change detected, evaluating reload'),
+        'codex app-server startup aborted',
+      ].join('\n'),
+      errLogSizeMB: 75,
+    },
+    serviceHealth: {
+      runs: 5, uptimeSeconds: 60, uptimeStr: '1m', nRestarts: 5,
+    },
+    workspace: {
+      workspaceDir: '/w', hasSoul: false, memoryFiles: 0, codexHome: { matchesExpected: false },
+    },
+    portsGateway: {
+      valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss',
+    },
+    nativeConfig: {
+      available: true, valid: false, errors: [{ path: 'gateway.port', message: 'Gateway port must be an integer' }],
+    },
+    nativeStatus: undefined,
+    nativeSecurity: {
+      available: true,
+      findings: [
+        {
+          checkId: 'sec/leaked-secret', severity: 'critical', title: 'Leaked secret found', message: 'detail', source: 'openclaw-security', path: '/etc/shadow', fixHint: 'rotate it',
+        },
+        {
+          checkId: 'sec/weak-perm', severity: 'error', title: 'Weak permissions', message: 'detail-2', source: 'openclaw-security', path: '/x', fixHint: 'chmod',
+        },
+        {
+          checkId: 'sec/info-only', severity: 'info', title: 'Informational', message: 'skip-me', source: 'openclaw-security', path: null, fixHint: null,
+        },
+      ],
+    },
+    nativeDoctor: {
+      available: true,
+      findings: [
+        {
+          checkId: 'doctor/unique', severity: 'error', message: 'A brand-new doctor finding', path: '/y', fixHint: 'do the thing',
+        },
+        {
+          checkId: 'sec/leaked-secret', severity: 'warning', message: 'duplicate by checkId', path: null, fixHint: null,
+        },
+        {
+          checkId: 'doctor/text-dup', severity: 'warning', message: 'weak permissions', path: null, fixHint: null,
+        },
+      ],
+    },
+  });
+
+  const issues = deriveIssues(collected);
+
+  assert.deepEqual(issues, [
+    { severity: 'critical', text: 'Gateway is not running', kind: 'failure' },
+    {
+      severity: 'critical',
+      text: 'OpenClaw requires Node >=20.0.0 (current: 18.0.0)',
+      source: 'openclaw-runtime',
+      kind: 'failure',
+    },
+    { severity: 'medium', text: 'Stale bundled plugin load paths configured', kind: 'warning' },
+    {
+      knownIssueId: 'pi-backed-openai-codex-route',
+      severity: 'high',
+      text: 'PI-backed openai-codex route active instead of native Codex harness',
+      kind: 'failure',
+    },
+    {
+      knownIssueId: 'codex-session-store-permission',
+      severity: 'high',
+      text: 'Codex session-store permission failure',
+      kind: 'failure',
+    },
+    {
+      knownIssueId: 'codex-shell-home-mismatch',
+      severity: 'medium',
+      text: 'Shell CODEX_HOME does not match OpenClaw Codex home',
+      kind: 'warning',
+    },
+    {
+      knownIssueId: 'codex-service-tier-not-fast',
+      severity: 'low',
+      kind: 'optimization',
+      text: 'Codex app-server fast tier is not enabled',
+    },
+    {
+      knownIssueId: 'native-codex-timeout-boundary',
+      severity: 'high',
+      text: 'Native Codex timeout boundary can force gateway fallback',
+      kind: 'failure',
+    },
+    { severity: 'critical', text: 'Auto-update causing gateway restart loop', kind: 'failure' },
+    { severity: 'high', text: 'Config reload cascade detected (3 reloads in recent logs)', kind: 'failure' },
+    { severity: 'critical', text: 'Gateway crash loop — 5 restarts, only 1m uptime', kind: 'failure' },
+    { severity: 'medium', text: 'Browser Relay extension spamming invalid handshakes', kind: 'warning' },
+    { severity: 'medium', text: 'Error log is 75MB (should be <50MB)', kind: 'warning' },
+    { severity: 'low', text: 'Matrix sync timeouts spamming error log', kind: 'warning' },
+    { severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)', kind: 'failure' },
+    {
+      severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)',
+    },
+    {
+      severity: 'medium', kind: 'optimization', text: 'No context pruning configured',
+    },
+    {
+      severity: 'medium', kind: 'optimization', text: 'Memory flush not enabled (data loss on compaction)',
+    },
+    {
+      severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)',
+    },
+    {
+      severity: 'low', kind: 'optimization', text: 'No memory files found',
+    },
+    {
+      severity: 'high',
+      text: 'Gateway port must be an integer',
+      source: 'openclaw-config',
+      nativeCheckId: 'config/schema-invalid',
+      path: 'gateway.port',
+      kind: 'failure',
+    },
+    {
+      severity: 'critical',
+      text: 'Leaked secret found',
+      description: 'detail',
+      source: 'openclaw-security',
+      nativeCheckId: 'sec/leaked-secret',
+      path: '/etc/shadow',
+      fixHint: 'rotate it',
+      kind: 'failure',
+    },
+    {
+      severity: 'high',
+      text: 'Weak permissions',
+      description: 'detail-2',
+      source: 'openclaw-security',
+      nativeCheckId: 'sec/weak-perm',
+      path: '/x',
+      fixHint: 'chmod',
+      kind: 'failure',
+    },
+    {
+      severity: 'high',
+      text: 'A brand-new doctor finding',
+      source: 'openclaw-doctor',
+      nativeCheckId: 'doctor/unique',
+      path: '/y',
+      fixHint: 'do the thing',
+      kind: 'failure',
+    },
+  ]);
+});
+
+test('deriveIssues: port schema finding is reported verbatim with its checkId/path, independent of other bands', () => {
+  const collected = fakeCollected({
+    portsGateway: {
+      valid: false,
+      available: false,
+      listening: false,
+      process: null,
+      pid: null,
+      collector: null,
+      finding: {
+        checkId: 'config/gateway-port-invalid',
+        severity: 'error',
+        path: 'gateway.port',
+        message: 'Gateway port must be an integer between 1 and 65535; received 4321',
+      },
+    },
+  });
+  const issues = deriveIssues(collected);
+  assert.deepEqual(issues[0], {
+    severity: 'high',
+    kind: 'failure',
+    text: 'Gateway port must be an integer between 1 and 65535; received 4321',
+    source: 'clawfix-port-probe',
+    nativeCheckId: 'config/gateway-port-invalid',
+    path: 'gateway.port',
+  });
+});
+
+test('deriveIssues: a trustworthy competing port owner suppresses the generic gateway-not-running issue and reports a port conflict plus the native-status occupied detail', () => {
+  const collected = fakeCollected({
+    gateway: { gatewayStatus: 'not running', gatewayPort: 4321, gatewayPid: '' },
+    portsGateway: {
+      valid: true, available: true, listening: true, process: 'some-other-process', pid: 777, collector: 'lsof',
+    },
+    nativeStatus: {
+      available: true,
+      gateway: { reachable: false, error: '' },
+    },
+  });
+  const issues = deriveIssues(collected);
+  const texts = issues.map((issue) => issue.text);
+  assert.ok(!texts.includes('Gateway is not running'), 'competing owner must suppress the generic not-running issue');
+  assert.ok(texts.includes('Port conflict detected'));
+  assert.ok(texts.includes('OpenClaw gateway is unreachable'));
+  assert.ok(texts.includes('Gateway port 4321 is occupied by some-other-process (PID 777), but OpenClaw cannot reach it'));
+});
+
+test('deriveIssues: an invalid or unowned listener must not be mistaken for a competing owner, so gateway-not-running still fires', () => {
+  const invalidConfig = fakeCollected({
+    gateway: { gatewayStatus: 'not running', gatewayPort: 4321, gatewayPid: '' },
+    portsGateway: {
+      valid: false, available: false, listening: false, process: null, pid: null, collector: null,
+    },
+  });
+  assert.deepEqual(deriveIssues(invalidConfig), [
+    { severity: 'critical', text: 'Gateway is not running', kind: 'failure' },
+  ]);
+
+  const unownedListener = fakeCollected({
+    gateway: { gatewayStatus: 'not running', gatewayPort: 4321, gatewayPid: '' },
+    portsGateway: {
+      valid: true, available: true, listening: true, process: null, pid: null, collector: 'ss',
+    },
+  });
+  assert.deepEqual(deriveIssues(unownedListener), [
+    { severity: 'critical', text: 'Gateway is not running', kind: 'failure' },
+  ]);
+});
+
+test('deriveIssues: a matching gateway PID is not treated as a competing owner even while the port is listening', () => {
+  const collected = fakeCollected({
+    gateway: { gatewayStatus: 'runtime: ok\nrunning, pid 4242', gatewayPort: 18789, gatewayPid: '4242' },
+    portsGateway: {
+      valid: true, available: true, listening: true, process: 'openclaw', pid: 4242, collector: 'lsof',
+    },
+  });
+  assert.deepEqual(deriveIssues(collected), []);
+});
+
+test('deriveIssues: the plain restart-count and auto-update-enabled branches report their lower-severity text when thresholds are not breached', () => {
+  const collected = fakeCollected({
+    config: { update: { auto: { enabled: true } } },
+    serviceHealth: {
+      runs: 1, uptimeSeconds: 5000, uptimeStr: '1h', nRestarts: 2,
+    },
+  });
+  const issues = deriveIssues(collected);
+  assert.deepEqual(issues, [
+    { severity: 'medium', text: 'Auto-update enabled (risk of restart loops)', kind: 'warning' },
+    { severity: 'high', text: 'Gateway has restarted 2 time(s) (systemd)', kind: 'failure' },
+  ]);
+});
+
+test('deriveIssues: kind defaults to failure for critical/high severities and warning otherwise, but never overrides an explicit optimization kind', () => {
+  const collected = fakeCollected({
+    nativeConfig: {
+      available: true, valid: false, errors: [],
+    },
+    nativeSecurity: {
+      available: true,
+      findings: [{
+        checkId: 'sec/x', severity: 'warning', title: 'Some warning', message: 'm', source: 'openclaw-security', path: null, fixHint: null,
+      }],
+    },
+  });
+  const issues = deriveIssues(collected);
+  const configIssue = issues.find((issue) => issue.nativeCheckId === 'config/schema-invalid');
+  assert.equal(configIssue.severity, 'high');
+  assert.equal(configIssue.kind, 'failure');
+  const securityIssue = issues.find((issue) => issue.nativeCheckId === 'sec/x');
+  assert.equal(securityIssue.severity, 'medium');
+  assert.equal(securityIssue.kind, 'warning');
+});
+
+test('deriveIssues does not mutate a deep-frozen collected input and returns a fresh array on each call', () => {
+  function deepFreeze(value) {
+    if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+    Object.freeze(value);
+    for (const key of Object.keys(value)) deepFreeze(value[key]);
+    return value;
+  }
+  const collected = deepFreeze(fakeCollected({
+    config: {
+      plugins: { entries: { codex: { enabled: true, config: { appServer: {} } } } },
+      agents: { defaults: { agentRuntime: 'codex', model: 'openai-codex/gpt-5' } },
+    },
+    nativeSecurity: {
+      available: true,
+      findings: [{
+        checkId: 'sec/x', severity: 'critical', title: 't', message: 'm', source: 's', path: 'p', fixHint: 'f',
+      }],
+    },
+  }));
+
+  assert.doesNotThrow(() => deriveIssues(collected));
+  const first = deriveIssues(collected);
+  const second = deriveIssues(collected);
+  assert.notEqual(first, second, 'each call must return a freshly-constructed array');
+  assert.deepEqual(first, second);
+});
+
+// No `agents.defaults` on purpose: several optimization checks are guarded only by
+// `config?.agents?.defaults` being truthy, so its mere presence (even with an empty workspace)
+// would always fire them and defeat the "all-zero counts" fixture below.
+function makeIssuesFixtureDeps(overrides = {}) {
+  return fakeDeps({
+    config: {
+      gateway: { port: 18789 },
+      env: {},
+    },
+    ...overrides,
+  });
+}
+
+test('runDiagnostics issues phase emits deterministic semantic counts only, ends the phase order at issues, and still rejects NOT_IMPLEMENTED with no scan.completed', async () => {
+  const { deps } = makeIssuesFixtureDeps({
+    nativeSecurity: {
+      available: true,
+      exitCode: 0,
+      summary: { critical: 1, warning: 0, info: 0 },
+      findings: [{
+        checkId: 'sec/x', severity: 'critical', title: 'super-secret-title-XYZ', message: 'super-secret-detail-XYZ', source: 'openclaw-security', path: '/etc/shadow', fixHint: 'rotate-it-ABC',
+      }],
+      suppressedFindingCount: 0,
+      secretDiagnosticCount: 0,
+    },
+    fileTails: {
+      '/home/fake-user/.openclaw/logs/gateway.log': 'error: something-secret-DEF failed\n',
+    },
+    fileSizes: {
+      '/home/fake-user/.openclaw/logs/gateway.log': 1024,
+    },
+    existingPaths: new Set([
+      '/home/fake-user/.openclaw',
+      '/home/fake-user/.openclaw/openclaw.json',
+      '/home/fake-user/.openclaw/logs/gateway.log',
+    ]),
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-issues-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+
+  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), [
+    'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues',
+  ]);
+  const issuesStep = findStep(events, 'issues');
+  assert.ok(issuesStep);
+  assert.equal(Object.isFrozen(issuesStep.data), true);
+  assert.deepEqual(Object.keys(issuesStep.data).sort(), ['actionable', 'optimizations', 'severity', 'total']);
+  assert.equal(typeof issuesStep.data.total, 'number');
+  assert.equal(typeof issuesStep.data.actionable, 'number');
+  assert.equal(typeof issuesStep.data.optimizations, 'number');
+  assert.equal(issuesStep.data.total, issuesStep.data.actionable + issuesStep.data.optimizations);
+  assert.ok(issuesStep.data.total > 0);
+  assert.equal(issuesStep.data.severity.critical, 1);
+
+  const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes('super-secret-title-XYZ'), 'raw issue text must not leak into the semantic issues event');
+  assert.ok(!serialized.includes('super-secret-detail-XYZ'));
+  assert.ok(!serialized.includes('rotate-it-ABC'));
+  assert.ok(!serialized.includes('something-secret-DEF'));
+});
+
+test('runDiagnostics issues phase reports all-zero counts when no local, native, or security issues are present', async () => {
+  const { deps } = makeIssuesFixtureDeps();
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-issues-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const issuesStep = findStep(events, 'issues');
+  assert.deepEqual(issuesStep.data, {
+    total: 0,
+    actionable: 0,
+    optimizations: 0,
+    severity: {
+      critical: 0, high: 0, medium: 0, low: 0,
+    },
+  });
+});
+
+test('runDiagnostics emits exactly one INTERNAL terminal scan.error when the issue-derivation logic itself throws unexpectedly, with no issues scan.step emitted', async () => {
+  const { deps } = makeIssuesFixtureDeps({
+    nativeDoctor: { available: true, checksRun: 1, checksSkipped: 0, findings: null },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-issues-boundary-fail', emit: (e) => events.push(e) }),
+    (error) => error instanceof TypeError,
+  );
+  const terminal = events[events.length - 1];
+  assert.equal(terminal.type, 'scan.error');
+  assert.equal(terminal.error.code, 'INTERNAL');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'issues'), false);
 });
