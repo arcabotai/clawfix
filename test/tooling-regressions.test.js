@@ -207,15 +207,17 @@ test('scenario scripts wire fail-closed contracts into every fault and restorati
   assert.match(nativeEvidence, /parseJsonOutput/);
 });
 
-test('next candidate CLI source manifest remains exactly eleven allowlisted files', async () => {
+test('next candidate CLI source manifest remains exactly thirteen allowlisted files', async () => {
   const { EXPECTED_CLI_FILES, validateCliPackageManifest } = await import('../scripts/verify-cli-package.mjs');
   assert.ok(EXPECTED_CLI_FILES.includes('bin/security.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('bin/workspace.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/diagnostics.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/events.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('core/modes.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('core/options.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/process.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/openclaw.js'));
-  assert.equal(EXPECTED_CLI_FILES.length, 11);
+  assert.equal(EXPECTED_CLI_FILES.length, 13);
   const manifest = [{ name: 'clawfix', version: '0.9.0', files: EXPECTED_CLI_FILES.map(path => ({ path })) }];
 
   assert.doesNotThrow(() => validateCliPackageManifest(manifest, { name: 'clawfix', version: '0.9.0' }));
