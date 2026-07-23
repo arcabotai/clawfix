@@ -30,6 +30,8 @@ import { createDiagnosticsCore } from '../core/diagnostics.js';
 import { resolveCliMode } from '../core/modes.js';
 import { parseCliOptions } from '../core/options.js';
 import { dedupeFindingsForDisplay, normalizeFindings } from '../core/findings.js';
+import { repairCatalog } from '../core/repair-catalog.js';
+import { createRepairEngine } from '../core/repair-engine.js';
 
 // --- Config ---
 const CLI_OPTIONS = parseCliOptions(process.argv.slice(2), process.env);
@@ -378,6 +380,58 @@ const BUILTIN_FIXES = {
   },
 };
 
+const repairEngine = createRepairEngine({ catalog: repairCatalog });
+
+async function applyCatalogRepair(issue, revision, rl) {
+  const plan = repairEngine.createPlan({ finding: issue, revision });
+  const preview = await repairEngine.previewPlan(plan, {});
+
+  console.log('');
+  console.log(c.bold(`  Fix: ${issue.title}`));
+  console.log(`  ${c.dim(plan.description)}`);
+  console.log(`  Risk: ${plan.risk === 'low' ? c.green('low') : c.yellow(plan.risk)}`);
+  console.log('');
+  console.log(c.bold('  Plan:'));
+  for (const [index, step] of preview.steps.entries()) {
+    console.log(`    ${index + 1}. ${step}`);
+  }
+  console.log('');
+
+  const answer = await new Promise(resolve => {
+    rl.question(`  ${c.yellow('Apply?')} [y/N] `, resolve);
+  });
+  if (!/^y(es)?$/i.test(answer.trim())) {
+    console.log(c.dim('  Cancelled.'));
+    console.log('');
+    return { status: 'cancelled' };
+  }
+
+  const result = await repairEngine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision,
+    finding: issue,
+    ctx: {
+      openclaw: openClawAdapter,
+      wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    },
+  });
+
+  if (result.status === 'applied') {
+    console.log(`  ${c.green('✅')} Gateway restarted and verified.`);
+  } else if (result.status === 'verify_failed') {
+    console.log(`  ${c.yellow('⚠️')} Restart ran, but the gateway is still unavailable.`);
+  } else if (result.status === 'blocked') {
+    console.log(`  ${c.dim('ℹ️')} Repair no longer needed: ${result.reason}`);
+  } else if (result.status === 'rejected') {
+    console.log(`  ${c.yellow('⚠️')} Repair plan rejected: ${result.reason}`);
+  } else {
+    console.log(`  ${c.red('❌')} Repair failed: ${result.error || result.status}`);
+  }
+  console.log('');
+  return result;
+}
+
 /**
  * Apply a single builtin fix with full safety: backup → apply → write → restart → rescan
  */
@@ -650,6 +704,7 @@ async function collectDiagnostics({ quiet = false, signal } = {}) {
   });
   if (result.error) return { error: result.error };
   return {
+    revision: result.revision,
     diagnostic: result.diagnostic,
     issues: result.issues,
     summary: legacySummary(result.summary),
@@ -1464,6 +1519,7 @@ async function runOneShotMode() {
 async function runInteractiveMode() {
   const conversationId = randomUUID();
   let diagnosticId = null;
+  let revision = null;
   let issues = [];
   let diagnostic = null;
   let summary = null;
@@ -1514,6 +1570,7 @@ async function runInteractiveMode() {
     process.exit(1);
   }
 
+  revision = scanResult.revision;
   diagnostic = scanResult.diagnostic;
   issues = scanResult.issues;
   summary = scanResult.summary;
@@ -1577,6 +1634,7 @@ async function runInteractiveMode() {
       console.log('');
       const result = await collectDiagnostics({ quiet: true });
       if (!result.error) {
+        revision = result.revision;
         diagnostic = result.diagnostic;
         issues = result.issues;
         summary = result.summary;
@@ -1608,6 +1666,7 @@ async function runInteractiveMode() {
       const scanFn = async () => {
         const result = await collectDiagnostics({ quiet: true });
         if (!result.error) {
+          revision = result.revision;
           diagnostic = result.diagnostic;
           issues = result.issues;
           summary = result.summary;
@@ -1634,13 +1693,17 @@ async function runInteractiveMode() {
         console.log(c.red(`  No issue #${fixMatch[1]}. Use ${c.cyan('issues')} to see the list.`));
       } else {
         const issue = allIssues[idx];
+        const catalogRepair = repairCatalog[issue.repairId];
         const builtinFix = BUILTIN_FIXES[issue.repairId];
 
-        if (builtinFix) {
+        if (catalogRepair) {
+          await applyCatalogRepair(issue, revision, rl);
+        } else if (builtinFix) {
           // Safe builtin fix — backup, apply, restart, verify
           const scanFn = async () => {
             const result = await collectDiagnostics({ quiet: true });
             if (!result.error) {
+              revision = result.revision;
               diagnostic = result.diagnostic;
               issues = result.issues;
               summary = result.summary;
