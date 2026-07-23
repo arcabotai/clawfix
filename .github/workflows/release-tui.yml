@@ -87,27 +87,24 @@ jobs:
       - name: Verify artifact
         run: |
           shopt -s nullglob
-          bins=(dist/tui/clawfix-tui-*)
+          bins=(dist/tui/*.bin dist/tui/*.bin.exe)
           if [ ${#bins[@]} -eq 0 ]; then
-            echo "::error ::no clawfix-tui binaries produced"
+            echo "::error ::no clawfix-tui .bin artifacts produced"
             exit 1
           fi
           for b in "${bins[@]}"; do
-            case "$b" in
-              *.sha256|*.json) continue ;;
-            esac
-            [ -f "$b" ] || continue
             node scripts/verify-tui-artifact.mjs "$b" --target "${{ matrix.target }}"
           done
+          test -d "dist/tui/assets-${{ matrix.target }}"
+          test -x "dist/tui/clawfix-tui-${{ matrix.target }}" -o -f "dist/tui/clawfix-tui-${{ matrix.target }}.cmd"
 
       - name: Smoke binary (linux only)
         if: runner.os == 'Linux'
         run: |
-          bin=$(ls "$PWD"/dist/tui/clawfix-tui-linux-* | head -1)
-          test -x "$bin"
-          # Start-smoke: proves the compiled ELF runs. Full interactive PTY smoke is
-          # gated on OpenTUI wasm path resolution inside bun --compile (see smoke script).
-          node scripts/smoke-tui-binary.mjs "$bin"
+          launcher="$PWD/dist/tui/clawfix-tui-${{ matrix.target }}"
+          test -x "$launcher"
+          # Proves compile + OTUI_ASSET_ROOT launcher; no wasm path crash.
+          node scripts/smoke-tui-binary.mjs "$launcher"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
