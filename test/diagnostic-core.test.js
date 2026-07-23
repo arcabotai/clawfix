@@ -603,7 +603,7 @@ function fakeDeps(overrides = {}) {
 
   return {
     deps: {
-      version: overrides.coreVersion ?? '0.9.1',
+      version: overrides.coreVersion ?? '0.10.0',
       redact, fs, openclaw, os, env, clock, timers,
       createHash: injectedCreateHash, nativeCollectors,
     },
@@ -730,7 +730,7 @@ test('runDiagnostics redacts the sanitized config once and the final diagnostic 
   assert.equal('env' in seenByRedact[0], false, 'the top-level config env block must be deleted before redaction');
   assert.deepEqual(seenByRedact[0].gateway, { port: 4321 });
   assert.equal(seenByRedact[1].config.redacted, true, 'the envelope receives the already-sanitized config');
-  assert.equal(seenByRedact[1].version, '0.9.1');
+  assert.equal(seenByRedact[1].version, '0.10.0');
 
   const configStep = events.find((e) => e.type === 'scan.step' && e.phase === 'config');
   assert.ok(configStep);
@@ -1264,7 +1264,7 @@ test('runDiagnostics success returns exactly revision, diagnostic, issues, and s
   const result = await core.runDiagnostics({ revision: 'rev-result-shape' });
   assert.deepEqual(Object.keys(result), ['revision', 'diagnostic', 'issues', 'summary']);
   assert.equal(result.revision, 'rev-result-shape');
-  assert.equal(result.diagnostic.version, '0.9.1');
+  assert.equal(result.diagnostic.version, '0.10.0');
   assert.ok(Array.isArray(result.issues));
   assert.equal(typeof result.summary, 'object');
 });
