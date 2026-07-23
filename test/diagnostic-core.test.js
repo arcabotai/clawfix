@@ -12,7 +12,12 @@ import {
   scanWarning,
   SCAN_PHASES,
 } from '../cli/core/events.js';
-import { createDiagnosticsCore, deriveIssues } from '../cli/core/diagnostics.js';
+import {
+  createDiagnosticsCore,
+  deriveIssues,
+  DiagnosticsAbortError,
+  DiagnosticsTimeoutError,
+} from '../cli/core/diagnostics.js';
 
 // ============================================================
 // Slice 1 — event contracts (cli/core/events.js)
@@ -432,7 +437,9 @@ function fakeDeps(overrides = {}) {
     readJson: [],
     findExecutable: 0,
     npmVersion: 0,
+    npmVersionOptions: [],
     version: 0,
+    versionOptions: [],
     collectOpenClawVersion: 0,
     gatewayStatusText: [],
     gatewayProcesses: [],
@@ -480,12 +487,14 @@ function fakeDeps(overrides = {}) {
       calls.findExecutable += 1;
       return overrides.openclawBinFound === false ? '' : openclawBin;
     },
-    async npmVersion() {
+    async npmVersion(options) {
       calls.npmVersion += 1;
+      calls.npmVersionOptions.push(options);
       return overrides.npmVersion ?? '10.2.0';
     },
-    async version() {
+    async version(options) {
       calls.version += 1;
+      calls.versionOptions.push(options);
       return overrides.versionResult === undefined
         ? { status: 0, stdout: '1.2.3\n', stderr: '' }
         : overrides.versionResult;
@@ -519,6 +528,10 @@ function fakeDeps(overrides = {}) {
   };
   const env = overrides.env ?? {};
   const clock = { now: () => overrides.now ?? new Date('2026-07-23T12:00:00.000Z') };
+  const timers = overrides.timers ?? {
+    setTimeout: (callback, ms) => setTimeout(callback, ms),
+    clearTimeout: (handle) => clearTimeout(handle),
+  };
   let hashInvocations = 0;
   const injectedCreateHash = (...args) => {
     hashInvocations += 1;
@@ -548,6 +561,7 @@ function fakeDeps(overrides = {}) {
     },
     collectNativeDoctor(binary, runSync) {
       calls.collectNativeDoctor += 1;
+      if (overrides.collectNativeDoctor) return overrides.collectNativeDoctor(binary, runSync);
       return overrides.nativeDoctor ?? {
         available: true, exitCode: 0, ok: true, checksRun: 5, checksSkipped: 1, findings: [],
       };
@@ -590,7 +604,8 @@ function fakeDeps(overrides = {}) {
   return {
     deps: {
       version: overrides.coreVersion ?? '0.9.1',
-      redact, fs, openclaw, os, env, clock, createHash: injectedCreateHash, nativeCollectors,
+      redact, fs, openclaw, os, env, clock, timers,
+      createHash: injectedCreateHash, nativeCollectors,
     },
     calls,
     redactCalls,
@@ -606,6 +621,8 @@ test('createDiagnosticsCore requires every injected boundary and rejects a missi
   assert.throws(() => createDiagnosticsCore({ ...deps, os: undefined }), TypeError);
   assert.throws(() => createDiagnosticsCore({ ...deps, env: undefined }), TypeError);
   assert.throws(() => createDiagnosticsCore({ ...deps, clock: undefined }), TypeError);
+  assert.throws(() => createDiagnosticsCore({ ...deps, timers: undefined }), TypeError);
+  assert.throws(() => createDiagnosticsCore({ ...deps, timers: { setTimeout() {} } }), TypeError);
   assert.throws(() => createDiagnosticsCore({ ...deps, createHash: undefined }), TypeError);
   assert.throws(() => createDiagnosticsCore({ ...deps, nativeCollectors: undefined }), TypeError);
   assert.throws(() => createDiagnosticsCore({ ...deps, os: { homedir: () => '/x' } }), TypeError);
@@ -925,8 +942,12 @@ test('runDiagnostics gateway phase reports the default port, status line, and pi
   assert.equal(gatewayStep.data.pid, '4242');
   assert.equal(gatewayStep.data.running, true);
 
-  assert.deepEqual(calls.gatewayStatusText[0], { executable: '/usr/local/bin/openclaw', timeoutMs: 5000 });
-  assert.deepEqual(calls.gatewayProcesses[0], { timeoutMs: 5000 });
+  const { signal: statusSignal, ...statusOptions } = calls.gatewayStatusText[0];
+  const { signal: processSignal, ...processOptions } = calls.gatewayProcesses[0];
+  assert.deepEqual(statusOptions, { executable: '/usr/local/bin/openclaw', timeoutMs: 5000 });
+  assert.deepEqual(processOptions, { timeoutMs: 5000 });
+  assert.equal(statusSignal, processSignal);
+  assert.equal(statusSignal.aborted, false);
 });
 
 test('runDiagnostics gateway phase honors a configured port and reports a null pid when no process is found', async () => {
@@ -1044,7 +1065,9 @@ test('runDiagnostics service phase reports raw service-manager state facts with 
   assert.deepEqual(serviceStep.data, {
     manager: 'launchd', runs: 5, pid: 999, state: 'running', subState: null, nRestarts: null, lastExitCode: 0, uptimeStr: '1:02:03', uptimeSeconds: 3723,
   });
-  assert.deepEqual(calls.serviceManagerState[0], { timeoutMs: 5000 });
+  const { signal: serviceSignal, ...serviceOptions } = calls.serviceManagerState[0];
+  assert.deepEqual(serviceOptions, { timeoutMs: 5000 });
+  assert.equal(serviceSignal.aborted, false);
 });
 
 test('runDiagnostics service phase reports all-null facts when the service manager is unavailable', async () => {
@@ -2289,4 +2312,409 @@ test('runDiagnostics does not attempt a second terminal when the scan.completed 
   const terminals = events.filter((event) => event.type === 'scan.completed' || event.type === 'scan.error');
   assert.equal(terminals.length, 1);
   assert.equal(terminals[0].type, 'scan.completed');
+});
+
+// ============================================================
+// Slice 6 — cancellation and end-to-end deadlines
+// ============================================================
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function manualTimers() {
+  const handles = [];
+  const clearCalls = [];
+  return {
+    boundary: {
+      setTimeout(callback, ms) {
+        const handle = { callback, ms, cleared: false, fired: false };
+        handles.push(handle);
+        return handle;
+      },
+      clearTimeout(handle) {
+        clearCalls.push(handle);
+        handle.cleared = true;
+      },
+    },
+    handles,
+    clearCalls,
+    fire(index = 0) {
+      const handle = handles[index];
+      assert.ok(handle, `missing timer ${index}`);
+      assert.equal(handle.cleared, false, `timer ${index} was cleared before expected expiry`);
+      if (!handle.fired) {
+        handle.fired = true;
+        handle.callback();
+      }
+    },
+  };
+}
+
+async function flushMicrotasks(count = 20) {
+  for (let index = 0; index < count; index += 1) await Promise.resolve();
+}
+
+function terminalEvents(events) {
+  return events.filter((event) => event.type === 'scan.completed' || event.type === 'scan.error');
+}
+
+test('runDiagnostics already-aborted input performs zero collection calls and emits one ABORTED terminal', async () => {
+  const fake = manualTimers();
+  const { deps, calls, getHashInvocations } = fakeDeps({ timers: fake.boundary });
+  const controller = new AbortController();
+  const reason = new Error('caller stopped before start');
+  controller.abort(reason);
+  const events = [];
+
+  await assert.rejects(
+    createDiagnosticsCore(deps).runDiagnostics({
+      revision: 'rev-aborted-before-start',
+      signal: controller.signal,
+      emit: (event) => events.push(event),
+    }),
+    (error) => error === reason,
+  );
+
+  assert.deepEqual(events.map((event) => event.type), ['scan.started', 'scan.error']);
+  assert.equal(events[1].error.code, 'ABORTED');
+  assert.equal(calls.exists.length, 0);
+  assert.equal(calls.findExecutable, 0);
+  assert.equal(calls.npmVersion, 0);
+  assert.equal(calls.collectListeningPort.length, 0);
+  assert.equal(calls.collectNativeDoctor, 0);
+  assert.equal(getHashInvocations(), 0);
+  assert.equal(fake.handles.length, 1);
+  assert.equal(fake.clearCalls.length, 1);
+  assert.equal(fake.handles[0].cleared, true);
+});
+
+test('runDiagnostics validates signal and deadline before scheduling or touching collection boundaries', async () => {
+  const fake = manualTimers();
+  const { deps, calls } = fakeDeps({ timers: fake.boundary });
+  const core = createDiagnosticsCore(deps);
+
+  for (const options of [
+    { signal: {} },
+    { deadlineMs: 0 },
+    { deadlineMs: -1 },
+    { deadlineMs: 2500.5 },
+    { deadlineMs: Number.MAX_SAFE_INTEGER + 1 },
+    { deadlineMs: Number.NaN },
+    { deadlineMs: Number.POSITIVE_INFINITY },
+  ]) {
+    await assert.rejects(core.runDiagnostics({ revision: 'rev-invalid-cancel', ...options }), TypeError);
+  }
+
+  assert.equal(fake.handles.length, 0);
+  assert.equal(fake.clearCalls.length, 0);
+  assert.equal(calls.exists.length, 0);
+  assert.equal(calls.findExecutable, 0);
+});
+
+test('external abort promptly escapes blocked fs discovery and handles the late boundary rejection', async () => {
+  const fake = manualTimers();
+  const { deps } = fakeDeps({ timers: fake.boundary });
+  const blocked = deferred();
+  deps.fs.exists = () => blocked.promise;
+  const controller = new AbortController();
+  const reason = new Error('stop blocked fs');
+  const events = [];
+  const run = createDiagnosticsCore(deps).runDiagnostics({
+    revision: 'rev-abort-fs',
+    signal: controller.signal,
+    emit: (event) => events.push(event),
+  });
+  await flushMicrotasks();
+  controller.abort(reason);
+
+  await assert.rejects(run, (error) => error === reason);
+  assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+  const eventCount = events.length;
+  blocked.reject(new Error('late fs rejection'));
+  await flushMicrotasks();
+  assert.equal(events.length, eventCount);
+  assert.equal(fake.clearCalls.length, 1);
+});
+
+test('external abort promptly escapes a blocked OpenClaw npm call and ignores its late resolution', async () => {
+  const fake = manualTimers();
+  const { deps, calls } = fakeDeps({ timers: fake.boundary });
+  const blocked = deferred();
+  deps.openclaw.npmVersion = (options) => {
+    calls.npmVersion += 1;
+    calls.npmVersionOptions.push(options);
+    return blocked.promise;
+  };
+  const controller = new AbortController();
+  const reason = new Error('stop blocked npm');
+  const events = [];
+  const run = createDiagnosticsCore(deps).runDiagnostics({
+    revision: 'rev-abort-npm',
+    signal: controller.signal,
+    emit: (event) => events.push(event),
+  });
+  await flushMicrotasks();
+  assert.equal(calls.npmVersion, 1);
+  controller.abort(reason);
+
+  await assert.rejects(run, (error) => error === reason);
+  const eventCount = events.length;
+  blocked.resolve('10.2.0-late');
+  await flushMicrotasks();
+  assert.equal(events.length, eventCount);
+  assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+  assert.equal(fake.clearCalls.length, 1);
+});
+
+test('deadline expiry promptly escapes blocked fs and OpenClaw calls with one TIMEOUT terminal', async (t) => {
+  for (const boundary of ['fs', 'npm']) {
+    await t.test(boundary, async () => {
+      const fake = manualTimers();
+      const { deps, calls } = fakeDeps({ timers: fake.boundary });
+      const blocked = deferred();
+      if (boundary === 'fs') deps.fs.exists = () => blocked.promise;
+      else {
+        deps.openclaw.npmVersion = (options) => {
+          calls.npmVersion += 1;
+          calls.npmVersionOptions.push(options);
+          return blocked.promise;
+        };
+      }
+      const events = [];
+      const run = createDiagnosticsCore(deps).runDiagnostics({
+        revision: `rev-timeout-${boundary}`,
+        deadlineMs: 250,
+        emit: (event) => events.push(event),
+      });
+      await flushMicrotasks();
+      fake.fire();
+
+      await assert.rejects(run, DiagnosticsTimeoutError);
+      assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['TIMEOUT']);
+      assert.equal(fake.clearCalls.length, 1);
+      const eventCount = events.length;
+      blocked.resolve(boundary === 'fs' ? true : '10.2.0-late');
+      await flushMicrotasks();
+      assert.equal(events.length, eventCount);
+    });
+  }
+});
+
+test('success and OpenClaw-not-found outcomes each clear their one deadline timer', async () => {
+  const successTimers = manualTimers();
+  const success = fakeDeps({ timers: successTimers.boundary });
+  const successResult = await createDiagnosticsCore(success.deps).runDiagnostics({ revision: 'rev-timer-success' });
+  assert.deepEqual(Object.keys(successResult), ['revision', 'diagnostic', 'issues', 'summary']);
+  assert.equal(successTimers.handles.length, 1);
+  assert.equal(successTimers.clearCalls.length, 1);
+
+  const absentTimers = manualTimers();
+  const absent = fakeDeps({
+    timers: absentTimers.boundary,
+    openclawBinFound: false,
+    existingPaths: new Set(),
+  });
+  const absentResult = await createDiagnosticsCore(absent.deps).runDiagnostics({ revision: 'rev-timer-absent' });
+  assert.deepEqual(absentResult, { revision: 'rev-timer-absent', error: 'OpenClaw not found on this system.' });
+  assert.equal(absentTimers.handles.length, 1);
+  assert.equal(absentTimers.clearCalls.length, 1);
+});
+
+test('internal failures and a throwing completed-event sink clear the timer without changing terminal semantics', async (t) => {
+  await t.test('internal failure', async () => {
+    const fake = manualTimers();
+    const { deps } = fakeDeps({ timers: fake.boundary });
+    const boom = new Error('fs exploded');
+    deps.fs.exists = async () => { throw boom; };
+    const events = [];
+    await assert.rejects(
+      createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-internal-timer', emit: (event) => events.push(event) }),
+      (error) => error === boom,
+    );
+    assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['INTERNAL']);
+    assert.equal(fake.clearCalls.length, 1);
+  });
+
+  await t.test('completed sink', async () => {
+    const fake = manualTimers();
+    const { deps } = fakeDeps({ timers: fake.boundary });
+    const boom = new Error('completed sink exploded');
+    const events = [];
+    await assert.rejects(
+      createDiagnosticsCore(deps).runDiagnostics({
+        revision: 'rev-completed-sink-timer',
+        emit(event) {
+          events.push(event);
+          if (event.type === 'scan.completed') throw boom;
+        },
+      }),
+      (error) => error === boom,
+    );
+    assert.deepEqual(terminalEvents(events).map((event) => event.type), ['scan.completed']);
+    assert.equal(fake.clearCalls.length, 1);
+  });
+});
+
+test('abort observed after the first sync native collector prevents every later native collector', async () => {
+  const fake = manualTimers();
+  const controller = new AbortController();
+  const reason = new Error('abort from native Doctor');
+  const fixture = fakeDeps({
+    timers: fake.boundary,
+    collectNativeDoctor() {
+      controller.abort(reason);
+      return { available: true, checksRun: 1, checksSkipped: 0, findings: [] };
+    },
+  });
+  const events = [];
+  await assert.rejects(
+    createDiagnosticsCore(fixture.deps).runDiagnostics({
+      revision: 'rev-native-abort',
+      signal: controller.signal,
+      emit: (event) => events.push(event),
+    }),
+    (error) => error === reason,
+  );
+
+  assert.equal(fixture.calls.collectNativeDoctor, 1);
+  assert.equal(fixture.calls.collectNativeConfigValidation, 0);
+  assert.equal(fixture.calls.collectNativeStatus, 0);
+  assert.equal(fixture.calls.collectNativeSecurityAudit, 0);
+  assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+  assert.equal(fake.clearCalls.length, 1);
+});
+
+test('abort immediately before the native band skips every sync native collector', async () => {
+  const fake = manualTimers();
+  const controller = new AbortController();
+  const reason = new Error('abort before native');
+  const fixture = fakeDeps({ timers: fake.boundary });
+  const events = [];
+  await assert.rejects(
+    createDiagnosticsCore(fixture.deps).runDiagnostics({
+      revision: 'rev-before-native-abort',
+      signal: controller.signal,
+      emit(event) {
+        events.push(event);
+        if (event.type === 'scan.step' && event.phase === 'ports') controller.abort(reason);
+      },
+    }),
+    (error) => error === reason,
+  );
+  assert.equal(fixture.calls.collectNativeDoctor, 0);
+  assert.equal(fixture.calls.collectNativeConfigValidation, 0);
+  assert.equal(fixture.calls.collectNativeStatus, 0);
+  assert.equal(fixture.calls.collectNativeSecurityAudit, 0);
+  assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+});
+
+test('OpenClaw async boundaries receive one child signal and timeout caps no larger than the deadline', async () => {
+  const fake = manualTimers();
+  const fixture = fakeDeps({ timers: fake.boundary });
+  await createDiagnosticsCore(fixture.deps).runDiagnostics({ revision: 'rev-options', deadlineMs: 3000 });
+
+  const optionObjects = [
+    fixture.calls.npmVersionOptions[0],
+    fixture.calls.versionOptions[0],
+    fixture.calls.gatewayStatusText[0],
+    fixture.calls.gatewayProcesses[0],
+    fixture.calls.serviceManagerState[0],
+  ];
+  const signals = optionObjects.map((options) => options.signal);
+  assert.ok(signals.every((signal) => signal === signals[0]));
+  assert.ok(signals.every((signal) => signal.aborted === false));
+  assert.ok(optionObjects.every((options) => options.timeoutMs <= 3000));
+  assert.equal(fixture.calls.npmVersionOptions[0].timeoutMs, 3000);
+  assert.equal(fixture.calls.versionOptions[0].timeoutMs, 3000);
+
+  const defaultTimers = manualTimers();
+  const defaults = fakeDeps({ timers: defaultTimers.boundary });
+  await createDiagnosticsCore(defaults.deps).runDiagnostics({ revision: 'rev-default-options' });
+  const { signal: versionSignal, ...versionOptions } = defaults.calls.versionOptions[0];
+  assert.deepEqual(versionOptions, {
+    executable: '/usr/local/bin/openclaw',
+    timeoutMs: 10_000,
+    maxStdoutBytes: 1_200,
+    maxStderrBytes: 4_000,
+  });
+  assert.equal(defaults.calls.npmVersionOptions[0].timeoutMs, 5000);
+  assert.equal(defaults.calls.gatewayStatusText[0].timeoutMs, 5000);
+  assert.equal(defaults.calls.gatewayProcesses[0].timeoutMs, 5000);
+  assert.equal(defaults.calls.serviceManagerState[0].timeoutMs, 5000);
+  assert.equal(versionSignal, defaults.calls.npmVersionOptions[0].signal);
+});
+
+test('abort-versus-timeout races preserve the first observed reason and emit exactly one terminal', async (t) => {
+  await t.test('abort first', async () => {
+    const fake = manualTimers();
+    const { deps } = fakeDeps({ timers: fake.boundary });
+    const blocked = deferred();
+    deps.fs.exists = () => blocked.promise;
+    const controller = new AbortController();
+    const reason = new Error('abort wins');
+    const events = [];
+    const run = createDiagnosticsCore(deps).runDiagnostics({
+      revision: 'rev-race-abort', signal: controller.signal, emit: (event) => events.push(event),
+    });
+    await flushMicrotasks();
+    controller.abort(reason);
+    fake.fire();
+    await assert.rejects(run, (error) => error === reason);
+    assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+  });
+
+  await t.test('timeout first', async () => {
+    const fake = manualTimers();
+    const { deps } = fakeDeps({ timers: fake.boundary });
+    const blocked = deferred();
+    deps.fs.exists = () => blocked.promise;
+    const controller = new AbortController();
+    const events = [];
+    const run = createDiagnosticsCore(deps).runDiagnostics({
+      revision: 'rev-race-timeout', signal: controller.signal, emit: (event) => events.push(event),
+    });
+    await flushMicrotasks();
+    fake.fire();
+    controller.abort(new Error('too late'));
+    await assert.rejects(run, DiagnosticsTimeoutError);
+    assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['TIMEOUT']);
+  });
+});
+
+test('platform default AbortError reason is preserved while the terminal code remains ABORTED', async () => {
+  const fake = manualTimers();
+  const { deps } = fakeDeps({ timers: fake.boundary });
+  const controller = new AbortController();
+  controller.abort();
+  const originalReason = controller.signal.reason;
+  const events = [];
+  await assert.rejects(
+    createDiagnosticsCore(deps).runDiagnostics({
+      revision: 'rev-abort-default-reason',
+      signal: controller.signal,
+      emit: (event) => events.push(event),
+    }),
+    (error) => error === originalReason,
+  );
+  assert.deepEqual(terminalEvents(events).map((event) => event.error.code), ['ABORTED']);
+  assert.equal(fake.clearCalls.length, 1);
+});
+
+test('non-Error external abort reasons use DiagnosticsAbortError', async () => {
+  const fake = manualTimers();
+  const { deps } = fakeDeps({ timers: fake.boundary });
+  const controller = new AbortController();
+  controller.abort('string reason');
+  await assert.rejects(
+    createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-abort-fallback', signal: controller.signal }),
+    DiagnosticsAbortError,
+  );
+  assert.equal(fake.clearCalls.length, 1);
 });

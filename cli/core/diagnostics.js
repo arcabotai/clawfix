@@ -19,6 +19,126 @@ export class DiagnosticsCoreIncompleteError extends Error {
   }
 }
 
+// A scan that is aborted (externally, via the caller's signal) rejects with the caller's own
+// abort reason when it is an Error; DiagnosticsAbortError is only the fallback for a
+// non-Error/absent reason, so callers get one stable, identifiable class to check against.
+export class DiagnosticsAbortError extends Error {
+  constructor(message = 'Diagnostic scan aborted') {
+    super(message);
+    this.name = 'DiagnosticsAbortError';
+    this.code = 'ABORTED';
+  }
+}
+
+// A scan that exceeds its end-to-end deadline always rejects with this stable class — there is
+// no caller-supplied reason to preserve, unlike abort.
+export class DiagnosticsTimeoutError extends Error {
+  constructor(deadlineMs) {
+    super(`Diagnostic scan exceeded its ${deadlineMs}ms deadline`);
+    this.name = 'DiagnosticsTimeoutError';
+    this.code = 'TIMEOUT';
+  }
+}
+
+// Internal control-flow sentinel thrown by a cancelled race()/checkCancelled() call. It is never
+// exposed to callers — runDiagnostics catches it and rethrows the cancellation's own
+// DiagnosticsAbortError/DiagnosticsTimeoutError instead.
+const CANCELLED = Symbol('diagnostics-core-cancelled');
+
+// Structural AbortSignal check (matches cli/adapters/process.js and cli/adapters/openclaw.js):
+// duck-typed rather than `instanceof AbortSignal` so a signal from any realm/polyfill still
+// qualifies, and so this module never needs to read the ambient AbortSignal/AbortController
+// globals just to validate its input.
+function isAbortSignalLike(value) {
+  return value !== null
+    && typeof value === 'object'
+    && typeof value.aborted === 'boolean'
+    && typeof value.addEventListener === 'function'
+    && typeof value.removeEventListener === 'function';
+}
+
+// Owns the end-to-end cancellation state for one runDiagnostics() call: the caller's external
+// signal (if any) and the single aggregate deadline timer race to decide whether/why the scan is
+// cancelled. Whichever settles first wins (settle() below is a no-op once state is set), so late
+// timer fires or late abort events after a normal completion are harmless.
+//
+// This never calls clock.now(): the injected `clock` boundary is reserved for the envelope's
+// wall-clock timestamp, and conflating it with deadline bookkeeping would let a test (or a
+// caller) that fakes `clock` inadvertently perturb deadline expiry. The deadline is scheduled
+// once, for the full `deadlineMs`, entirely through the injected `timers` boundary.
+function createCancellation({ signal, deadlineMs, timers }) {
+  let state = null; // null | 'aborted' | 'timedOut'
+  let reason = null;
+  let resolveCancellation;
+  const cancellationPromise = new Promise((resolve) => { resolveCancellation = resolve; });
+  const childController = new AbortController();
+
+  const settle = (nextState, nextReason) => {
+    if (state !== null) return;
+    state = nextState;
+    reason = nextReason;
+    childController.abort(nextReason);
+    resolveCancellation();
+  };
+
+  const onExternalAbort = () => {
+    settle('aborted', signal.reason instanceof Error ? signal.reason : new DiagnosticsAbortError());
+  };
+
+  if (signal !== undefined) {
+    if (signal.aborted) onExternalAbort();
+    else signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+
+  const timerHandle = timers.setTimeout(() => {
+    settle('timedOut', new DiagnosticsTimeoutError(deadlineMs));
+  }, deadlineMs);
+
+  return {
+    get state() {
+      return state;
+    },
+    get reason() {
+      return reason;
+    },
+    signal: childController.signal,
+    // Bounds a per-call timeout option to the smaller of its existing cap and the overall
+    // deadline budget — this only ever narrows an existing cap, never widens it, and gives
+    // uncapped calls (no prior timeoutMs option) the deadline itself as their cap.
+    boundTimeout(existingCapMs) {
+      return existingCapMs === undefined ? deadlineMs : Math.min(existingCapMs, deadlineMs);
+    },
+    checkCancelled() {
+      if (state !== null) throw CANCELLED;
+    },
+    // Races a boundary call against cancellation so a blocked/uncooperative promise (a fake or
+    // real fs/OpenClaw call that ignores `signal`) can never hold up the pipeline past
+    // abort/deadline. The operation promise always gets its own .then(onFulfilled, onRejected)
+    // handler here, so a late resolution/rejection after cancellation is always "handled" and
+    // never surfaces as an unhandled rejection, no matter how long the real call keeps running.
+    async race(operation) {
+      if (state !== null) throw CANCELLED;
+      let operationPromise;
+      try {
+        operationPromise = Promise.resolve(operation());
+      } catch (error) {
+        operationPromise = Promise.reject(error);
+      }
+      const outcome = await Promise.race([
+        operationPromise.then((value) => ({ value }), (error) => ({ error })),
+        cancellationPromise.then(() => ({ cancelled: true })),
+      ]);
+      if (state !== null) throw CANCELLED;
+      if ('error' in outcome) throw outcome.error;
+      return outcome.value;
+    },
+    cleanup() {
+      timers.clearTimeout(timerHandle);
+      if (signal !== undefined) signal.removeEventListener('abort', onExternalAbort);
+    },
+  };
+}
+
 function requireFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
   return value;
@@ -346,6 +466,7 @@ export function createDiagnosticsCore({
   clock,
   createHash,
   nativeCollectors,
+  timers,
 } = {}) {
   requireNonEmptyString(version, 'version');
   requireFunction(redact, 'redact');
@@ -360,6 +481,7 @@ export function createDiagnosticsCore({
   }
   requireBoundary(clock, 'clock', ['now']);
   requireFunction(createHash, 'createHash');
+  requireBoundary(timers, 'timers', ['setTimeout', 'clearTimeout']);
   requireBoundary(nativeCollectors, 'nativeCollectors', [
     'collectOpenClawVersion',
     'collectListeningPort',
@@ -369,36 +491,46 @@ export function createDiagnosticsCore({
     'collectNativeSecurityAudit',
   ]);
 
-  async function discover() {
+  async function discover(cancellation) {
     const home = os.homedir();
-    const openclawDir = await fs.exists(join(home, '.openclaw'))
+    const openclawDir = await cancellation.race(() => fs.exists(join(home, '.openclaw')))
       ? join(home, '.openclaw')
-      : await fs.exists(join(home, '.config', 'openclaw'))
+      : await cancellation.race(() => fs.exists(join(home, '.config', 'openclaw')))
         ? join(home, '.config', 'openclaw')
         : null;
-    const openclawBin = (await openclaw.findExecutable()) || '';
+    const openclawBin = (await cancellation.race(() => openclaw.findExecutable())) || '';
     return { home, openclawDir, openclawBin };
   }
 
-  async function collectSystem(openclawBin) {
+  async function collectSystem(openclawBin, cancellation) {
+    cancellation.checkCancelled();
     const osName = os.platform();
     const osVersion = os.release();
     const osArch = os.arch();
     const nodeVersion = os.nodeVersion();
-    const npmVersion = await openclaw.npmVersion({ timeoutMs: 5000 });
+    cancellation.checkCancelled();
+    const npmVersion = await cancellation.race(() => openclaw.npmVersion({
+      timeoutMs: cancellation.boundTimeout(5000),
+      signal: cancellation.signal,
+    }));
+    cancellation.checkCancelled();
     const hostHash = createHash('sha256').update(os.hostname()).digest('hex').slice(0, 8);
+    cancellation.checkCancelled();
 
     const versionResult = openclawBin
-      ? await openclaw.version({
+      ? await cancellation.race(() => openclaw.version({
         executable: openclawBin,
-        timeoutMs: 10_000,
+        timeoutMs: cancellation.boundTimeout(10_000),
         maxStdoutBytes: 1_200,
         maxStderrBytes: 4_000,
-      })
+        signal: cancellation.signal,
+      }))
       : null;
+    cancellation.checkCancelled();
     const versionProbe = versionResult
       ? nativeCollectors.collectOpenClawVersion(openclawBin, () => versionResult)
       : { version: '', runtimeCompatible: false, error: 'OpenClaw binary not found' };
+    cancellation.checkCancelled();
 
     return {
       osName,
@@ -416,14 +548,18 @@ export function createDiagnosticsCore({
     };
   }
 
-  function collectPorts(gatewayPort) {
-    // Sync spawnSync-backed collectors (lsof/ss); each retains its own intrinsic process timeout
-    // (5s) and is not wrapped with any cancellation/deadline machinery in this slice.
-    return {
-      gateway: { port: gatewayPort, ...nativeCollectors.collectListeningPort(gatewayPort) },
-      browserCdp: { port: 18800, ...nativeCollectors.collectListeningPort(18800) },
-      browserControl: { port: 18791, ...nativeCollectors.collectListeningPort(18791) },
-    };
+  function collectPorts(gatewayPort, cancellation) {
+    // Sync spawnSync-backed collectors retain intrinsic per-process timeouts (each port collector
+    // may run multiple 5s probes). They cannot be interrupted while one call is executing, so
+    // cancellation is checked before and after every collector to prevent the next probe.
+    cancellation.checkCancelled();
+    const gateway = { port: gatewayPort, ...nativeCollectors.collectListeningPort(gatewayPort) };
+    cancellation.checkCancelled();
+    const browserCdp = { port: 18800, ...nativeCollectors.collectListeningPort(18800) };
+    cancellation.checkCancelled();
+    const browserControl = { port: 18791, ...nativeCollectors.collectListeningPort(18791) };
+    cancellation.checkCancelled();
+    return { gateway, browserCdp, browserControl };
   }
 
   function projectPortEvidence(evidence) {
@@ -450,16 +586,16 @@ export function createDiagnosticsCore({
     return projected;
   }
 
-  function collectNative(openclawBin, runtimeCompatible) {
-    // collectNativeDoctor/collectNativeConfigValidation/collectNativeStatus/
-    // collectNativeSecurityAudit (cli/bin/native-diagnostics.js) are sync spawnSync-backed
-    // collectors that fail closed to a fixed default shape and never throw for any real command
-    // outcome — the core relies on that contract rather than adding defensive try/catch here.
+  function collectNative(openclawBin, runtimeCompatible, cancellation) {
+    // Native collectors are sync spawnSync boundaries with intrinsic timeouts. Cancellation cannot
+    // interrupt a collector already executing, but is observed before and after each call.
+    cancellation.checkCancelled();
     const nativeDoctor = openclawBin
       ? nativeCollectors.collectNativeDoctor(openclawBin)
       : {
         available: false, checksRun: 0, checksSkipped: 0, findings: [],
       };
+    cancellation.checkCancelled();
 
     const canRunNativeEvidence = Boolean(openclawBin) && runtimeCompatible === true;
     const nativeConfig = canRunNativeEvidence
@@ -467,25 +603,35 @@ export function createDiagnosticsCore({
       : {
         available: false, valid: null, warnings: [], errors: [],
       };
+    cancellation.checkCancelled();
     const nativeStatus = canRunNativeEvidence
       ? nativeCollectors.collectNativeStatus(openclawBin)
       : { available: false };
+    cancellation.checkCancelled();
     const nativeSecurity = canRunNativeEvidence
       ? nativeCollectors.collectNativeSecurityAudit(openclawBin)
       : { available: false, findings: [] };
+    cancellation.checkCancelled();
 
     return {
       nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
     };
   }
 
-  async function collectGateway(config, openclawBin) {
+  async function collectGateway(config, openclawBin, cancellation) {
     let gatewayStatus = 'unknown';
     if (openclawBin) {
-      gatewayStatus = await openclaw.gatewayStatusText({ executable: openclawBin, timeoutMs: 5000 }) || 'could not check';
+      gatewayStatus = await cancellation.race(() => openclaw.gatewayStatusText({
+        executable: openclawBin,
+        timeoutMs: cancellation.boundTimeout(5000),
+        signal: cancellation.signal,
+      })) || 'could not check';
     }
     const gatewayPort = config?.gateway?.port || 18789;
-    const gatewayPid = await openclaw.gatewayProcesses({ timeoutMs: 5000 });
+    const gatewayPid = await cancellation.race(() => openclaw.gatewayProcesses({
+      timeoutMs: cancellation.boundTimeout(5000),
+      signal: cancellation.signal,
+    }));
     const statusLine = (
       gatewayStatus.split('\n').find((line) => /runtime:|listening|running|stopped|not running/i.test(line))
       || gatewayStatus.split('\n')[0]
@@ -496,7 +642,7 @@ export function createDiagnosticsCore({
     };
   }
 
-  async function collectLogs(openclawDir) {
+  async function collectLogs(openclawDir, cancellation) {
     const logPath = openclawDir ? join(openclawDir, 'logs', 'gateway.log') : null;
     const errLogPath = openclawDir ? join(openclawDir, 'logs', 'gateway.err.log') : null;
     let errorLogs = '';
@@ -505,14 +651,14 @@ export function createDiagnosticsCore({
     let logSizeMB = 0;
     let errLogSizeMB = 0;
 
-    if (logPath && await fs.exists(logPath)) {
+    if (logPath && await cancellation.race(() => fs.exists(logPath))) {
       try {
-        const logStat = await fs.stat(logPath);
+        const logStat = await cancellation.race(() => fs.stat(logPath));
         logSizeMB = Math.round(logStat.size / 1024 / 1024);
-        const tailContent = (await openclaw.readFileTail(logPath, {
+        const tailContent = (await cancellation.race(() => openclaw.readFileTail(logPath, {
           maxLines: 500,
           maxBytes: 1024 * 1024,
-        })).text;
+        }))).text;
         const lines = tailContent.split('\n');
         errorLogs = lines
           .filter((line) => /error|warn|fail|crash|EADDRINUSE|EACCES/i.test(line))
@@ -522,20 +668,22 @@ export function createDiagnosticsCore({
           .filter((line) => /signal SIGTERM|listening.*PID|config change detected.*reload|update available/i.test(line))
           .slice(-20)
           .join('\n');
-      } catch {
+      } catch (error) {
+        if (error === CANCELLED) throw error;
         // fail-open: matches the original collector's swallow-and-continue behavior
       }
     }
 
-    if (errLogPath && await fs.exists(errLogPath)) {
+    if (errLogPath && await cancellation.race(() => fs.exists(errLogPath))) {
       try {
-        const errStat = await fs.stat(errLogPath);
+        const errStat = await cancellation.race(() => fs.stat(errLogPath));
         errLogSizeMB = Math.round(errStat.size / 1024 / 1024);
-        stderrLogs = (await openclaw.readFileTail(errLogPath, {
+        stderrLogs = (await cancellation.race(() => openclaw.readFileTail(errLogPath, {
           maxLines: 200,
           maxBytes: 1024 * 1024,
-        })).text;
-      } catch {
+        }))).text;
+      } catch (error) {
+        if (error === CANCELLED) throw error;
         // fail-open
       }
     }
@@ -554,7 +702,7 @@ export function createDiagnosticsCore({
     };
   }
 
-  async function collectWorkspace(config, injectedEnv, home, openclawDir) {
+  async function collectWorkspace(config, injectedEnv, home, openclawDir, cancellation) {
     const workspaceDir = config?.agents?.defaults?.workspace || '';
     let mdFiles = 0;
     let memoryFiles = 0;
@@ -562,23 +710,25 @@ export function createDiagnosticsCore({
     let hasAgents = false;
     let workspaceExists = false;
 
-    if (workspaceDir && await fs.exists(workspaceDir)) {
+    if (workspaceDir && await cancellation.race(() => fs.exists(workspaceDir))) {
       workspaceExists = true;
-      hasSoul = await fs.exists(join(workspaceDir, 'SOUL.md'));
-      hasAgents = await fs.exists(join(workspaceDir, 'AGENTS.md'));
+      hasSoul = await cancellation.race(() => fs.exists(join(workspaceDir, 'SOUL.md')));
+      hasAgents = await cancellation.race(() => fs.exists(join(workspaceDir, 'AGENTS.md')));
 
       try {
-        mdFiles = await fs.countMarkdownFiles(workspaceDir);
-      } catch {
+        mdFiles = await cancellation.race(() => fs.countMarkdownFiles(workspaceDir));
+      } catch (error) {
+        if (error === CANCELLED) throw error;
         // fail-open
       }
 
       const memDir = join(workspaceDir, 'memory');
-      if (await fs.exists(memDir)) {
+      if (await cancellation.race(() => fs.exists(memDir))) {
         try {
-          const memEntries = await fs.readdir(memDir);
+          const memEntries = await cancellation.race(() => fs.readdir(memDir));
           memoryFiles = memEntries.filter((name) => name.endsWith('.md')).length;
-        } catch {
+        } catch (error) {
+          if (error === CANCELLED) throw error;
           // fail-open
         }
       }
@@ -609,16 +759,17 @@ export function createDiagnosticsCore({
     };
   }
 
-  async function readConfig(openclawDir) {
+  async function readConfig(openclawDir, cancellation) {
     const configPath = openclawDir ? join(openclawDir, 'openclaw.json') : null;
     let config = null;
     let redactedConfig = null;
-    if (configPath && await fs.exists(configPath)) {
-      config = await fs.readJson(configPath);
+    if (configPath && await cancellation.race(() => fs.exists(configPath))) {
+      config = await cancellation.race(() => fs.readJson(configPath));
       if (config && typeof config === 'object') {
         const sanitizedCopy = { ...config };
         delete sanitizedCopy.env;
         redactedConfig = redact(sanitizedCopy);
+        cancellation.checkCancelled();
         if (!isPlainObject(redactedConfig)) {
           throw new TypeError('redact must return a plain object for an existing configuration');
         }
@@ -627,12 +778,19 @@ export function createDiagnosticsCore({
     return { config, redactedConfig };
   }
 
-  async function runDiagnostics({ revision, emit } = {}) {
+  async function runDiagnostics({ revision, emit, signal, deadlineMs = 30_000 } = {}) {
     validateRevision(revision);
     if (emit !== undefined && typeof emit !== 'function') {
       throw new TypeError('emit must be a function');
     }
-    emit?.(scanStarted({ revision }));
+    if (signal !== undefined && !isAbortSignalLike(signal)) {
+      throw new TypeError('signal must be AbortSignal-like');
+    }
+    if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= 0) {
+      throw new TypeError('deadlineMs must be a positive safe integer');
+    }
+
+    const cancellation = createCancellation({ signal, deadlineMs, timers });
 
     // Every started scan must produce exactly one terminal event (scan.completed XOR
     // scan.error), never both and never a second attempt if the sink itself throws while
@@ -645,7 +803,9 @@ export function createDiagnosticsCore({
     };
 
     try {
-      const { home, openclawDir, openclawBin } = await discover();
+      emit?.(scanStarted({ revision }));
+      cancellation.checkCancelled();
+      const { home, openclawDir, openclawBin } = await discover(cancellation);
 
       if (!openclawBin && !openclawDir) {
         const message = 'OpenClaw not found on this system.';
@@ -660,7 +820,7 @@ export function createDiagnosticsCore({
         data: { binary: openclawBin || null, configDir: openclawDir },
       }));
 
-      const system = await collectSystem(openclawBin);
+      const system = await collectSystem(openclawBin, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'system',
@@ -676,7 +836,7 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const { config, redactedConfig } = await readConfig(openclawDir);
+      const { config, redactedConfig } = await readConfig(openclawDir, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'config',
@@ -684,7 +844,7 @@ export function createDiagnosticsCore({
         data: { configExists: redactedConfig !== null },
       }));
 
-      const gateway = await collectGateway(config, openclawBin);
+      const gateway = await collectGateway(config, openclawBin, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'gateway',
@@ -697,7 +857,7 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const logs = await collectLogs(openclawDir);
+      const logs = await collectLogs(openclawDir, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'logs',
@@ -713,7 +873,10 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const serviceHealth = await openclaw.serviceManagerState({ timeoutMs: 5000 });
+      const serviceHealth = await cancellation.race(() => openclaw.serviceManagerState({
+        timeoutMs: cancellation.boundTimeout(5000),
+        signal: cancellation.signal,
+      }));
       emit?.(scanStep({
         revision,
         phase: 'service',
@@ -731,7 +894,7 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const workspace = await collectWorkspace(config, env, home, openclawDir);
+      const workspace = await collectWorkspace(config, env, home, openclawDir, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'workspace',
@@ -748,7 +911,7 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const ports = collectPorts(gateway.gatewayPort);
+      const ports = collectPorts(gateway.gatewayPort, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'ports',
@@ -762,7 +925,7 @@ export function createDiagnosticsCore({
 
       const {
         nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
-      } = collectNative(openclawBin, system.runtimeCompatible);
+      } = collectNative(openclawBin, system.runtimeCompatible, cancellation);
       emit?.(scanStep({
         revision,
         phase: 'native',
@@ -791,6 +954,7 @@ export function createDiagnosticsCore({
         },
       }));
 
+      cancellation.checkCancelled();
       const issues = deriveIssues({
         config,
         system,
@@ -804,6 +968,7 @@ export function createDiagnosticsCore({
         nativeStatus,
         nativeSecurity,
       });
+      cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
       const severity = {
         critical: issues.filter((issue) => issue.severity === 'critical').length,
@@ -824,9 +989,11 @@ export function createDiagnosticsCore({
       }));
 
       const browserConfigured = Boolean(
-        openclawDir && await fs.exists(join(openclawDir, 'browser')),
+        openclawDir && await cancellation.race(() => fs.exists(join(openclawDir, 'browser'))),
       );
+      cancellation.checkCancelled();
       const now = clock.now();
+      cancellation.checkCancelled();
       if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
         throw new TypeError('clock.now() must return a valid Date');
       }
@@ -888,6 +1055,7 @@ export function createDiagnosticsCore({
         },
       };
       const diagnostic = redact(diagnosticEnvelope);
+      cancellation.checkCancelled();
       if (!isPlainObject(diagnostic)) {
         throw new TypeError('redact must return a plain object for the diagnostic envelope');
       }
@@ -923,13 +1091,23 @@ export function createDiagnosticsCore({
         ocVersion: system.ocVersion || 'unknown',
       };
 
+      cancellation.checkCancelled();
       emitTerminal(scanCompleted({ revision, summary, findings: issues }));
       return { revision, diagnostic, issues, summary };
     } catch (error) {
+      const failure = error === CANCELLED ? cancellation.reason : error;
+      const code = error === CANCELLED
+        ? (cancellation.state === 'timedOut' ? 'TIMEOUT' : 'ABORTED')
+        : 'INTERNAL';
       if (!terminalEmitted) {
-        emitTerminal(scanError({ revision, error: { message: toSafeErrorMessage(error), code: 'INTERNAL' } }));
+        emitTerminal(scanError({
+          revision,
+          error: { message: toSafeErrorMessage(failure), code },
+        }));
       }
-      throw error;
+      throw failure;
+    } finally {
+      cancellation.cleanup();
     }
   }
 
