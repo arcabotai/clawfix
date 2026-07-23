@@ -30,6 +30,8 @@
   },
   "files": [
     "bin/",
+    "adapters/",
+    "core/",
     "README.md",
     "LICENSE"
   ]

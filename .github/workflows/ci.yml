@@ -41,7 +41,8 @@ jobs:
         run: |
           node --check cli/bin/clawfix.js
           node --check cli/bin/native-diagnostics.js
-          node --check cli/index.js
+          node --check cli/adapters/process.js
+          node --check cli/adapters/openclaw.js
           node --check scripts/blaxel-contracts.mjs
           node --check scripts/verify-cli-package.mjs
 

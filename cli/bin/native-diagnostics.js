@@ -1,6 +1,23 @@
-import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { runProcessSync } from '../adapters/process.js';
 import { redactText } from './security.js';
+
+const VERSION_STDOUT_BYTES = 1_200;
+const VERSION_STDERR_BYTES = 4_000;
+const DOCTOR_STDOUT_BYTES = 1_000_000;
+const JSON_STDOUT_BYTES = 2_000_000;
+const JSON_STDERR_BYTES = 8_000;
+const PORT_STDOUT_BYTES = 80_000;
+const PORT_STDERR_BYTES = 4_000;
+
+function defaultRunSync(executable, argv, options) {
+  return runProcessSync(executable, argv, {
+    timeoutMs: options.timeout,
+    maxStdoutBytes: options.maxStdoutBytes,
+    maxStderrBytes: options.maxStderrBytes,
+    shell: false,
+  });
+}
 
 function cleanText(value, maxLength = 1000) {
   return String(value || '')
@@ -17,6 +34,47 @@ function hasAcceptedJsonExitCode(result) {
   return result.status === 0 || result.status === 1;
 }
 
+function normalizeProcessResult(rawResult) {
+  // Accept normalized adapter results and legacy spawnSync-shaped injections while migration continues.
+  const result = rawResult ?? {};
+  return {
+    ...result,
+    status: result.status ?? null,
+    signal: result.signal ?? null,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    error: result.error ?? null,
+    errorCode: result.errorCode ?? result.error?.code ?? null,
+    errorSummary: result.errorSummary ?? result.error?.message ?? null,
+    timedOut: result.timedOut === true || result.errorCode === 'ETIMEDOUT' || result.error?.code === 'ETIMEDOUT',
+    aborted: result.aborted === true || result.errorCode === 'ABORT_ERR' || result.error?.code === 'ABORT_ERR',
+    stdoutTruncated: result.stdoutTruncated === true,
+    stderrTruncated: result.stderrTruncated === true,
+    outputLimitExceeded: result.outputLimitExceeded === true || result.errorCode === 'ENOBUFS' || result.error?.code === 'ENOBUFS',
+  };
+}
+
+function hasTerminalProcessFailure(result, { rejectTruncatedOutput = false } = {}) {
+  return result.error != null
+    || result.errorCode != null
+    || result.errorSummary != null
+    || result.timedOut
+    || result.aborted
+    || result.outputLimitExceeded
+    || result.signal != null
+    || !Number.isInteger(result.status)
+    || (rejectTruncatedOutput && (result.stdoutTruncated || result.stderrTruncated));
+}
+
+function processFailureText(result, fallback = 'Command failed before completion') {
+  if (result.timedOut) return result.errorSummary || 'Command timed out';
+  if (result.outputLimitExceeded) return result.errorSummary || 'Command output limit exceeded';
+  if (result.aborted) return result.errorSummary || 'Command aborted';
+  return result.errorSummary
+    || result.stderr
+    || (result.signal ? `Command terminated by ${result.signal}` : fallback);
+}
+
 export function redactDiagnosticText(value) {
   return redactText(value);
 }
@@ -25,20 +83,22 @@ function cleanPath(value) {
   return redactDiagnosticText(cleanText(value, 500)).replaceAll(homedir(), '~');
 }
 
-function runJsonCommand(openclawBin, args, spawn, timeout = 30_000) {
-  const result = spawn(openclawBin, args, {
+function runJsonCommand(openclawBin, args, runSync, timeout = 30_000) {
+  const result = normalizeProcessResult(runSync(openclawBin, args, {
     encoding: 'utf8',
     timeout,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const stdout = cleanText(result.stdout, 500_000);
-  const stderr = redactDiagnosticText(cleanText(result.stderr || result.error?.message, 2000));
+    maxStdoutBytes: JSON_STDOUT_BYTES,
+    maxStderrBytes: JSON_STDERR_BYTES,
+  }));
+  const stdout = String(result.stdout ?? '').trim();
+  const stderr = redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 2000));
 
-  if (result.error || result.signal || !Number.isInteger(result.status)) {
+  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true })) {
     return {
       result,
       parsed: null,
-      error: stderr || (result.signal ? `Command terminated by ${result.signal}` : 'Command failed before completion'),
+      error: redactDiagnosticText(cleanText(processFailureText(result, stderr || undefined), 2000)),
     };
   }
   if (!hasAcceptedJsonExitCode(result)) {
@@ -66,28 +126,34 @@ function normalizeFinding(finding, source) {
   };
 }
 
-export function collectOpenClawVersion(openclawBin, spawn = spawnSync) {
-  const result = spawn(openclawBin, ['--version'], {
+export function collectOpenClawVersion(openclawBin, runSync = defaultRunSync) {
+  const result = normalizeProcessResult(runSync(openclawBin, ['--version'], {
     encoding: 'utf8',
     timeout: 10_000,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    maxStdoutBytes: VERSION_STDOUT_BYTES,
+    maxStderrBytes: VERSION_STDERR_BYTES,
+  }));
 
-  const version = cleanText(result.stdout, 300);
-  const error = redactDiagnosticText(cleanText(result.stderr || result.error?.message, 1000));
+  const failed = hasTerminalProcessFailure(result, { rejectTruncatedOutput: true });
+  const version = failed ? '' : cleanText(result.stdout, 300);
+  const error = redactDiagnosticText(cleanText(
+    failed ? processFailureText(result) : result.stderr,
+    1000,
+  ));
   const mismatch = error.match(/Node\.js (.+?) is required \(current: ([^)]+)\)/i);
 
   return {
     version,
-    runtimeCompatible: result.status === 0 && !mismatch,
+    runtimeCompatible: !failed && result.status === 0 && !mismatch,
     runtimeRequired: mismatch?.[1]?.trim() || null,
     runtimeCurrent: mismatch?.[2]?.trim() || null,
-    error: result.status === 0 ? '' : error,
+    error: !failed && result.status === 0 ? '' : error,
   };
 }
 
-export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
-  const result = spawn(openclawBin, [
+export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
+  const result = normalizeProcessResult(runSync(openclawBin, [
     'doctor',
     '--lint',
     '--json',
@@ -98,15 +164,17 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
     encoding: 'utf8',
     timeout: 30_000,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    maxStdoutBytes: DOCTOR_STDOUT_BYTES,
+    maxStderrBytes: JSON_STDERR_BYTES,
+  }));
 
-  const stdout = cleanText(result.stdout, 250_000);
-  if (result.error || result.signal || !Number.isInteger(result.status) || !hasAcceptedJsonExitCode(result)) {
+  const stdout = String(result.stdout ?? '').trim();
+  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true }) || !hasAcceptedJsonExitCode(result)) {
     return {
       available: false,
       exitCode: result.status,
       error: redactDiagnosticText(cleanText(
-        result.stderr || result.error?.message || (result.signal ? `Doctor terminated by ${result.signal}` : `Doctor exited with status ${result.status}`),
+        processFailureText(result, `Doctor exited with status ${result.status}`),
         1000,
       )),
       checksRun: 0,
@@ -118,7 +186,7 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
     return {
       available: false,
       exitCode: result.status,
-      error: redactDiagnosticText(cleanText(result.stderr || result.error?.message, 1000)),
+      error: redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 1000)),
       checksRun: 0,
       checksSkipped: 0,
       findings: [],
@@ -166,11 +234,11 @@ export function collectNativeDoctor(openclawBin, spawn = spawnSync) {
   }
 }
 
-export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
+export function collectNativeConfigValidation(openclawBin, runSync = defaultRunSync) {
   const { result, parsed, error } = runJsonCommand(
     openclawBin,
     ['config', 'validate', '--json'],
-    spawn,
+    runSync,
     20_000,
   );
   if (!parsed) {
@@ -224,8 +292,8 @@ export function collectNativeConfigValidation(openclawBin, spawn = spawnSync) {
   };
 }
 
-export function collectNativeStatus(openclawBin, spawn = spawnSync) {
-  const { result, parsed, error } = runJsonCommand(openclawBin, ['status', '--json'], spawn, 30_000);
+export function collectNativeStatus(openclawBin, runSync = defaultRunSync) {
+  const { result, parsed, error } = runJsonCommand(openclawBin, ['status', '--json'], runSync, 30_000);
   if (!parsed) {
     return { available: false, exitCode: result.status, error };
   }
@@ -276,11 +344,11 @@ export function collectNativeStatus(openclawBin, spawn = spawnSync) {
   };
 }
 
-export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
+export function collectNativeSecurityAudit(openclawBin, runSync = defaultRunSync) {
   const { result, parsed, error } = runJsonCommand(
     openclawBin,
     ['security', 'audit', '--json'],
-    spawn,
+    runSync,
     30_000,
   );
   if (!parsed) {
@@ -326,10 +394,11 @@ export function collectNativeSecurityAudit(openclawBin, spawn = spawnSync) {
   };
 }
 
-export function collectListeningPort(port, spawn = spawnSync) {
+export function collectListeningPort(port, runSync = defaultRunSync) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     return {
       valid: false,
+      available: false,
       listening: false,
       process: null,
       pid: null,
@@ -344,17 +413,22 @@ export function collectListeningPort(port, spawn = spawnSync) {
     };
   }
 
-  const lsof = spawn('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+  const lsof = normalizeProcessResult(runSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
     encoding: 'utf8',
     timeout: 5000,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const lsofLines = cleanText(lsof.stdout, 20_000).split('\n').filter(Boolean);
-  if (lsof.status === 0 && lsofLines.length > 1) {
+    maxStdoutBytes: PORT_STDOUT_BYTES,
+    maxStderrBytes: PORT_STDERR_BYTES,
+  }));
+  const lsofTerminalFailure = hasTerminalProcessFailure(lsof, { rejectTruncatedOutput: true });
+  const lsofOutput = cleanText(lsof.stdout, 20_000);
+  const lsofLines = lsofOutput.split('\n').filter(Boolean);
+  if (!lsofTerminalFailure && lsof.status === 0 && lsofLines.length > 1) {
     const fields = lsofLines[1].trim().split(/\s+/);
     const endpoint = lsofLines[1].match(/\b(?:TCP|UDP)\s+(\S+)/)?.[1];
     return {
       valid: true,
+      available: true,
       listening: true,
       process: cleanText(fields[0], 100) || null,
       pid: Number.parseInt(fields[1], 10) || null,
@@ -362,18 +436,29 @@ export function collectListeningPort(port, spawn = spawnSync) {
       collector: 'lsof',
     };
   }
+  const lsofConfirmedAbsent = !lsofTerminalFailure && (
+    (lsof.status === 0
+      && lsofLines.length === 1
+      && /^COMMAND\s+PID\b/.test(lsofLines[0])
+      && !cleanText(lsof.stderr, 1))
+    || (lsof.status === 1 && !lsofOutput && !cleanText(lsof.stderr, 1))
+  );
 
-  const ss = spawn('ss', ['-ltnp', `sport = :${port}`], {
+  const ss = normalizeProcessResult(runSync('ss', ['-ltnp', `sport = :${port}`], {
     encoding: 'utf8',
     timeout: 5000,
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    maxStdoutBytes: PORT_STDOUT_BYTES,
+    maxStderrBytes: PORT_STDERR_BYTES,
+  }));
+  const ssTerminalFailure = hasTerminalProcessFailure(ss, { rejectTruncatedOutput: true });
   const ssOutput = cleanText(ss.stdout, 20_000);
-  const processMatch = ssOutput.match(/users:\(\(\"([^\"]+)\",pid=(\d+)/);
-  const endpointMatch = ssOutput.match(/LISTEN\s+\d+\s+\d+\s+(\S+):\d+/);
-  if (ss.status === 0 && /\bLISTEN\b/.test(ssOutput)) {
+  if (!ssTerminalFailure && ss.status === 0 && /\bLISTEN\b/.test(ssOutput)) {
+    const processMatch = ssOutput.match(/users:\(\(\"([^\"]+)\",pid=(\d+)/);
+    const endpointMatch = ssOutput.match(/LISTEN\s+\d+\s+\d+\s+(\S+):\d+/);
     return {
       valid: true,
+      available: true,
       listening: true,
       process: cleanText(processMatch?.[1], 100) || null,
       pid: Number.parseInt(processMatch?.[2], 10) || null,
@@ -381,6 +466,41 @@ export function collectListeningPort(port, spawn = spawnSync) {
       collector: 'ss',
     };
   }
+  const ssConfirmedAbsent = !ssTerminalFailure
+    && ss.status === 0
+    && !/\bLISTEN\b/.test(ssOutput)
+    && !cleanText(ss.stderr, 1);
 
-  return { valid: true, listening: false, process: null, pid: null, endpoint: null, collector: null };
+  if (lsofConfirmedAbsent || ssConfirmedAbsent) {
+    return {
+      valid: true,
+      available: true,
+      listening: false,
+      process: null,
+      pid: null,
+      endpoint: null,
+      collector: lsofConfirmedAbsent ? 'lsof' : 'ss',
+    };
+  }
+
+  const summarizeFailure = (name, result, terminalFailure) => {
+    const detail = terminalFailure
+      ? processFailureText(result)
+      : result.stderr || `exited with status ${String(result.status)}`;
+    return `${name}: ${cleanText(detail, 300) || 'no trustworthy result'}`;
+  };
+  const error = redactDiagnosticText(cleanText(
+    `Could not inspect listening port; ${summarizeFailure('lsof', lsof, lsofTerminalFailure)}; ${summarizeFailure('ss', ss, ssTerminalFailure)}`,
+    1000,
+  ));
+  return {
+    valid: true,
+    available: false,
+    listening: null,
+    process: null,
+    pid: null,
+    endpoint: null,
+    collector: null,
+    error,
+  };
 }

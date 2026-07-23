@@ -25,24 +25,20 @@ import {
 } from './native-diagnostics.js';
 import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
+import { resolveCliMode } from '../core/modes.js';
+import { parseCliOptions } from '../core/options.js';
 
 // --- Config ---
-const args = process.argv.slice(2);
-const serverArgIndex = args.indexOf('--server');
-const inlineServerArg = args.find(arg => arg.startsWith('--server='));
-const serverArg = inlineServerArg?.slice('--server='.length)
-  || (serverArgIndex >= 0 && !args[serverArgIndex + 1]?.startsWith('-') ? args[serverArgIndex + 1] : '');
-const rawApiUrl = serverArg || process.env.CLAWFIX_API || 'https://clawfix.dev';
-let API_URL = rawApiUrl;
-let API_URL_ERROR = '';
-try {
-  const parsedApiUrl = new URL(rawApiUrl);
-  if (!['http:', 'https:'].includes(parsedApiUrl.protocol)) throw new Error('must use http or https');
-  API_URL = parsedApiUrl.href.replace(/\/$/, '');
-} catch (error) {
-  API_URL_ERROR = `Invalid ClawFix API URL: ${error.message}`;
-}
-const API_TOKEN = process.env.CLAWFIX_API_TOKEN || '';
+const CLI_OPTIONS = parseCliOptions(process.argv.slice(2), process.env);
+const CLI_MODE = resolveCliMode(CLI_OPTIONS);
+const {
+  apiUrl: API_URL,
+  apiToken: API_TOKEN,
+  showData: SHOW_DATA,
+  autoSend: AUTO_SEND,
+  jsonOnly: JSON_ONLY,
+  localOnly: LOCAL_ONLY,
+} = CLI_OPTIONS;
 const API_HEADERS = Object.freeze({
   'Content-Type': 'application/json',
   ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
@@ -54,17 +50,6 @@ const VERSION = (() => {
     return '0.9.1';
   }
 })();
-
-// --- Flags ---
-const DRY_RUN = args.includes('--dry-run') || args.includes('-n');
-const NO_SEND = args.includes('--no-send') || args.includes('--local-only');
-const SHOW_DATA = args.includes('--show-data') || args.includes('-d');
-const AUTO_SEND = process.env.CLAWFIX_AUTO === '1' || args.includes('--yes') || args.includes('-y');
-const SHOW_HELP = args.includes('--help') || args.includes('-h');
-const SHOW_VERSION = args.includes('--version') || args.includes('-v') || args.includes('-V');
-const JSON_ONLY = args.includes('--json');
-const LOCAL_ONLY = DRY_RUN || NO_SEND || JSON_ONLY;
-const ONE_SHOT = args.includes('--scan') || args.includes('--no-interactive') || SHOW_DATA || LOCAL_ONLY;
 
 // --- Colors ---
 const c = {
@@ -822,6 +807,11 @@ async function collectDiagnostics({ quiet = false } = {}) {
       log(c.red(`   ❌ Port ${String(port)} (${name}) — invalid configuration`));
       portResults[port] = false;
       return false;
+    }
+    if (evidence.available === false) {
+      log(c.yellow(`   ⚠️  Port ${port} (${name}) — could not inspect`));
+      portResults[port] = null;
+      return null;
     }
     if (evidence.listening) {
       const owner = evidence.process && evidence.pid
@@ -1959,12 +1949,12 @@ function wrapPrint(text) {
 // Main entry point
 // ============================================================
 async function main() {
-  if (SHOW_VERSION) {
+  if (CLI_MODE.kind === 'version') {
     console.log(`clawfix v${VERSION}`);
     return;
   }
 
-  if (SHOW_HELP) {
+  if (CLI_MODE.kind === 'help') {
     console.log(`
 🦞 ClawFix v${VERSION}: OpenClaw diagnostics and guarded repairs
 
@@ -2016,18 +2006,13 @@ Examples:
     return;
   }
 
-  if ((serverArgIndex >= 0 || inlineServerArg) && !serverArg) {
-    console.error('Missing value for --server');
-    process.exitCode = 2;
-    return;
-  }
-  if (API_URL_ERROR) {
-    console.error(API_URL_ERROR);
-    process.exitCode = 2;
+  if (CLI_MODE.kind === 'error') {
+    console.error(CLI_MODE.error.message);
+    process.exitCode = CLI_MODE.error.exitCode;
     return;
   }
 
-  if (ONE_SHOT) {
+  if (CLI_MODE.kind === 'one-shot') {
     await runOneShotMode();
   } else {
     await runInteractiveMode();

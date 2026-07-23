@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
 
 const read = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
@@ -14,14 +14,30 @@ test('root package is private and version-coherent with the publishable CLI', as
 
   assert.equal(rootPackage.private, true);
   assert.equal(rootPackage.version, cliPackage.version);
+  assert.ok(cliPackage.files.includes('core/'));
+  assert.ok(cliPackage.files.includes('adapters/'));
   assert.match(cliSource, /new URL\(['"]\.\.\/package\.json['"], import\.meta\.url\)/);
   assert.match(cliSource, new RegExp(`return ['"]${cliPackage.version.replaceAll('.', '\\.') }['"]`));
+});
+
+test('CLI has exactly one canonical entrypoint and no stale duplicate', async () => {
+  const cliPackage = await json('cli/package.json');
+  const canonicalEntrypoint = new URL('../cli/bin/clawfix.js', import.meta.url);
+  const staleEntrypoint = new URL('../cli/' + 'index.js', import.meta.url);
+
+  assert.deepEqual(Object.keys(cliPackage.bin), ['clawfix']);
+  assert.equal(cliPackage.bin.clawfix, 'bin/clawfix.js');
+  await access(canonicalEntrypoint);
+  assert.equal((await stat(canonicalEntrypoint)).isFile(), true);
+  await assert.rejects(access(staleEntrypoint), { code: 'ENOENT' });
 });
 
 test('CI packs and allowlist-validates the publishable cli package', async () => {
   const ci = await read('.github/workflows/ci.yml');
   assert.match(ci, /npm pack \.\/cli --dry-run --json/);
   assert.match(ci, /verify-cli-package\.mjs/);
+  assert.match(ci, /node --check cli\/adapters\/process\.js/);
+  assert.match(ci, /node --check cli\/adapters\/openclaw\.js/);
   assert.doesNotMatch(ci, /run: npm pack --dry-run --json/);
 });
 
@@ -38,17 +54,20 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.match(release, /npm run validate:repairs/);
   assert.match(release, /npm audit --omit=dev/);
   assert.match(release, /node --check cli\/bin\/native-diagnostics\.js/);
+  assert.match(release, /node --check cli\/adapters\/process\.js/);
+  assert.match(release, /node --check cli\/adapters\/openclaw\.js/);
   assert.match(release, /verify-cli-package\.mjs/);
   assert.match(release, /npm publish --access public/);
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents the signed 0.9.1 release instead of a stale beta hero', async () => {
+test('landing page presents truthful evidence for the published 0.9.1 seven-file package', async () => {
   const landing = await read('src/landing.js');
   assert.match(landing, /npx clawfix@0\.9\.1/);
   assert.match(landing, /GitHub OIDC publish/);
   assert.match(landing, /npm attestation verified/);
   assert.match(landing, /7-file allowlisted package/);
+  assert.doesNotMatch(landing, /11-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
   assert.match(landing, /releases\/tag\/v0\.9\.1/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
@@ -188,10 +207,15 @@ test('scenario scripts wire fail-closed contracts into every fault and restorati
   assert.match(nativeEvidence, /parseJsonOutput/);
 });
 
-test('CLI package manifest validator rejects additions and omissions', async () => {
+test('next candidate CLI source manifest remains exactly eleven allowlisted files', async () => {
   const { EXPECTED_CLI_FILES, validateCliPackageManifest } = await import('../scripts/verify-cli-package.mjs');
   assert.ok(EXPECTED_CLI_FILES.includes('bin/security.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('bin/workspace.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/modes.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/options.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('adapters/process.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('adapters/openclaw.js'));
+  assert.equal(EXPECTED_CLI_FILES.length, 11);
   const manifest = [{ name: 'clawfix', version: '0.9.0', files: EXPECTED_CLI_FILES.map(path => ({ path })) }];
 
   assert.doesNotThrow(() => validateCliPackageManifest(manifest, { name: 'clawfix', version: '0.9.0' }));

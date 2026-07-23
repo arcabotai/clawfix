@@ -76,6 +76,40 @@ test('native config validation keeps compatible string and object errors', () =>
   });
 });
 
+test('native config validation parses the complete adapter-bounded JSON envelope before projecting fields', () => {
+  const message = `config warning ${'x'.repeat(600_000)} api_key=${`sk-${'a'.repeat(40)}`}`;
+  const stdout = JSON.stringify({ valid: true, warnings: [{ message }], issues: [] });
+  assert.ok(Buffer.byteLength(stdout) > 500_000);
+  assert.ok(Buffer.byteLength(stdout) < 2_000_000);
+
+  const result = collectNativeConfigValidation('/usr/local/bin/openclaw', () => successfulSpawn(stdout));
+
+  assert.equal(result.available, true);
+  assert.equal(result.valid, true);
+  assert.equal(result.warnings.length, 1);
+  assert.ok(result.warnings[0].length <= 2_000);
+  assert.doesNotMatch(result.warnings[0], /sk-testsecret/);
+});
+
+test('native Doctor parses the complete adapter-bounded JSON envelope before projecting fields', () => {
+  const message = `doctor warning ${'y'.repeat(300_000)} token=${`ghp_${'b'.repeat(36)}`}`;
+  const stdout = JSON.stringify({
+    ok: false,
+    checksRun: 1,
+    checksSkipped: 0,
+    findings: [{ checkId: 'large/finding', severity: 'warning', message }],
+  });
+  assert.ok(Buffer.byteLength(stdout) > 250_000);
+  assert.ok(Buffer.byteLength(stdout) < 1_000_000);
+
+  const result = collectNativeDoctor('/usr/local/bin/openclaw', () => successfulSpawn(stdout));
+
+  assert.equal(result.available, true);
+  assert.equal(result.findings.length, 1);
+  assert.ok(result.findings[0].message.length <= 2_000);
+  assert.doesNotMatch(result.findings[0].message, /ghp_testsecret/);
+});
+
 test('native collectors reject partial JSON from timed-out subprocesses', () => {
   const timedOut = {
     status: null,
@@ -139,6 +173,7 @@ test('listening-port collection returns schema evidence for invalid configured p
     });
 
     assert.equal(spawned, false);
+    assert.equal(result.available, false);
     assert.equal(result.listening, false);
     assert.equal(result.valid, false);
     assert.equal(result.finding.checkId, 'config/gateway-port-invalid');
