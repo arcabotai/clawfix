@@ -442,6 +442,11 @@ function fakeDeps(overrides = {}) {
     stat: [],
     readdir: [],
     countMarkdownFiles: [],
+    collectListeningPort: [],
+    collectNativeDoctor: 0,
+    collectNativeConfigValidation: 0,
+    collectNativeStatus: 0,
+    collectNativeSecurityAudit: 0,
   };
 
   const fs = {
@@ -533,6 +538,53 @@ function fakeDeps(overrides = {}) {
         : {
           version: '1.2.3', runtimeCompatible: true, runtimeRequired: '', runtimeCurrent: '', error: '',
         };
+    },
+    collectListeningPort(port, runSync) {
+      calls.collectListeningPort.push(port);
+      if (overrides.collectListeningPort) return overrides.collectListeningPort(port, runSync);
+      const table = overrides.portResults ?? {};
+      return table[port] ?? {
+        valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss',
+      };
+    },
+    collectNativeDoctor(binary, runSync) {
+      calls.collectNativeDoctor += 1;
+      return overrides.nativeDoctor ?? {
+        available: true, exitCode: 0, ok: true, checksRun: 5, checksSkipped: 1, findings: [],
+      };
+    },
+    collectNativeConfigValidation(binary, runSync) {
+      calls.collectNativeConfigValidation += 1;
+      return overrides.nativeConfig ?? {
+        available: true, exitCode: 0, valid: true, path: '/home/fake-user/.openclaw/openclaw.json', warnings: [], errors: [],
+      };
+    },
+    collectNativeStatus(binary, runSync) {
+      calls.collectNativeStatus += 1;
+      return overrides.nativeStatus ?? {
+        available: true,
+        exitCode: 0,
+        runtimeVersion: '1.2.3',
+        gateway: {
+          mode: 'local', reachable: true, misconfigured: false, connectLatencyMs: 5, error: '', authWarning: '',
+        },
+        gatewayService: {
+          label: null, installed: false, loaded: false, externallyManaged: false, status: null, detail: null,
+        },
+        tasks: { total: 0, active: 0, failures: 0 },
+        secretDiagnosticCount: 0,
+      };
+    },
+    collectNativeSecurityAudit(binary, runSync) {
+      calls.collectNativeSecurityAudit += 1;
+      return overrides.nativeSecurity ?? {
+        available: true,
+        exitCode: 0,
+        summary: { critical: 0, warning: 0, info: 0 },
+        findings: [],
+        suppressedFindingCount: 0,
+        secretDiagnosticCount: 0,
+      };
     },
   };
 
@@ -1218,7 +1270,7 @@ test('runDiagnostics gateway/logs/service/workspace step data never carries secr
   }
 });
 
-test('runDiagnostics never emits scan.completed while traversing the gateway/logs/service/workspace bands', async () => {
+test('runDiagnostics never emits scan.completed while traversing the gateway/logs/service/workspace/ports/native bands', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
@@ -1226,7 +1278,10 @@ test('runDiagnostics never emits scan.completed while traversing the gateway/log
     core.runDiagnostics({ revision: 'rev-no-complete', emit: (e) => events.push(e) }),
     DiagnosticsCoreIncompleteError,
   );
-  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace']);
+  // Slice 3B extends the traversed bands to include ports and native — this list supersedes the
+  // Slice 3A version of this test (which stopped at 'workspace') the same way the Slice 2
+  // DiagnosticsCoreIncompleteError message assertion was later superseded by a Slice 3A one below.
+  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native']);
   assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
@@ -1263,6 +1318,379 @@ test('DiagnosticsCoreIncompleteError names the still-unextracted bands after Sli
       assert.match(error.message, /envelope/);
       assert.match(error.message, /ports/);
       assert.match(error.message, /workspace/);
+      return true;
+    },
+  );
+});
+
+// ============================================================
+// Slice 3B — createDiagnosticsCore: ports + native collection bands
+//
+// This slice extends runDiagnostics through the ports collection band (configured gateway port,
+// fixed browser CDP port 18800, fixed browser control port 18791 — the original
+// collectDiagnostics() lines ~781-816 in cli/bin/clawfix.js) and the native collection band
+// (OpenClaw Doctor/config validation/status/security audit — lines ~818-859), gated exactly as
+// the original: Doctor runs whenever a binary exists; config/status/security additionally require
+// the retained version probe's runtimeCompatible === true. Pure issue derivation,
+// envelope/summary assembly, and cancellation/deadline machinery remain deferred — a scan that
+// reaches past the native phase still rejects with DiagnosticsCoreIncompleteError.
+// ============================================================
+
+test('createDiagnosticsCore requires the newly-injected ports/native boundary methods on nativeCollectors', () => {
+  const { deps } = fakeDeps();
+  for (const method of [
+    'collectListeningPort',
+    'collectNativeDoctor',
+    'collectNativeConfigValidation',
+    'collectNativeStatus',
+    'collectNativeSecurityAudit',
+  ]) {
+    const nativeCollectors = { ...deps.nativeCollectors };
+    delete nativeCollectors[method];
+    assert.throws(() => createDiagnosticsCore({ ...deps, nativeCollectors }), TypeError, `missing ${method} must throw`);
+  }
+  assert.doesNotThrow(() => createDiagnosticsCore(deps));
+});
+
+test('runDiagnostics ports phase probes the configured gateway port plus the fixed browser CDP (18800) and browser control (18791) ports', async () => {
+  const { deps, calls } = fakeDeps({ config: { gateway: { port: 4321 }, env: {} } });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ports-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.deepEqual(calls.collectListeningPort, [4321, 18800, 18791]);
+  const portsStep = findStep(events, 'ports');
+  assert.ok(portsStep);
+  assert.equal(portsStep.label, 'Checking port availability');
+  assert.equal(portsStep.data.gateway.port, 4321);
+  assert.equal(portsStep.data.browserCdp.port, 18800);
+  assert.equal(portsStep.data.browserControl.port, 18791);
+});
+
+test('runDiagnostics ports phase falls back to the default gateway port (18789) when unconfigured, matching the gateway phase default', async () => {
+  const { deps, calls } = fakeDeps({ config: { gateway: {}, env: {} } });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ports-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.deepEqual(calls.collectListeningPort, [18789, 18800, 18791]);
+  const portsStep = findStep(events, 'ports');
+  assert.equal(portsStep.data.gateway.port, 18789);
+  const gatewayStep = findStep(events, 'gateway');
+  assert.equal(gatewayStep.data.port, portsStep.data.gateway.port);
+});
+
+test('runDiagnostics ports phase preserves true/false/null listening tri-state and owner metadata without collapsing indeterminate to available', async () => {
+  const { deps } = fakeDeps({
+    config: { gateway: { port: 4321 }, env: {} },
+    portResults: {
+      4321: {
+        valid: true, available: true, listening: true, process: 'openclaw', pid: 555, collector: 'lsof',
+      },
+      18800: {
+        valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss',
+      },
+      18791: {
+        valid: true,
+        available: false,
+        listening: null,
+        process: null,
+        pid: null,
+        collector: null,
+        error: 'Could not inspect listening port; lsof: no trustworthy result; ss: no trustworthy result',
+      },
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ports-3', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const portsStep = findStep(events, 'ports');
+  assert.equal(portsStep.data.gateway.listening, true);
+  assert.equal(portsStep.data.gateway.available, true);
+  assert.equal(portsStep.data.gateway.process, 'openclaw');
+  assert.equal(portsStep.data.gateway.pid, 555);
+  assert.equal(portsStep.data.gateway.collector, 'lsof');
+  assert.equal(portsStep.data.browserCdp.listening, false);
+  assert.equal(portsStep.data.browserCdp.available, true);
+  assert.equal(
+    portsStep.data.browserControl.listening,
+    null,
+    'indeterminate must remain null — never collapsed to true/false/available',
+  );
+  assert.equal(portsStep.data.browserControl.available, false);
+});
+
+test('runDiagnostics ports phase preserves invalid-configuration evidence including the finding, without treating it as available', async () => {
+  const finding = {
+    checkId: 'config/gateway-port-invalid',
+    severity: 'error',
+    path: 'gateway.port',
+    message: 'Gateway port must be an integer between 1 and 65535; received 4321',
+  };
+  const { deps } = fakeDeps({
+    config: { gateway: { port: 4321 }, env: {} },
+    portResults: {
+      4321: {
+        valid: false, available: false, listening: false, process: null, pid: null, collector: null, finding,
+      },
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ports-4', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const portsStep = findStep(events, 'ports');
+  assert.equal(portsStep.data.gateway.valid, false);
+  assert.equal(portsStep.data.gateway.available, false);
+  assert.deepEqual(portsStep.data.gateway.finding, finding);
+});
+
+test('runDiagnostics native phase runs Doctor whenever a binary exists and runs config/status/security when the version probe is runtime-compatible', async () => {
+  const { deps, calls } = fakeDeps({
+    nativeDoctor: {
+      available: true, exitCode: 0, ok: true, checksRun: 7, checksSkipped: 2, findings: [{ checkId: 'x' }],
+    },
+    nativeConfig: {
+      available: true, exitCode: 0, valid: true, path: '/x/openclaw.json', warnings: [], errors: [],
+    },
+    nativeStatus: {
+      available: true,
+      exitCode: 0,
+      runtimeVersion: '1.2.3',
+      gateway: {
+        mode: 'local', reachable: true, misconfigured: false, connectLatencyMs: 5, error: '', authWarning: '',
+      },
+      gatewayService: {
+        label: null, installed: false, loaded: false, externallyManaged: false, status: null, detail: null,
+      },
+      tasks: { total: 0, active: 0, failures: 0 },
+      secretDiagnosticCount: 0,
+    },
+    nativeSecurity: {
+      available: true,
+      exitCode: 0,
+      summary: { critical: 1, warning: 2, info: 3 },
+      findings: [{ checkId: 'sec' }],
+      suppressedFindingCount: 0,
+      secretDiagnosticCount: 0,
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-native-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.equal(calls.collectNativeDoctor, 1);
+  assert.equal(calls.collectNativeConfigValidation, 1);
+  assert.equal(calls.collectNativeStatus, 1);
+  assert.equal(calls.collectNativeSecurityAudit, 1);
+
+  const nativeStep = findStep(events, 'native');
+  assert.ok(nativeStep);
+  assert.equal(nativeStep.label, 'Running OpenClaw native health checks');
+  assert.deepEqual(nativeStep.data, {
+    doctor: {
+      available: true, checksRun: 7, checksSkipped: 2, findingCount: 1,
+    },
+    config: { available: true, valid: true },
+    status: { available: true, reachable: true },
+    security: {
+      available: true, critical: 1, warning: 2, info: 3,
+    },
+  });
+});
+
+test('runDiagnostics native phase reports the fail-closed defaults and calls no native collector when no OpenClaw binary was found', async () => {
+  const { deps, calls } = fakeDeps({
+    openclawBinFound: false,
+    existingPaths: new Set(['/home/fake-user/.openclaw']),
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-native-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.equal(calls.collectNativeDoctor, 0);
+  assert.equal(calls.collectNativeConfigValidation, 0);
+  assert.equal(calls.collectNativeStatus, 0);
+  assert.equal(calls.collectNativeSecurityAudit, 0);
+  const nativeStep = findStep(events, 'native');
+  assert.deepEqual(nativeStep.data, {
+    doctor: {
+      available: false, checksRun: 0, checksSkipped: 0, findingCount: 0,
+    },
+    config: { available: false, valid: null },
+    status: { available: false, reachable: null },
+    security: {
+      available: false, critical: 0, warning: 0, info: 0,
+    },
+  });
+});
+
+test('runDiagnostics native phase runs Doctor but gates config/status/security to zero calls unless runtimeCompatible is exactly true', async () => {
+  const { deps, calls } = fakeDeps({
+    collectOpenClawVersion: () => ({
+      version: '0.1.0',
+      runtimeCompatible: 'truthy-but-invalid',
+      runtimeRequired: '>=20.0.0',
+      runtimeCurrent: '18.0.0',
+      error: 'Node.js >=20.0.0 is required (current: 18.0.0)',
+    }),
+    nativeDoctor: {
+      available: true, exitCode: 0, ok: false, checksRun: 3, checksSkipped: 0, findings: [],
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-native-3', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.equal(calls.collectNativeDoctor, 1, 'Doctor runs regardless of runtime compatibility, as long as a binary exists');
+  assert.equal(calls.collectNativeConfigValidation, 0);
+  assert.equal(calls.collectNativeStatus, 0);
+  assert.equal(calls.collectNativeSecurityAudit, 0);
+  const nativeStep = findStep(events, 'native');
+  assert.deepEqual(nativeStep.data.doctor, {
+    available: true, checksRun: 3, checksSkipped: 0, findingCount: 0,
+  });
+  assert.deepEqual(nativeStep.data.config, { available: false, valid: null });
+  assert.deepEqual(nativeStep.data.status, { available: false, reachable: null });
+  assert.deepEqual(nativeStep.data.security, {
+    available: false, critical: 0, warning: 0, info: 0,
+  });
+});
+
+test('runDiagnostics ports/native step data are frozen, JSON-safe, and never leak raw finding messages or command error text', async () => {
+  const { deps } = fakeDeps({
+    nativeSecurity: {
+      available: true,
+      exitCode: 0,
+      summary: { critical: 1, warning: 0, info: 0 },
+      findings: [{
+        checkId: 'sec', source: 'openclaw-security', severity: 'critical', title: 'Leaked secret', message: 'super-secret-detail-XYZ', path: '/etc/shadow', fixHint: 'rotate it',
+      }],
+      suppressedFindingCount: 0,
+      secretDiagnosticCount: 0,
+    },
+    nativeConfig: {
+      available: true,
+      exitCode: 0,
+      valid: false,
+      path: '/x',
+      warnings: [],
+      errors: [{ kind: 'schema', path: 'gateway.port', message: 'raw-config-error-detail-ABC' }],
+    },
+    portResults: {
+      18791: {
+        valid: true,
+        available: false,
+        listening: null,
+        process: null,
+        pid: null,
+        collector: null,
+        error: 'raw-port-probe-error-DEF',
+      },
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-native-4', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const portsStep = findStep(events, 'ports');
+  const nativeStep = findStep(events, 'native');
+  assert.equal(Object.isFrozen(portsStep.data), true);
+  assert.equal(Object.isFrozen(nativeStep.data), true);
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes('super-secret-detail-XYZ'), 'native security finding detail must not leak into the semantic event');
+  assert.ok(!serialized.includes('raw-config-error-detail-ABC'), 'native config error detail must not leak into the semantic event');
+  assert.ok(!serialized.includes('raw-port-probe-error-DEF'), 'raw port collector error text must not leak into the semantic event');
+});
+
+test('runDiagnostics never emits scan.completed while traversing the ports/native bands, still emits exactly one NOT_IMPLEMENTED terminal', async () => {
+  const { deps } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-3b-no-complete', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), [
+    'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native',
+  ]);
+  const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+});
+
+test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the collectListeningPort boundary throws unexpectedly', async () => {
+  // collectListeningPort (cli/bin/native-diagnostics.js) is designed to fail closed and never
+  // throw for any real command outcome — this exercises the injected-boundary contract itself
+  // misbehaving (not a realistic collectListeningPort failure mode), distinct from the fail-closed
+  // defaults exercised above.
+  const boom = new Error('lsof exploded');
+  const { deps } = fakeDeps();
+  deps.nativeCollectors.collectListeningPort = () => { throw boom; };
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ports-boundary-fail', emit: (e) => events.push(e) }),
+    (error) => error === boom,
+  );
+  const terminal = events[events.length - 1];
+  assert.equal(terminal.type, 'scan.error');
+  assert.equal(terminal.error.code, 'INTERNAL');
+  assert.equal(terminal.error.message, 'lsof exploded');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'ports'), false);
+});
+
+test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the collectNativeDoctor boundary throws unexpectedly', async () => {
+  // Likewise, collectNativeDoctor always returns a fail-closed { available: false, ... } shape in
+  // practice; this covers the injected-boundary-throws case the core must still handle safely.
+  const boom = new Error('doctor exploded');
+  const { deps } = fakeDeps();
+  deps.nativeCollectors.collectNativeDoctor = () => { throw boom; };
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-native-boundary-fail', emit: (e) => events.push(e) }),
+    (error) => error === boom,
+  );
+  const terminal = events[events.length - 1];
+  assert.equal(terminal.type, 'scan.error');
+  assert.equal(terminal.error.code, 'INTERNAL');
+  assert.equal(terminal.error.message, 'doctor exploded');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'native'), false);
+});
+
+test('DiagnosticsCoreIncompleteError names only issues/envelope/cancellation/deadlines/shim work as pending after Slice 3B, having implemented ports and native', async () => {
+  const { deps } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-msg-3b' }),
+    (error) => {
+      assert.ok(error instanceof DiagnosticsCoreIncompleteError);
+      assert.equal(error.code, 'NOT_IMPLEMENTED');
+      assert.match(error.message, /issue/i);
+      assert.match(error.message, /envelope/);
+      assert.match(error.message, /cancellation|deadline/);
+      assert.match(error.message, /shim/);
       return true;
     },
   );

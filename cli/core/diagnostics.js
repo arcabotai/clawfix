@@ -84,7 +84,14 @@ export function createDiagnosticsCore({
   }
   requireBoundary(clock, 'clock', ['now']);
   requireFunction(createHash, 'createHash');
-  requireBoundary(nativeCollectors, 'nativeCollectors', ['collectOpenClawVersion']);
+  requireBoundary(nativeCollectors, 'nativeCollectors', [
+    'collectOpenClawVersion',
+    'collectListeningPort',
+    'collectNativeDoctor',
+    'collectNativeConfigValidation',
+    'collectNativeStatus',
+    'collectNativeSecurityAudit',
+  ]);
 
   async function discover() {
     const home = os.homedir();
@@ -118,7 +125,81 @@ export function createDiagnosticsCore({
       : { version: '', runtimeCompatible: false, error: 'OpenClaw binary not found' };
 
     return {
-      osName, osVersion, osArch, nodeVersion, npmVersion, hostHash, ocVersion: versionProbe.version,
+      osName,
+      osVersion,
+      osArch,
+      nodeVersion,
+      npmVersion,
+      hostHash,
+      ocVersion: versionProbe.version,
+      // Retained (not emitted in the system scan.step, which only surfaces ocVersion) for the
+      // native band's runtime-compatibility gate below, and for later Task 4 slices' envelope.
+      runtimeCompatible: versionProbe.runtimeCompatible,
+      runtimeRequired: versionProbe.runtimeRequired ?? null,
+      runtimeCurrent: versionProbe.runtimeCurrent ?? null,
+    };
+  }
+
+  function collectPorts(gatewayPort) {
+    // Sync spawnSync-backed collectors (lsof/ss); each retains its own intrinsic process timeout
+    // (5s) and is not wrapped with any cancellation/deadline machinery in this slice.
+    return {
+      gateway: { port: gatewayPort, ...nativeCollectors.collectListeningPort(gatewayPort) },
+      browserCdp: { port: 18800, ...nativeCollectors.collectListeningPort(18800) },
+      browserControl: { port: 18791, ...nativeCollectors.collectListeningPort(18791) },
+    };
+  }
+
+  function projectPortEvidence(evidence) {
+    const projected = {
+      port: evidence.port,
+      valid: evidence.valid === true,
+      available: evidence.available === true,
+      listening: evidence.listening === true ? true : evidence.listening === false ? false : null,
+      process: typeof evidence.process === 'string' ? evidence.process : null,
+      pid: Number.isSafeInteger(evidence.pid) ? evidence.pid : null,
+      endpoint: typeof evidence.endpoint === 'string' ? evidence.endpoint : null,
+      collector: evidence.collector === 'lsof' || evidence.collector === 'ss'
+        ? evidence.collector
+        : null,
+    };
+    if (evidence.finding && typeof evidence.finding === 'object') {
+      projected.finding = {
+        checkId: typeof evidence.finding.checkId === 'string' ? evidence.finding.checkId : '',
+        severity: typeof evidence.finding.severity === 'string' ? evidence.finding.severity : '',
+        path: typeof evidence.finding.path === 'string' ? evidence.finding.path : '',
+        message: typeof evidence.finding.message === 'string' ? evidence.finding.message : '',
+      };
+    }
+    return projected;
+  }
+
+  function collectNative(openclawBin, runtimeCompatible) {
+    // collectNativeDoctor/collectNativeConfigValidation/collectNativeStatus/
+    // collectNativeSecurityAudit (cli/bin/native-diagnostics.js) are sync spawnSync-backed
+    // collectors that fail closed to a fixed default shape and never throw for any real command
+    // outcome — the core relies on that contract rather than adding defensive try/catch here.
+    const nativeDoctor = openclawBin
+      ? nativeCollectors.collectNativeDoctor(openclawBin)
+      : {
+        available: false, checksRun: 0, checksSkipped: 0, findings: [],
+      };
+
+    const canRunNativeEvidence = Boolean(openclawBin) && runtimeCompatible === true;
+    const nativeConfig = canRunNativeEvidence
+      ? nativeCollectors.collectNativeConfigValidation(openclawBin)
+      : {
+        available: false, valid: null, warnings: [], errors: [],
+      };
+    const nativeStatus = canRunNativeEvidence
+      ? nativeCollectors.collectNativeStatus(openclawBin)
+      : { available: false };
+    const nativeSecurity = canRunNativeEvidence
+      ? nativeCollectors.collectNativeSecurityAudit(openclawBin)
+      : { available: false, findings: [] };
+
+    return {
+      nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
     };
   }
 
@@ -389,12 +470,55 @@ export function createDiagnosticsCore({
         },
       }));
 
+      const ports = collectPorts(gateway.gatewayPort);
+      emit?.(scanStep({
+        revision,
+        phase: 'ports',
+        label: 'Checking port availability',
+        data: {
+          gateway: projectPortEvidence(ports.gateway),
+          browserCdp: projectPortEvidence(ports.browserCdp),
+          browserControl: projectPortEvidence(ports.browserControl),
+        },
+      }));
+
+      const {
+        nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
+      } = collectNative(openclawBin, system.runtimeCompatible);
+      emit?.(scanStep({
+        revision,
+        phase: 'native',
+        label: 'Running OpenClaw native health checks',
+        data: {
+          doctor: {
+            available: nativeDoctor.available,
+            checksRun: nativeDoctor.checksRun ?? 0,
+            checksSkipped: nativeDoctor.checksSkipped ?? 0,
+            findingCount: Array.isArray(nativeDoctor.findings) ? nativeDoctor.findings.length : 0,
+          },
+          config: {
+            available: nativeConfig.available,
+            valid: nativeConfig.valid ?? null,
+          },
+          status: {
+            available: nativeStatus.available,
+            reachable: nativeStatus.available ? (nativeStatus.gateway?.reachable ?? null) : null,
+          },
+          security: {
+            available: nativeSecurity.available,
+            critical: nativeSecurity.available ? (nativeSecurity.summary?.critical ?? 0) : 0,
+            warning: nativeSecurity.available ? (nativeSecurity.summary?.warning ?? 0) : 0,
+            info: nativeSecurity.available ? (nativeSecurity.summary?.info ?? 0) : 0,
+          },
+        },
+      }));
+
       const incomplete = new DiagnosticsCoreIncompleteError(
         'cli/core/diagnostics.js now implements the discover, system, config, gateway, logs, '
-        + 'service, and workspace phases (ClawFix Task 4, Slices 2-3A). The ports and native '
-        + 'collection bands, pure issue derivation, envelope/summary assembly, and '
-        + 'cancellation/deadline machinery are implemented in later Task 4 slices (3B-6) and are '
-        + 'not available yet.',
+        + 'service, workspace, ports, and native collection bands (ClawFix Task 4, Slices 2-3B). '
+        + 'Pure issue derivation, envelope/summary assembly, and cancellation/deadline machinery '
+        + 'remain pending for later Task 4 slices (4-6), and the cli/bin/clawfix.js shim/renderer '
+        + 'swap-in lands in Slice 7; none of that is available yet.',
       );
       emitTerminal(scanError({ revision, error: { message: incomplete.message, code: 'NOT_IMPLEMENTED' } }));
       throw incomplete;
