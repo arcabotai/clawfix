@@ -577,3 +577,41 @@ test('interactive rescan re-runs diagnostics after declining upload', async () =
     await sandbox.cleanup();
   }
 });
+
+test('entrypoint is thin mode dispatch and plain interface owns session event text rendering', async () => {
+  const [entry, plainSource] = await Promise.all([
+    readFile(new URL('../cli/bin/clawfix.js', import.meta.url), 'utf8'),
+    readFile(new URL('../cli/interfaces/plain.js', import.meta.url), 'utf8'),
+  ]);
+  assert.match(entry, /import \{ runPlainInterface \} from '\.\.\/interfaces\/plain\.js'/);
+  assert.match(entry, /CLI_MODE\.kind === 'one-shot'/);
+  assert.match(entry, /CLI_MODE\.kind === 'interactive'/);
+  assert.match(entry, /runPlainInterface\(\{/);
+  assert.doesNotMatch(entry, /BUILTIN_FIXES|deriveIssues|collectDiagnosticsLegacy|createDiagnosticsCore/);
+  assert.match(plainSource, /export async function runPlainInterface/);
+  assert.match(plainSource, /export function formatSessionEvent/);
+  assert.match(plainSource, /export function renderSessionEvent/);
+  assert.match(plainSource, /createDiagnosticsCore|createSessionController|createRepairEngine/);
+
+  const { formatSessionEvent, renderSessionEvent } = await import('../cli/interfaces/plain.js');
+  assert.equal(
+    formatSessionEvent({ type: 'scan.step', phase: 'discover', label: 'Looking for OpenClaw', revision: 'r1' }),
+    'scan step [discover] Looking for OpenClaw',
+  );
+  assert.equal(
+    formatSessionEvent({ type: 'session.scan.committed', revision: 'r2', findingsCount: 3, error: null }),
+    'session scan committed revision=r2 findings=3',
+  );
+  assert.equal(
+    formatSessionEvent({
+      type: 'session.scan.committed',
+      revision: 'r3',
+      findingsCount: 0,
+      error: { message: 'OpenClaw not found on this system.' },
+    }),
+    'session scan failed revision=r3: OpenClaw not found on this system.',
+  );
+  const lines = [];
+  renderSessionEvent({ type: 'session.message', role: 'assistant', text: 'hello' }, line => lines.push(line));
+  assert.deepEqual(lines, ['assistant: hello']);
+});

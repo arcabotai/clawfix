@@ -90,6 +90,7 @@ jobs:
         run: |
           node --check cli/bin/clawfix.js
           node --check cli/bin/native-diagnostics.js
+          node --check cli/interfaces/plain.js
           node --check cli/adapters/process.js
           node --check cli/adapters/openclaw.js
           node --check scripts/blaxel-contracts.mjs
