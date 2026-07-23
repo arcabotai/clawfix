@@ -1,0 +1,27 @@
+{
+  "name": "@clawfix/tui",
+  "version": "0.0.0-private",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "solid-js": "1.9.12",
+    "web-tree-sitter": "0.25.10"
+  },
+  "optionalDependencies": {
+    "@opentui/core-linux-x64": "0.4.5"
+  },
+  "devDependencies": {
+    "@types/bun": "1.2.21",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": "1.2.21"
+  }
+}
