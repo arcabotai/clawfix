@@ -4,6 +4,7 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Added OpenTUI conversation UI: transcript, composer, privacy consent dialog, repair approval/diff dialogs, and session-bridge wiring to offline analyzer (remote optional behind consent).
 - Added constrained agent API v2 (`POST /api/v2/agent/messages`) that can stream explanations and propose only client-supplied repair IDs — never shell.
 - Added CLI remote analyzer adapter (`cli/adapters/remote-analyzer.js`) for agent v2 SSE with fragmented-frame parsing, inbound validation, local repair-ID revalidation, consent-gated uploads, and network-boundary projection/redaction via `cli/core/privacy.js`.
 
