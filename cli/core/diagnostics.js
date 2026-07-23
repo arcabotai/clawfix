@@ -4,9 +4,9 @@ import { scanError, scanStarted, scanStep } from './events.js';
 
 // ClawFix Task 4 extracts collectDiagnostics() (cli/bin/clawfix.js) into this console-free,
 // transport-neutral, cancellable core in small vertical RED-GREEN slices. This module currently
-// implements ONLY the discover, system, and config collection phases (Slice 2). The gateway,
-// logs, service, workspace, ports, and native collection bands, pure issue derivation,
-// envelope/summary assembly, and cancellation/deadline machinery land in later slices (3-6).
+// implements the discover, system, config, gateway, logs, service, and workspace collection
+// phases (Slices 2-3A). The ports and native collection bands, pure issue derivation,
+// envelope/summary assembly, and cancellation/deadline machinery land in later slices (3B-6).
 // Nothing in cli/bin/clawfix.js imports this module yet, so its incompleteness does not affect
 // the running CLI.
 export class DiagnosticsCoreIncompleteError extends Error {
@@ -73,8 +73,11 @@ export function createDiagnosticsCore({
   nativeCollectors,
 } = {}) {
   requireFunction(redact, 'redact');
-  requireBoundary(fs, 'fs', ['exists', 'readJson']);
-  requireBoundary(openclaw, 'openclaw', ['findExecutable', 'npmVersion', 'version']);
+  requireBoundary(fs, 'fs', ['exists', 'readJson', 'stat', 'readdir', 'countMarkdownFiles']);
+  requireBoundary(openclaw, 'openclaw', [
+    'findExecutable', 'npmVersion', 'version',
+    'gatewayStatusText', 'gatewayProcesses', 'readFileTail', 'serviceManagerState',
+  ]);
   requireBoundary(os, 'os', ['homedir', 'platform', 'release', 'arch', 'hostname', 'nodeVersion']);
   if (env === null || typeof env !== 'object' || Array.isArray(env)) {
     throw new TypeError('env must be an object');
@@ -91,7 +94,7 @@ export function createDiagnosticsCore({
         ? join(home, '.config', 'openclaw')
         : null;
     const openclawBin = (await openclaw.findExecutable()) || '';
-    return { openclawDir, openclawBin };
+    return { home, openclawDir, openclawBin };
   }
 
   async function collectSystem(openclawBin) {
@@ -116,6 +119,136 @@ export function createDiagnosticsCore({
 
     return {
       osName, osVersion, osArch, nodeVersion, npmVersion, hostHash, ocVersion: versionProbe.version,
+    };
+  }
+
+  async function collectGateway(config, openclawBin) {
+    let gatewayStatus = 'unknown';
+    if (openclawBin) {
+      gatewayStatus = await openclaw.gatewayStatusText({ executable: openclawBin, timeoutMs: 5000 }) || 'could not check';
+    }
+    const gatewayPort = config?.gateway?.port || 18789;
+    const gatewayPid = await openclaw.gatewayProcesses({ timeoutMs: 5000 });
+    const statusLine = (
+      gatewayStatus.split('\n').find((line) => /runtime:|listening|running|stopped|not running/i.test(line))
+      || gatewayStatus.split('\n')[0]
+    ).trim();
+    const running = /running.*pid|state active|listening/i.test(gatewayStatus);
+    return {
+      gatewayStatus, gatewayPort, gatewayPid, statusLine, running,
+    };
+  }
+
+  async function collectLogs(openclawDir) {
+    const logPath = openclawDir ? join(openclawDir, 'logs', 'gateway.log') : null;
+    const errLogPath = openclawDir ? join(openclawDir, 'logs', 'gateway.err.log') : null;
+    let errorLogs = '';
+    let stderrLogs = '';
+    let gatewayLogTail = '';
+    let logSizeMB = 0;
+    let errLogSizeMB = 0;
+
+    if (logPath && await fs.exists(logPath)) {
+      try {
+        const logStat = await fs.stat(logPath);
+        logSizeMB = Math.round(logStat.size / 1024 / 1024);
+        const tailContent = (await openclaw.readFileTail(logPath, {
+          maxLines: 500,
+          maxBytes: 1024 * 1024,
+        })).text;
+        const lines = tailContent.split('\n');
+        errorLogs = lines
+          .filter((line) => /error|warn|fail|crash|EADDRINUSE|EACCES/i.test(line))
+          .slice(-30)
+          .join('\n');
+        gatewayLogTail = lines
+          .filter((line) => /signal SIGTERM|listening.*PID|config change detected.*reload|update available/i.test(line))
+          .slice(-20)
+          .join('\n');
+      } catch {
+        // fail-open: matches the original collector's swallow-and-continue behavior
+      }
+    }
+
+    if (errLogPath && await fs.exists(errLogPath)) {
+      try {
+        const errStat = await fs.stat(errLogPath);
+        errLogSizeMB = Math.round(errStat.size / 1024 / 1024);
+        stderrLogs = (await openclaw.readFileTail(errLogPath, {
+          maxLines: 200,
+          maxBytes: 1024 * 1024,
+        })).text;
+      } catch {
+        // fail-open
+      }
+    }
+
+    return {
+      errorLogs,
+      stderrLogs,
+      gatewayLogTail,
+      logSizeMB,
+      errLogSizeMB,
+      hasErrors: errorLogs.length > 0,
+      errorLineCount: errorLogs ? errorLogs.split('\n').length : 0,
+      hasGatewaySignals: gatewayLogTail.length > 0,
+      gatewaySignalLineCount: gatewayLogTail ? gatewayLogTail.split('\n').length : 0,
+      hasStderr: stderrLogs.trim().length > 0,
+    };
+  }
+
+  async function collectWorkspace(config, injectedEnv, home, openclawDir) {
+    const workspaceDir = config?.agents?.defaults?.workspace || '';
+    let mdFiles = 0;
+    let memoryFiles = 0;
+    let hasSoul = false;
+    let hasAgents = false;
+    let workspaceExists = false;
+
+    if (workspaceDir && await fs.exists(workspaceDir)) {
+      workspaceExists = true;
+      hasSoul = await fs.exists(join(workspaceDir, 'SOUL.md'));
+      hasAgents = await fs.exists(join(workspaceDir, 'AGENTS.md'));
+
+      try {
+        mdFiles = await fs.countMarkdownFiles(workspaceDir);
+      } catch {
+        // fail-open
+      }
+
+      const memDir = join(workspaceDir, 'memory');
+      if (await fs.exists(memDir)) {
+        try {
+          const memEntries = await fs.readdir(memDir);
+          memoryFiles = memEntries.filter((name) => name.endsWith('.md')).length;
+        } catch {
+          // fail-open
+        }
+      }
+    }
+
+    const plugins = Object.entries(config?.plugins?.entries || {}).map(([name, pluginConfig]) => ({
+      name,
+      enabled: pluginConfig?.enabled !== false,
+    }));
+    const expectedCodexHome = openclawDir
+      ? join(openclawDir, 'codex-home')
+      : join(home, '.openclaw', 'codex-home');
+    const shellCodexHomeSet = Boolean(injectedEnv.CODEX_HOME);
+
+    return {
+      workspaceDir,
+      workspaceExists,
+      mdFiles,
+      memoryFiles,
+      hasSoul,
+      hasAgents,
+      plugins,
+      codexHome: {
+        expected: expectedCodexHome,
+        shellSet: shellCodexHomeSet,
+        matchesExpected: injectedEnv.CODEX_HOME === expectedCodexHome,
+      },
     };
   }
 
@@ -153,7 +286,7 @@ export function createDiagnosticsCore({
     };
 
     try {
-      const { openclawDir, openclawBin } = await discover();
+      const { home, openclawDir, openclawBin } = await discover();
 
       if (!openclawBin && !openclawDir) {
         const message = 'OpenClaw not found on this system.';
@@ -184,7 +317,7 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const { redactedConfig } = await readConfig(openclawDir);
+      const { config, redactedConfig } = await readConfig(openclawDir);
       emit?.(scanStep({
         revision,
         phase: 'config',
@@ -192,11 +325,75 @@ export function createDiagnosticsCore({
         data: { configExists: redactedConfig !== null },
       }));
 
+      const gateway = await collectGateway(config, openclawBin);
+      emit?.(scanStep({
+        revision,
+        phase: 'gateway',
+        label: 'Checking gateway status',
+        data: {
+          port: gateway.gatewayPort,
+          statusLine: gateway.statusLine,
+          pid: gateway.gatewayPid || null,
+          running: gateway.running,
+        },
+      }));
+
+      const logs = await collectLogs(openclawDir);
+      emit?.(scanStep({
+        revision,
+        phase: 'logs',
+        label: 'Reading recent logs',
+        data: {
+          logSizeMB: logs.logSizeMB,
+          errLogSizeMB: logs.errLogSizeMB,
+          hasErrors: logs.hasErrors,
+          errorLineCount: logs.errorLineCount,
+          hasGatewaySignals: logs.hasGatewaySignals,
+          gatewaySignalLineCount: logs.gatewaySignalLineCount,
+          hasStderr: logs.hasStderr,
+        },
+      }));
+
+      const serviceHealth = await openclaw.serviceManagerState({ timeoutMs: 5000 });
+      emit?.(scanStep({
+        revision,
+        phase: 'service',
+        label: 'Checking service health',
+        data: {
+          manager: serviceHealth.manager ?? null,
+          state: serviceHealth.state ?? null,
+          subState: serviceHealth.subState ?? null,
+          pid: serviceHealth.pid ?? null,
+          runs: serviceHealth.runs ?? null,
+          nRestarts: serviceHealth.nRestarts ?? null,
+          lastExitCode: serviceHealth.lastExitCode ?? null,
+          uptimeStr: serviceHealth.uptimeStr ?? null,
+          uptimeSeconds: serviceHealth.uptimeSeconds ?? null,
+        },
+      }));
+
+      const workspace = await collectWorkspace(config, env, home, openclawDir);
+      emit?.(scanStep({
+        revision,
+        phase: 'workspace',
+        label: 'Checking workspace',
+        data: {
+          path: workspace.workspaceDir || null,
+          exists: workspace.workspaceExists,
+          mdFiles: workspace.mdFiles,
+          memoryFiles: workspace.memoryFiles,
+          hasSoul: workspace.hasSoul,
+          hasAgents: workspace.hasAgents,
+          plugins: workspace.plugins,
+          codexHome: workspace.codexHome,
+        },
+      }));
+
       const incomplete = new DiagnosticsCoreIncompleteError(
-        'cli/core/diagnostics.js only implements the discover, system, and config phases so far '
-        + '(ClawFix Task 4, Slice 2). The gateway, logs, service, workspace, ports, and native '
+        'cli/core/diagnostics.js now implements the discover, system, config, gateway, logs, '
+        + 'service, and workspace phases (ClawFix Task 4, Slices 2-3A). The ports and native '
         + 'collection bands, pure issue derivation, envelope/summary assembly, and '
-        + 'cancellation/deadline machinery are implemented in later Task 4 slices (3-6) and are '
+        + 'cancellation/deadline machinery are implemented in later Task 4 slices (3B-6) and are '
         + 'not available yet.',
       );
       emitTerminal(scanError({ revision, error: { message: incomplete.message, code: 'NOT_IMPLEMENTED' } }));

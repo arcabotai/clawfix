@@ -435,6 +435,13 @@ function fakeDeps(overrides = {}) {
     npmVersion: 0,
     version: 0,
     collectOpenClawVersion: 0,
+    gatewayStatusText: [],
+    gatewayProcesses: [],
+    readFileTail: [],
+    serviceManagerState: [],
+    stat: [],
+    readdir: [],
+    countMarkdownFiles: [],
   };
 
   const fs = {
@@ -445,6 +452,23 @@ function fakeDeps(overrides = {}) {
     async readJson(path) {
       calls.readJson.push(path);
       return configJson;
+    },
+    async stat(path) {
+      calls.stat.push(path);
+      const sizes = overrides.fileSizes ?? {};
+      if (!(path in sizes)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return { size: sizes[path] };
+    },
+    async readdir(path) {
+      calls.readdir.push(path);
+      const dirs = overrides.dirEntries ?? {};
+      if (!(path in dirs)) throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+      return dirs[path];
+    },
+    async countMarkdownFiles(path) {
+      calls.countMarkdownFiles.push(path);
+      if (overrides.countMarkdownFilesThrows) throw new Error('countMarkdownFiles exploded');
+      return overrides.mdFileCount ?? 0;
     },
   };
   const openclaw = {
@@ -461,6 +485,24 @@ function fakeDeps(overrides = {}) {
       return overrides.versionResult === undefined
         ? { status: 0, stdout: '1.2.3\n', stderr: '' }
         : overrides.versionResult;
+    },
+    async gatewayStatusText(options) {
+      calls.gatewayStatusText.push(options);
+      if (overrides.gatewayStatusTextThrows) throw overrides.gatewayStatusTextThrows;
+      return overrides.gatewayStatusText ?? 'runtime: ok\nrunning, pid 4242';
+    },
+    async gatewayProcesses(options) {
+      calls.gatewayProcesses.push(options);
+      return overrides.gatewayProcesses ?? '';
+    },
+    async readFileTail(path, options) {
+      calls.readFileTail.push({ path, options });
+      const tails = overrides.fileTails ?? {};
+      return { text: tails[path] ?? '' };
+    },
+    async serviceManagerState(options) {
+      calls.serviceManagerState.push(options);
+      return overrides.serviceManagerState ?? {};
     },
   };
   const os = {
@@ -780,4 +822,448 @@ test('runDiagnostics does not attempt a second terminal event if the emit sink t
   // Exactly one attempt at the terminal event (scan.error), even though the sink threw while
   // delivering it — no fallback/replacement second emission was attempted.
   assert.deepEqual(delivered, ['scan.started', 'scan.error']);
+});
+
+// ============================================================
+// Slice 3A — createDiagnosticsCore: gateway / logs / service / workspace collection bands
+//
+// This slice extends runDiagnostics through the gateway, logs, service, and workspace
+// collection bands (the original collectDiagnostics() lines ~643-779 in cli/bin/clawfix.js).
+// Ports, native collectors, pure issue derivation, envelope/summary assembly, and
+// cancellation/deadline machinery remain deferred to later Task 4 slices — a scan that reaches
+// past the workspace phase still rejects with DiagnosticsCoreIncompleteError.
+// ============================================================
+
+function findStep(events, phase) {
+  return events.find((e) => e.type === 'scan.step' && e.phase === phase);
+}
+
+test('createDiagnosticsCore requires the newly-injected gateway/logs/service/workspace boundary methods', () => {
+  const { deps } = fakeDeps();
+  assert.throws(() => createDiagnosticsCore({
+    ...deps, openclaw: { findExecutable: deps.openclaw.findExecutable, npmVersion: deps.openclaw.npmVersion, version: deps.openclaw.version },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    openclaw: { ...deps.openclaw, gatewayStatusText: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    openclaw: { ...deps.openclaw, gatewayProcesses: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    openclaw: { ...deps.openclaw, readFileTail: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    openclaw: { ...deps.openclaw, serviceManagerState: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    fs: { exists: deps.fs.exists, readJson: deps.fs.readJson },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    fs: { ...deps.fs, stat: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    fs: { ...deps.fs, readdir: undefined },
+  }), TypeError);
+  assert.throws(() => createDiagnosticsCore({
+    ...deps,
+    fs: { ...deps.fs, countMarkdownFiles: undefined },
+  }), TypeError);
+  assert.doesNotThrow(() => createDiagnosticsCore(deps));
+});
+
+test('runDiagnostics gateway phase reports the default port, status line, and pid facts from raw config', async () => {
+  const { deps, calls } = fakeDeps({
+    config: { gateway: {}, env: { SECRET: 'shh' } },
+    gatewayStatusText: 'startup log line\nrunning, pid 4242 listening on 18789',
+    gatewayProcesses: '4242',
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-gw-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const gatewayStep = findStep(events, 'gateway');
+  assert.ok(gatewayStep);
+  assert.equal(gatewayStep.label, 'Checking gateway status');
+  assert.equal(gatewayStep.data.port, 18789, 'must fall back to the default port when config.gateway.port is absent');
+  assert.equal(gatewayStep.data.statusLine, 'running, pid 4242 listening on 18789');
+  assert.equal(gatewayStep.data.pid, '4242');
+  assert.equal(gatewayStep.data.running, true);
+
+  assert.deepEqual(calls.gatewayStatusText[0], { executable: '/usr/local/bin/openclaw', timeoutMs: 5000 });
+  assert.deepEqual(calls.gatewayProcesses[0], { timeoutMs: 5000 });
+});
+
+test('runDiagnostics gateway phase honors a configured port and reports a null pid when no process is found', async () => {
+  const { deps } = fakeDeps({
+    config: { gateway: { port: 9999 }, env: {} },
+    gatewayStatusText: 'not running',
+    gatewayProcesses: '',
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-gw-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const gatewayStep = findStep(events, 'gateway');
+  assert.equal(gatewayStep.data.port, 9999);
+  assert.equal(gatewayStep.data.pid, null);
+  assert.equal(gatewayStep.data.running, false);
+});
+
+test('runDiagnostics gateway phase reports an unknown status without calling gatewayStatusText when no binary was found', async () => {
+  const { deps, calls } = fakeDeps({
+    openclawBinFound: false,
+    existingPaths: new Set(['/home/fake-user/.openclaw']),
+    gatewayProcesses: '777',
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-gw-3', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const gatewayStep = findStep(events, 'gateway');
+  assert.equal(gatewayStep.data.statusLine, 'unknown');
+  assert.equal(gatewayStep.data.running, false);
+  // gatewayProcesses is unconditional in the original collector, even with no binary.
+  assert.equal(gatewayStep.data.pid, '777');
+  assert.equal(calls.gatewayStatusText.length, 0);
+});
+
+test('runDiagnostics logs phase reports bounded, rounded size facts and detects gateway-log errors via the original filter', async () => {
+  const logPath = '/home/fake-user/.openclaw/logs/gateway.log';
+  const errLogPath = '/home/fake-user/.openclaw/logs/gateway.err.log';
+  const { deps, calls } = fakeDeps({
+    existingPaths: new Set(['/home/fake-user/.openclaw', '/home/fake-user/.openclaw/openclaw.json', logPath, errLogPath]),
+    fileSizes: { [logPath]: 3 * 1024 * 1024, [errLogPath]: 1024 * 1024 },
+    fileTails: {
+      [logPath]: 'plain line one\nERROR: boom\nsignal SIGTERM\nplain line two',
+      [errLogPath]: 'stderr detail one\nstderr detail two',
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-logs-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const logsStep = findStep(events, 'logs');
+  assert.ok(logsStep);
+  assert.equal(logsStep.label, 'Reading recent logs');
+  assert.equal(logsStep.data.logSizeMB, 3);
+  assert.equal(logsStep.data.errLogSizeMB, 1);
+  assert.equal(logsStep.data.hasErrors, true);
+  assert.equal(logsStep.data.errorLineCount, 1);
+  assert.equal(logsStep.data.hasGatewaySignals, true);
+  assert.equal(logsStep.data.gatewaySignalLineCount, 1);
+  assert.equal(logsStep.data.hasStderr, true);
+
+  assert.equal(calls.readFileTail.length, 2, 'both bounded log tails are collected for later issue/envelope use');
+  assert.deepEqual(calls.readFileTail, [
+    {
+      path: logPath,
+      options: { maxLines: 500, maxBytes: 1024 * 1024 },
+    },
+    {
+      path: errLogPath,
+      options: { maxLines: 200, maxBytes: 1024 * 1024 },
+    },
+  ]);
+  assert.ok(calls.stat.includes(logPath));
+  assert.ok(calls.stat.includes(errLogPath));
+});
+
+test('runDiagnostics logs phase reports hasErrors=false when no gateway-log line matches the error filter', async () => {
+  const logPath = '/home/fake-user/.openclaw/logs/gateway.log';
+  const { deps } = fakeDeps({
+    existingPaths: new Set(['/home/fake-user/.openclaw', '/home/fake-user/.openclaw/openclaw.json', logPath]),
+    fileSizes: { [logPath]: 0 },
+    fileTails: { [logPath]: 'all quiet\nnothing to see here' },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-logs-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const logsStep = findStep(events, 'logs');
+  assert.equal(logsStep.data.hasErrors, false);
+  assert.equal(logsStep.data.errLogSizeMB, 0);
+});
+
+test('runDiagnostics logs phase reports zero sizes and fetches no tail when neither log file exists', async () => {
+  const { deps, calls } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-logs-3', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const logsStep = findStep(events, 'logs');
+  assert.equal(logsStep.data.logSizeMB, 0);
+  assert.equal(logsStep.data.errLogSizeMB, 0);
+  assert.equal(logsStep.data.hasErrors, false);
+  assert.equal(calls.readFileTail.length, 0);
+  assert.equal(calls.stat.length, 0);
+});
+
+test('runDiagnostics service phase reports raw service-manager state facts with nulls for absent fields', async () => {
+  const { deps, calls } = fakeDeps({
+    serviceManagerState: {
+      manager: 'launchd', runs: 5, pid: 999, state: 'running', lastExitCode: 0, uptimeStr: '1:02:03', uptimeSeconds: 3723,
+    },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-svc-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const serviceStep = findStep(events, 'service');
+  assert.ok(serviceStep);
+  assert.equal(serviceStep.label, 'Checking service health');
+  assert.deepEqual(serviceStep.data, {
+    manager: 'launchd', runs: 5, pid: 999, state: 'running', subState: null, nRestarts: null, lastExitCode: 0, uptimeStr: '1:02:03', uptimeSeconds: 3723,
+  });
+  assert.deepEqual(calls.serviceManagerState[0], { timeoutMs: 5000 });
+});
+
+test('runDiagnostics service phase reports all-null facts when the service manager is unavailable', async () => {
+  const { deps } = fakeDeps({ serviceManagerState: {} });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-svc-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const serviceStep = findStep(events, 'service');
+  assert.deepEqual(serviceStep.data, {
+    manager: null, runs: null, pid: null, state: null, subState: null, nRestarts: null, lastExitCode: null, uptimeStr: null, uptimeSeconds: null,
+  });
+});
+
+test('runDiagnostics workspace phase reports path resolution, markdown/memory counts, SOUL/AGENTS existence, plugin facts, and derived CODEX_HOME facts', async () => {
+  const workspaceDir = '/home/fake-user/workspace';
+  const soulPath = `${workspaceDir}/SOUL.md`;
+  const agentsPath = `${workspaceDir}/AGENTS.md`;
+  const memoryDir = `${workspaceDir}/memory`;
+  const { deps, calls } = fakeDeps({
+    config: {
+      agents: { defaults: { workspace: workspaceDir } },
+      plugins: { entries: { codex: { enabled: true }, disabledPlugin: { enabled: false } } },
+      env: {},
+    },
+    existingPaths: new Set([
+      '/home/fake-user/.openclaw', '/home/fake-user/.openclaw/openclaw.json',
+      workspaceDir, soulPath, agentsPath, memoryDir,
+    ]),
+    mdFileCount: 12,
+    dirEntries: { [memoryDir]: ['2026-07-20.md', '2026-07-21.md', 'notes.txt'] },
+    env: { CODEX_HOME: '/home/fake-user/.openclaw/codex-home' },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ws-1', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const workspaceStep = findStep(events, 'workspace');
+  assert.ok(workspaceStep);
+  assert.equal(workspaceStep.label, 'Checking workspace');
+  assert.equal(workspaceStep.data.path, workspaceDir);
+  assert.equal(workspaceStep.data.exists, true);
+  assert.equal(workspaceStep.data.mdFiles, 12);
+  assert.equal(workspaceStep.data.memoryFiles, 2, 'only .md entries in the memory dir are counted');
+  assert.equal(workspaceStep.data.hasSoul, true);
+  assert.equal(workspaceStep.data.hasAgents, true);
+  assert.deepEqual(workspaceStep.data.plugins, [
+    { name: 'codex', enabled: true },
+    { name: 'disabledPlugin', enabled: false },
+  ]);
+  assert.deepEqual(workspaceStep.data.codexHome, {
+    expected: '/home/fake-user/.openclaw/codex-home',
+    shellSet: true,
+    matchesExpected: true,
+  });
+  assert.ok(calls.countMarkdownFiles.includes(workspaceDir));
+  assert.ok(calls.readdir.includes(memoryDir));
+});
+
+test('runDiagnostics workspace phase reports all defaults and performs no workspace-path lookups when no workspace is configured', async () => {
+  const { deps, calls } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ws-2', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const workspaceStep = findStep(events, 'workspace');
+  assert.deepEqual(workspaceStep.data, {
+    path: null,
+    exists: false,
+    mdFiles: 0,
+    memoryFiles: 0,
+    hasSoul: false,
+    hasAgents: false,
+    plugins: [],
+    codexHome: {
+      expected: '/home/fake-user/.openclaw/codex-home',
+      shellSet: false,
+      matchesExpected: false,
+    },
+  });
+  assert.equal(calls.countMarkdownFiles.length, 0);
+  assert.equal(calls.readdir.length, 0);
+});
+
+test('runDiagnostics workspace phase reports exists=false and skips file lookups when the configured workspace path is missing', async () => {
+  const workspaceDir = '/home/fake-user/missing-workspace';
+  const { deps, calls } = fakeDeps({
+    config: { agents: { defaults: { workspace: workspaceDir } }, env: {} },
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ws-3', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const workspaceStep = findStep(events, 'workspace');
+  assert.equal(workspaceStep.data.path, workspaceDir);
+  assert.equal(workspaceStep.data.exists, false);
+  assert.equal(workspaceStep.data.mdFiles, 0);
+  assert.equal(workspaceStep.data.memoryFiles, 0);
+  assert.equal(calls.countMarkdownFiles.length, 0);
+});
+
+test('runDiagnostics workspace phase fails open to zero counts when countMarkdownFiles and readdir throw', async () => {
+  const workspaceDir = '/home/fake-user/workspace';
+  const memoryDir = `${workspaceDir}/memory`;
+  const { deps } = fakeDeps({
+    config: { agents: { defaults: { workspace: workspaceDir } }, env: {} },
+    existingPaths: new Set([
+      '/home/fake-user/.openclaw', '/home/fake-user/.openclaw/openclaw.json', workspaceDir, memoryDir,
+    ]),
+    countMarkdownFilesThrows: true,
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-ws-4', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const workspaceStep = findStep(events, 'workspace');
+  assert.equal(workspaceStep.data.mdFiles, 0);
+  assert.equal(workspaceStep.data.memoryFiles, 0, 'readdir throwing on an existing memory dir must fail open to zero, not crash the scan');
+  assert.equal(workspaceStep.data.hasSoul, false);
+  assert.equal(workspaceStep.data.hasAgents, false);
+});
+
+test('runDiagnostics reports the CODEX_HOME fact from injected env, not from ambient process.env', async () => {
+  const originalCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = '/should-never-be-read';
+  try {
+    const { deps } = fakeDeps({ env: { CODEX_HOME: '/injected/codex-home' } });
+    const core = createDiagnosticsCore(deps);
+    const events = [];
+    await assert.rejects(
+      core.runDiagnostics({ revision: 'rev-codex-env', emit: (e) => events.push(e) }),
+      DiagnosticsCoreIncompleteError,
+    );
+    const workspaceStep = findStep(events, 'workspace');
+    assert.deepEqual(workspaceStep.data.codexHome, {
+      expected: '/home/fake-user/.openclaw/codex-home',
+      shellSet: true,
+      matchesExpected: false,
+    });
+    assert.equal(JSON.stringify(workspaceStep.data).includes('/injected/codex-home'), false);
+  } finally {
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
+  }
+});
+
+test('runDiagnostics gateway/logs/service/workspace step data never carries secrets or the full raw config', async () => {
+  const workspaceDir = '/home/fake-user/workspace';
+  const { deps } = fakeDeps({
+    config: {
+      gateway: { port: 18789 },
+      agents: { defaults: { workspace: workspaceDir } },
+      env: { OPENCLAW_TOKEN: 'super-secret-token-value' },
+    },
+    redact: (value) => ({ ...value, redacted: true }),
+  });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-secrets', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  const serialized = JSON.stringify(events);
+  assert.ok(!serialized.includes('super-secret-token-value'), 'no scan.step data may leak a config secret');
+  assert.ok(!serialized.includes('OPENCLAW_TOKEN'), 'no scan.step data may leak a raw config key');
+  for (const event of events) {
+    if (event.type === 'scan.step') {
+      assert.equal(Object.isFrozen(event.data), true);
+    }
+  }
+});
+
+test('runDiagnostics never emits scan.completed while traversing the gateway/logs/service/workspace bands', async () => {
+  const { deps } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-no-complete', emit: (e) => events.push(e) }),
+    DiagnosticsCoreIncompleteError,
+  );
+  assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace']);
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
+});
+
+test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the gateway boundary throws unexpectedly', async () => {
+  const boom = new Error('gateway status probe exploded');
+  const { deps } = fakeDeps({ gatewayStatusTextThrows: boom });
+  const core = createDiagnosticsCore(deps);
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-gw-boundary-fail', emit: (e) => events.push(e) }),
+    (error) => error === boom,
+  );
+  assert.deepEqual(events.map((e) => e.type), ['scan.started', 'scan.step', 'scan.step', 'scan.step', 'scan.error']);
+  const terminal = events[events.length - 1];
+  assert.equal(terminal.error.code, 'INTERNAL');
+  assert.equal(terminal.error.message, 'gateway status probe exploded');
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'gateway'), false);
+});
+
+test('DiagnosticsCoreIncompleteError names the still-unextracted bands after Slice 3A (ports, native, envelope) and no longer blocks on gateway/logs/service/workspace', async () => {
+  const { deps } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  await assert.rejects(
+    core.runDiagnostics({ revision: 'rev-msg' }),
+    (error) => {
+      assert.ok(error instanceof DiagnosticsCoreIncompleteError);
+      assert.equal(error.code, 'NOT_IMPLEMENTED');
+      assert.match(error.message, /gateway/);
+      assert.match(error.message, /native/);
+      assert.match(error.message, /envelope/);
+      assert.match(error.message, /ports/);
+      assert.match(error.message, /workspace/);
+      return true;
+    },
+  );
 });
