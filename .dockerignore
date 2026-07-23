@@ -8,3 +8,5 @@ cli/*
 !cli/bin/
 cli/bin/*
 !cli/bin/security.js
+!scripts/
+!scripts/install.sh

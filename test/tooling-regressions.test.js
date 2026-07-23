@@ -152,6 +152,7 @@ test('Docker build is strict, least-privilege, and copies only runtime inputs', 
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /COPY --chown=node:node src \.\/src/);
   assert.match(dockerfile, /COPY --chown=node:node cli\/bin\/security\.js \.\/cli\/bin\/security\.js/);
+  assert.match(dockerfile, /COPY --chown=node:node scripts\/install\.sh \.\/scripts\/install\.sh/);
   assert.match(dockerfile, /RUN node -e .*import\('\.\/src\/server\.js'\)/);
   assert.match(dockerfile, /^HEALTHCHECK /m);
   assert.match(dockerfile, /process\.env\.PORT \|\| '3001'/);
@@ -159,7 +160,7 @@ test('Docker build is strict, least-privilege, and copies only runtime inputs', 
   assert.match(ci, /127\.0\.0\.1:3210\/api\/health/);
   assert.doesNotMatch(dockerfile, /^COPY \. \.$/m);
   assert.match(dockerignore, /^\*$/m);
-  for (const allowed of ['!package.json', '!package-lock.json', '!src/**', '!cli/bin/security.js']) {
+  for (const allowed of ['!package.json', '!package-lock.json', '!src/**', '!cli/bin/security.js', '!scripts/install.sh']) {
     assert.match(dockerignore, new RegExp(`^${allowed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
   }
   assert.match(ci, /docker run .*clawfix:ci/);
