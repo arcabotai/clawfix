@@ -29,6 +29,7 @@ import { openClawAdapter } from '../adapters/openclaw.js';
 import { createDiagnosticsCore } from '../core/diagnostics.js';
 import { resolveCliMode } from '../core/modes.js';
 import { parseCliOptions } from '../core/options.js';
+import { dedupeFindingsForDisplay, normalizeFindings } from '../core/findings.js';
 
 // --- Config ---
 const CLI_OPTIONS = parseCliOptions(process.argv.slice(2), process.env);
@@ -451,10 +452,7 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
       const scanResult = await scanFn();
       if (scanResult) {
         const allAfter = mergeIssues(scanResult.issues, scanResult.serverIssues);
-        const stillPresent = allAfter.some(i =>
-          (i.id && i.id === issue.id) ||
-          ((i.title || i.text || '').toLowerCase().includes((issue.title || issue.text || '').toLowerCase().slice(0, 20)))
-        );
+        const stillPresent = allAfter.some(candidate => candidate.id === issue.id);
 
         if (stillPresent) {
           console.log(` ${c.yellow('⚠️  issue may persist until gateway fully restarts')}`);
@@ -484,7 +482,7 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
  */
 async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   const allIssues = mergeIssues(issues, serverIssues);
-  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.id] && !BUILTIN_FIXES[i.id].informational);
+  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.repairId] && !BUILTIN_FIXES[i.repairId].informational);
 
   if (fixable.length === 0) {
     console.log(c.dim('  No auto-fixable issues found.'));
@@ -494,13 +492,13 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   console.log('');
   console.log(c.bold(`  Fix plan (${fixable.length} issues):`));
   for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.id];
+    const fix = BUILTIN_FIXES[issue.repairId];
     const risk = fix.risk === 'low' ? c.green('low') : c.yellow(fix.risk);
     console.log(`    ${c.blue('🔧')} [${risk}] ${issue.title || issue.text}`);
     console.log(`       ${c.dim(fix.description)}`);
   }
 
-  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.id]?.informational);
+  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.repairId]?.informational);
   if (skipped.length) {
     console.log('');
     for (const issue of skipped) {
@@ -508,7 +506,7 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
     }
   }
 
-  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.id] && !i.fix);
+  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.repairId] && !i.fix);
   if (noFix.length) {
     console.log('');
     for (const issue of noFix) {
@@ -537,7 +535,7 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   let applied = 0;
 
   for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.id];
+    const fix = BUILTIN_FIXES[issue.repairId];
     try {
       const result = await fix.apply(config);
       for (const change of result.changes) {
@@ -1636,7 +1634,7 @@ async function runInteractiveMode() {
         console.log(c.red(`  No issue #${fixMatch[1]}. Use ${c.cyan('issues')} to see the list.`));
       } else {
         const issue = allIssues[idx];
-        const builtinFix = BUILTIN_FIXES[issue.id];
+        const builtinFix = BUILTIN_FIXES[issue.repairId];
 
         if (builtinFix) {
           // Safe builtin fix — backup, apply, restart, verify
@@ -1828,35 +1826,15 @@ function renderHelp() {
 }
 
 /**
- * Merge local CLI-detected issues with server-detected known issues.
- * Server issues (from known-issues.js pattern matching) include fix scripts.
- * Local issues are simpler {severity, text} objects.
- * Deduplicate by rough text matching.
+ * Normalize every provenance into the stable Finding contract, then deduplicate for display only.
+ * Repair authorization remains attached exclusively to explicit local/native mappings.
  */
 function mergeIssues(localIssues, serverIssues) {
-  const merged = [];
-  const seen = new Set();
-
-  // Server issues first (they have fix scripts)
-  if (serverIssues) {
-    for (const si of serverIssues) {
-      merged.push(si);
-      seen.add((si.title || '').toLowerCase());
-    }
-  }
-
-  // Then local issues that aren't duplicated
-  for (const li of localIssues) {
-    const key = (li.text || '').toLowerCase();
-    const isDup = [...seen].some(s =>
-      s.includes(key.slice(0, 20)) || key.includes(s.slice(0, 20))
-    );
-    if (!isDup) {
-      merged.push(li);
-    }
-  }
-
-  return merged;
+  return dedupeFindingsForDisplay(normalizeFindings({
+    localIssues,
+    serverFindings: serverIssues,
+    knownRepairIds: Object.keys(BUILTIN_FIXES),
+  }));
 }
 
 function severityColor(sev) {

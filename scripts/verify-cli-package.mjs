@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-// This is the next source candidate allowlist (13 files); published clawfix@0.9.1 contains 7 files.
+// This is the next source candidate allowlist (14 files); published clawfix@0.9.1 contains 7 files.
 export const EXPECTED_CLI_FILES = Object.freeze([
   'LICENSE',
   'README.md',
@@ -15,6 +15,7 @@ export const EXPECTED_CLI_FILES = Object.freeze([
   'bin/workspace.js',
   'core/diagnostics.js',
   'core/events.js',
+  'core/findings.js',
   'core/modes.js',
   'core/options.js',
   'package.json',
