@@ -10,9 +10,10 @@
 
 import { readFileSync } from 'node:fs';
 import { readFile, writeFile, copyFile, rename, access, readdir, stat } from 'node:fs/promises';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { homedir, platform, arch, release, hostname } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import {
@@ -2085,6 +2086,33 @@ function wrapPrint(text) {
 // ============================================================
 // Main entry point
 // ============================================================
+async function runOpenTuiMode() {
+  const cliDir = dirname(fileURLToPath(import.meta.url));
+  const tuiEntry = join(cliDir, '../tui/src/main.tsx');
+  let bunPath = '';
+  try {
+    bunPath = execSync('command -v bun', { encoding: 'utf8' }).trim();
+  } catch {
+    console.error(c.red('OpenTUI mode requires Bun 1.2.21+ on PATH.'));
+    console.error(c.dim('Install: https://bun.sh  then: cd cli/tui && bun install && bun run src/main.tsx'));
+    process.exitCode = 2;
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(bunPath, [tuiEntry], {
+      stdio: 'inherit',
+      env: process.env,
+      cwd: join(cliDir, '../tui'),
+    });
+    child.on('error', reject);
+    child.on('exit', code => {
+      process.exitCode = code ?? 1;
+      resolve();
+    });
+  });
+}
+
 async function main() {
   if (CLI_MODE.kind === 'version') {
     console.log(`clawfix v${VERSION}`);
@@ -2098,7 +2126,8 @@ async function main() {
 Usage: npx clawfix [options]
 
 Modes:
-  (default)            Interactive TUI: scan, review, fix, and optional chat
+  (default)            Interactive readline session: scan, review, fix, optional chat
+  --tui                Experimental OpenTUI session UI (requires Bun)
   --scan               One-shot scan (legacy mode)
   --no-interactive     Same as --scan
 
@@ -2135,7 +2164,8 @@ Security:
   • Source code: https://github.com/arcabotai/clawfix
 
 Examples:
-  npx clawfix                  # Interactive TUI (default)
+  npx clawfix                  # Interactive session (default)
+  npx clawfix --tui            # Experimental OpenTUI (Bun required)
   npx clawfix --scan           # One-shot scan + repair guidance
   npx clawfix --dry-run        # See what data would be collected
   npx clawfix --yes --scan     # Auto-send for CI/scripting
@@ -2146,6 +2176,11 @@ Examples:
   if (CLI_MODE.kind === 'error') {
     console.error(CLI_MODE.error.message);
     process.exitCode = CLI_MODE.error.exitCode;
+    return;
+  }
+
+  if (CLI_MODE.kind === 'tui') {
+    await runOpenTuiMode();
     return;
   }
 

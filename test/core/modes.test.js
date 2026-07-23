@@ -51,3 +51,8 @@ test('resolveCliMode selects one-shot then interactive as final dispatch choices
   assert.deepEqual(resolveCliMode(parseCliOptions(['--scan'], {})), { kind: 'one-shot' });
   assert.deepEqual(resolveCliMode(parseCliOptions([], {})), { kind: 'interactive' });
 });
+
+test('resolveCliMode selects experimental OpenTUI before interactive defaults', () => {
+  assert.deepEqual(resolveCliMode(parseCliOptions(['--tui'], {})), { kind: 'tui' });
+  assert.equal(parseCliOptions(['--tui'], {}).tui, true);
+});

@@ -1,7 +1,7 @@
 import { createCliRenderer, type CliRenderer, type CliRendererConfig } from "@opentui/core"
 import { render } from "@opentui/solid"
 
-import { App, createFakeSession, type TuiSession } from "./app"
+import { App, createFakeSession, type SessionSource, type TuiSessionView } from "./app"
 
 const EXIT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 
@@ -111,10 +111,16 @@ function waitForRendererExit(renderer: CliRenderer): Promise<LifecycleResult> {
   })
 }
 
-export function startTui(session: TuiSession): Promise<LifecycleResult | void> {
+export function startTui(input?: TuiSessionView | SessionSource): Promise<LifecycleResult | void> {
+  const isSource = Boolean(input && typeof (input as SessionSource).subscribe === "function")
   return ownRendererLifecycle({
     createRenderer: () => createCliRenderer(rendererConfig),
-    mount: renderer => render(() => <App session={session} />, renderer),
+    mount: renderer => render(
+      () => isSource
+        ? <App source={input as SessionSource} />
+        : <App session={(input as TuiSessionView) ?? createFakeSession()} />,
+      renderer,
+    ),
     run: waitForRendererExit,
   })
 }
