@@ -4,6 +4,8 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Added constrained agent API v2 (`POST /api/v2/agent/messages`) that can stream explanations and propose only client-supplied repair IDs — never shell.
+
 - Added a verified bash installer at `/install` that downloads a pinned package tarball, checks integrity, and installs into `~/.clawfix` + `~/.local/bin` without global npm.
 - Made download-verify-bash the recommended install path on the landing page and README. `npx` remains supported.
 

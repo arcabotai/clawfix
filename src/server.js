@@ -9,6 +9,7 @@ import { resultsRouter } from './routes/results.js';
 import { paymentRouter } from './routes/payment.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { chatRouter } from './routes/chat.js';
+import { agentV2Router } from './routes/agent-v2.js';
 import { landingRouter } from './landing.js';
 import { initDB } from './db.js';
 import { APP_VERSION } from './version.js';
@@ -49,6 +50,7 @@ app.use((req, res, next) => {
 app.use('/api', diagnoseRouter);
 app.use('/api', healthRouter);
 app.use('/api', chatRouter);     // POST /api/chat — interactive TUI chat
+app.use('/api', agentV2Router);  // POST /api/v2/agent/messages — constrained agent protocol
 app.use('/api', paymentRouter);  // POST /api/checkout, /api/webhook/lemonsqueezy
 app.use('/', paymentRouter);    // GET /pay/:fixId — payment page
 app.use('/', webhooksRouter);   // POST /webhooks/resend — inbound email

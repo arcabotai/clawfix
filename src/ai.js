@@ -58,6 +58,8 @@ export async function requestAI({
   messages,
   stream = false,
   responseFormat,
+  tools,
+  toolChoice,
   config = getAIConfig(),
   fetchImpl = fetch,
 }) {
@@ -82,6 +84,11 @@ export async function requestAI({
     messages,
   };
 
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools;
+    if (toolChoice != null) body.tool_choice = toolChoice;
+  }
+
   if (responseFormat) {
     body.response_format = responseFormat;
     if (config.provider === 'openrouter') {
@@ -104,13 +111,17 @@ export async function requestAI({
   if (stream) return response;
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || content.trim() === '') {
+  const message = data.choices?.[0]?.message || {};
+  const content = typeof message.content === 'string' ? message.content : '';
+  const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+
+  if ((!content || content.trim() === '') && toolCalls.length === 0) {
     throw new Error('AI API returned no message content');
   }
 
   return {
     content,
+    toolCalls,
     usage: data.usage || null,
   };
 }
