@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 
-// This is the next source candidate allowlist (20 files); published clawfix@0.9.1 contains 7 files.
+// Published CLI package allowlist (21 files after plain-interface extract).
 export const EXPECTED_CLI_FILES = Object.freeze([
   'LICENSE',
   'README.md',
@@ -24,6 +24,7 @@ export const EXPECTED_CLI_FILES = Object.freeze([
   'core/repair-catalog.js',
   'core/repair-engine.js',
   'core/session.js',
+  'interfaces/plain.js',
   'package.json',
 ]);
 

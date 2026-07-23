@@ -152,7 +152,7 @@ test('dedupeFindingsForDisplay never merges distinct titles even when one contai
 });
 
 test('the real CLI authorizes repairs only through normalized repairId identity', async () => {
-  const source = await readFile(new URL('../cli/bin/clawfix.js', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../cli/interfaces/plain.js', import.meta.url), 'utf8');
   assert.match(source, /dedupeFindingsForDisplay\(normalizeFindings\(\{/);
   assert.match(source, /BUILTIN_FIXES\[issue\.repairId\]/);
   assert.match(source, /candidate\.id === issue\.id/);

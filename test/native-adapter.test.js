@@ -17,7 +17,8 @@ const diagnosticsSource = () => readFile(
   new URL('../cli/bin/native-diagnostics.js', import.meta.url),
   'utf8',
 );
-const cliSource = () => readFile(new URL('../cli/bin/clawfix.js', import.meta.url), 'utf8');
+const diagnosticsCoreSource = () => readFile(new URL('../cli/core/diagnostics.js', import.meta.url), 'utf8');
+const plainInterfaceSource = () => readFile(new URL('../cli/interfaces/plain.js', import.meta.url), 'utf8');
 
 test('native diagnostics uses the process adapter instead of child_process directly', async () => {
   const source = await diagnosticsSource();
@@ -163,12 +164,17 @@ test('ss status 1 is not trusted as confirmation that a port is absent', () => {
 });
 
 test('CLI does not present indeterminate port evidence as available', async () => {
-  const source = await cliSource();
-  const unavailableBranch = source.indexOf('evidence.available === false');
-  const listenerBranch = source.indexOf('if (evidence.listening)');
-  assert.ok(unavailableBranch >= 0 && unavailableBranch < listenerBranch);
-  assert.match(source.slice(unavailableBranch, listenerBranch), /could not inspect/);
-  assert.match(source.slice(unavailableBranch, listenerBranch), /portResults\[port\] = null/);
+  const source = await diagnosticsCoreSource();
+  // projectPortEvidence only marks available when the collector reports available === true.
+  assert.match(source, /available:\s*evidence\.available === true/);
+  assert.match(source, /listening:\s*evidence\.listening === true \? true : evidence\.listening === false \? false : null/);
+  // Competing-port issues require a positive listening observation, never indeterminate evidence.
+  assert.match(source, /ports\.gateway\?\.listening === true/);
+  // Plain interface injects native collectors into the diagnostic core; it does not
+  // implement port probe decision logic itself.
+  const plain = await plainInterfaceSource();
+  assert.match(plain, /createDiagnosticsCore/);
+  assert.doesNotMatch(plain, /portResults\[port\]\s*=\s*null|could not inspect the gateway port/i);
 });
 
 test('listening-port collection rejects failed lsof output and keeps evidence indeterminate when ss also fails', () => {

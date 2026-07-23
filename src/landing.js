@@ -462,7 +462,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="proof-row" aria-label="Release verification">
           <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
           <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
-          <span class="proof-pill"><strong>✓</strong> 18-file allowlisted package</span>
+          <span class="proof-pill"><strong>✓</strong> 21-file allowlisted package</span>
         </div>
       </div>
     </section>

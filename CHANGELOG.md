@@ -4,6 +4,8 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Extracted the Node 18+ plain interface into `cli/interfaces/plain.js` and thinned `cli/bin/clawfix.js` to mode dispatch only.
+- Expanded the published CLI package allowlist to 21 files (`interfaces/plain.js`).
 - Added OpenTUI conversation UI: transcript, composer, privacy consent dialog, repair approval/diff dialogs, and session-bridge wiring to offline analyzer (remote optional behind consent).
 - Added constrained agent API v2 (`POST /api/v2/agent/messages`) that can stream explanations and propose only client-supplied repair IDs — never shell.
 - Added CLI remote analyzer adapter (`cli/adapters/remote-analyzer.js`) for agent v2 SSE with fragmented-frame parsing, inbound validation, local repair-ID revalidation, consent-gated uploads, and network-boundary projection/redaction via `cli/core/privacy.js`.

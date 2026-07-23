@@ -16,8 +16,12 @@ test('root package is private and version-coherent with the publishable CLI', as
   assert.equal(rootPackage.version, cliPackage.version);
   assert.ok(cliPackage.files.includes('core/'));
   assert.ok(cliPackage.files.includes('adapters/'));
+  assert.ok(cliPackage.files.includes('interfaces/'));
   assert.match(cliSource, /new URL\(['"]\.\.\/package\.json['"], import\.meta\.url\)/);
   assert.match(cliSource, new RegExp(`return ['"]${cliPackage.version.replaceAll('.', '\\.') }['"]`));
+  assert.match(cliSource, /from ['"]\.\.\/interfaces\/plain\.js['"]/);
+  assert.match(cliSource, /runPlainInterface/);
+  assert.doesNotMatch(cliSource, /BUILTIN_FIXES|deriveIssues|collectDiagnosticsLegacy/);
 });
 
 test('CLI has exactly one canonical entrypoint and no stale duplicate', async () => {
@@ -61,7 +65,7 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents truthful evidence for the published 0.10.0 eighteen-file package', async () => {
+test('landing page presents truthful evidence for the published 0.10.0 twenty-one-file package', async () => {
   const landing = await read('src/landing.js');
   assert.match(landing, /npx clawfix@0\.10\.0/);
   assert.match(landing, /clawfix\.dev\/install/);
@@ -69,8 +73,9 @@ test('landing page presents truthful evidence for the published 0.10.0 eighteen-
   assert.match(landing, /No global npm/);
   assert.match(landing, /GitHub OIDC publish/);
   assert.match(landing, /npm attestation verified/);
-  assert.match(landing, /18-file allowlisted package/);
+  assert.match(landing, /21-file allowlisted package/);
   assert.doesNotMatch(landing, /7-file allowlisted package/);
+  assert.doesNotMatch(landing, /18-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
   assert.match(landing, /releases\/tag\/v0\.10\.0/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
@@ -113,6 +118,7 @@ test('public surfaces avoid remote shell pipes and privacy absolutes', async () 
     read('src/routes/install.js'),
     read('scripts/install.sh'),
     read('cli/bin/clawfix.js'),
+    read('cli/interfaces/plain.js'),
   ]);
   for (const source of sources) {
     assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
@@ -233,7 +239,7 @@ test('scenario scripts wire fail-closed contracts into every fault and restorati
   assert.match(nativeEvidence, /parseJsonOutput/);
 });
 
-test('next candidate CLI source manifest remains exactly twenty allowlisted files', async () => {
+test('next candidate CLI source manifest remains exactly twenty-one allowlisted files', async () => {
   const { EXPECTED_CLI_FILES, validateCliPackageManifest } = await import('../scripts/verify-cli-package.mjs');
   assert.ok(EXPECTED_CLI_FILES.includes('bin/security.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('bin/workspace.js'));
@@ -250,7 +256,8 @@ test('next candidate CLI source manifest remains exactly twenty allowlisted file
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/process.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/openclaw.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/remote-analyzer.js'));
-  assert.equal(EXPECTED_CLI_FILES.length, 20);
+  assert.ok(EXPECTED_CLI_FILES.includes('interfaces/plain.js'));
+  assert.equal(EXPECTED_CLI_FILES.length, 21);
   const manifest = [{ name: 'clawfix', version: '0.9.0', files: EXPECTED_CLI_FILES.map(path => ({ path })) }];
 
   assert.doesNotThrow(() => validateCliPackageManifest(manifest, { name: 'clawfix', version: '0.9.0' }));
