@@ -12,7 +12,7 @@ import {
   scanWarning,
   SCAN_PHASES,
 } from '../cli/core/events.js';
-import { createDiagnosticsCore, deriveIssues, DiagnosticsCoreIncompleteError } from '../cli/core/diagnostics.js';
+import { createDiagnosticsCore, deriveIssues } from '../cli/core/diagnostics.js';
 
 // ============================================================
 // Slice 1 — event contracts (cli/core/events.js)
@@ -412,13 +412,10 @@ test('createScanCoordinator.begin defaults makeId to a real UUID generator when 
 // ============================================================
 // Slice 2 — createDiagnosticsCore: discover / system / config phases only
 //
-// Task 4 is being extracted in vertical slices. This slice implements ONLY the discover, system,
-// and config collection phases plus the OpenClaw-not-found terminal outcome. The gateway, logs,
-// service, workspace, ports, and native collection bands, pure issue derivation, envelope/summary
-// assembly, and cancellation/deadline machinery are NOT implemented yet (Slices 3-6) — a scan that
-// finds OpenClaw rejects with an explicit DiagnosticsCoreIncompleteError instead of silently
-// pretending to produce a real result. Nothing calls this module from cli/bin/clawfix.js yet, so
-// this incompleteness has no effect on the running CLI.
+// Task 4 was extracted in vertical slices. These tests began with discover/system/config and now
+// keep those phase-level contracts while the same core continues through collection, derivation,
+// envelope assembly, and successful completion. Nothing calls this module from cli/bin/clawfix.js
+// yet, so the running CLI remains unchanged until the shim slice.
 // ============================================================
 
 function fakeDeps(overrides = {}) {
@@ -426,7 +423,9 @@ function fakeDeps(overrides = {}) {
   const openclawDir = overrides.openclawDir ?? '/home/fake-user/.openclaw';
   const configPath = `${openclawDir}/openclaw.json`;
   const existingPaths = overrides.existingPaths ?? new Set([openclawDir, configPath]);
-  const configJson = overrides.config ?? { gateway: { port: 18789 }, env: { SECRET: 'shh' } };
+  const configJson = overrides.config === undefined
+    ? { gateway: { port: 18789 }, env: { SECRET: 'shh' } }
+    : overrides.config;
 
   const calls = {
     exists: [],
@@ -590,6 +589,7 @@ function fakeDeps(overrides = {}) {
 
   return {
     deps: {
+      version: overrides.coreVersion ?? '0.9.1',
       redact, fs, openclaw, os, env, clock, createHash: injectedCreateHash, nativeCollectors,
     },
     calls,
@@ -626,10 +626,7 @@ test('runDiagnostics runs the discover phase from injected boundaries only, then
   const { deps, calls } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-1', emit: (e) => events.push(e) });
 
   assert.equal(events[0].type, 'scan.started');
   assert.equal(events[0].revision, 'rev-1');
@@ -673,10 +670,7 @@ test('runDiagnostics runs the system phase using injected os, createHash, npmVer
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-3', emit: (e) => events.push(e) });
 
   const systemStep = events.find((e) => e.type === 'scan.step' && e.phase === 'system');
   assert.ok(systemStep);
@@ -698,17 +692,14 @@ test('runDiagnostics falls back to an unresolved version probe when no OpenClaw 
   const { deps, calls } = fakeDeps({ openclawBinFound: false, existingPaths: new Set(['/home/fake-user/.openclaw']) });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-3b', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-3b', emit: (e) => events.push(e) });
   const systemStep = events.find((e) => e.type === 'scan.step' && e.phase === 'system');
   assert.equal(systemStep.data.ocVersion, '');
   assert.equal(calls.version, 0);
   assert.equal(calls.collectOpenClawVersion, 0);
 });
 
-test('runDiagnostics runs the config phase, deletes the top-level env block, and redacts exactly once via the injected redactor', async () => {
+test('runDiagnostics redacts the sanitized config once and the final diagnostic envelope once', async () => {
   const seenByRedact = [];
   const { deps } = fakeDeps({
     config: { gateway: { port: 4321 }, env: { OPENCLAW_TOKEN: 'shh' }, agents: { defaults: { workspace: '/w' } } },
@@ -716,14 +707,13 @@ test('runDiagnostics runs the config phase, deletes the top-level env block, and
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-4', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-4', emit: (e) => events.push(e) });
 
-  assert.equal(seenByRedact.length, 1);
+  assert.equal(seenByRedact.length, 2);
   assert.equal('env' in seenByRedact[0], false, 'the top-level config env block must be deleted before redaction');
   assert.deepEqual(seenByRedact[0].gateway, { port: 4321 });
+  assert.equal(seenByRedact[1].config.redacted, true, 'the envelope receives the already-sanitized config');
+  assert.equal(seenByRedact[1].version, '0.9.1');
 
   const configStep = events.find((e) => e.type === 'scan.step' && e.phase === 'config');
   assert.ok(configStep);
@@ -731,17 +721,24 @@ test('runDiagnostics runs the config phase, deletes the top-level env block, and
   assert.equal(configStep.data.configExists, true);
 });
 
-test('runDiagnostics reports configExists=false and skips redaction when no config file is present', async () => {
+test('runDiagnostics reports configExists=false and still redacts the final envelope once', async () => {
   const { deps, redactCalls } = fakeDeps({ existingPaths: new Set(['/home/fake-user/.openclaw']) });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-5', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-5', emit: (e) => events.push(e) });
   const configStep = events.find((e) => e.type === 'scan.step' && e.phase === 'config');
   assert.equal(configStep.data.configExists, false);
-  assert.equal(redactCalls.length, 0);
+  assert.equal(redactCalls.length, 1);
+  assert.equal(redactCalls[0].config, null);
+});
+
+test('runDiagnostics preserves null when an existing config file cannot be parsed', async () => {
+  const { deps, redactCalls } = fakeDeps({ config: null });
+  const result = await createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-null-config' });
+  assert.equal(redactCalls.length, 1, 'only the final envelope is redacted');
+  assert.equal(result.diagnostic.config, null);
+  assert.equal(result.diagnostic.openclaw.configExists, false);
+  assert.deepEqual(result.summary.config, { loaded: false, label: 'not found' });
 });
 
 test('runDiagnostics rejects an invalid redactor return and emits exactly one INTERNAL terminal', async () => {
@@ -768,10 +765,7 @@ test('runDiagnostics never writes to the console or stdout/stderr directly', asy
   process.stdout.write = (chunk) => { writes.push(['stdout.write', chunk]); return true; };
   try {
     const found = fakeDeps();
-    await assert.rejects(
-      createDiagnosticsCore(found.deps).runDiagnostics({ revision: 'rev-6' }),
-      DiagnosticsCoreIncompleteError,
-    );
+    await createDiagnosticsCore(found.deps).runDiagnostics({ revision: 'rev-6' });
     const notFound = fakeDeps({ openclawBinFound: false, existingPaths: new Set() });
     const result = await createDiagnosticsCore(notFound.deps).runDiagnostics({ revision: 'rev-7' });
     assert.equal(result.error, 'OpenClaw not found on this system.');
@@ -782,47 +776,32 @@ test('runDiagnostics never writes to the console or stdout/stderr directly', asy
   assert.deepEqual(writes, []);
 });
 
-test('DiagnosticsCoreIncompleteError explicitly names only the Task 4 slices still pending', async () => {
+test('createDiagnosticsCore requires a non-empty injected version', () => {
   const { deps } = fakeDeps();
-  const core = createDiagnosticsCore(deps);
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-8' }),
-    (error) => {
-      assert.ok(error instanceof DiagnosticsCoreIncompleteError);
-      assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.match(error.message, /envelope/i);
-      assert.match(error.message, /deadline/i);
-      assert.match(error.message, /shim|renderer/i);
-      return true;
-    },
-  );
+  assert.throws(() => createDiagnosticsCore({ ...deps, version: undefined }), /version must be a non-empty string/);
+  assert.throws(() => createDiagnosticsCore({ ...deps, version: '' }), /version must be a non-empty string/);
 });
 
 // ============================================================
-// Terminal-event contract corrections (post-Slice-2 review)
+// Terminal-event contract
 //
-// Every started scan must produce EXACTLY ONE terminal event (scan.completed XOR scan.error),
-// never followed by scan.completed. The intentionally-incomplete Slice-2 scaffold is not exempt:
-// reaching the "not yet implemented" point must emit a scan.error{code:'NOT_IMPLEMENTED'} before
-// rejecting. An unexpected failure from an injected discover/system/config boundary must emit a
-// scan.error{code:'INTERNAL'} and then reject the ORIGINAL error (not a wrapped one). If the sink
-// itself throws while delivering that terminal event, there must be no second attempt.
+// Every started scan produces exactly one terminal event (scan.completed XOR scan.error).
+// Unexpected boundary failures emit scan.error{code:'INTERNAL'} and reject the original error.
+// If the sink throws while delivering a terminal event, the core never attempts a second terminal.
 // ============================================================
 
-test('runDiagnostics emits exactly one terminal scan.error (code NOT_IMPLEMENTED) before rejecting the intentional Slice-2 incompleteness, and never emits scan.completed', async () => {
+test('runDiagnostics emits exactly one terminal scan.completed on success and no scan.error', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-10', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  const result = await core.runDiagnostics({ revision: 'rev-10', emit: (e) => events.push(e) });
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
-  assert.equal(terminals[0].type, 'scan.error');
+  assert.equal(terminals[0].type, 'scan.completed');
   assert.equal(terminals[0].revision, 'rev-10');
-  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
-  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.deepEqual(terminals[0].summary, result.summary);
+  assert.deepEqual(terminals[0].findings, result.issues);
+  assert.equal(events.filter((e) => e.type === 'scan.error').length, 0);
 });
 
 test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the discover boundary throws unexpectedly', async () => {
@@ -881,9 +860,8 @@ test('runDiagnostics does not attempt a second terminal event if the emit sink t
 //
 // This slice extends runDiagnostics through the gateway, logs, service, and workspace
 // collection bands (the original collectDiagnostics() lines ~643-779 in cli/bin/clawfix.js).
-// Ports, native collectors, pure issue derivation, envelope/summary assembly, and
-// cancellation/deadline machinery remain deferred to later Task 4 slices — a scan that reaches
-// past the workspace phase still rejects with DiagnosticsCoreIncompleteError.
+// This section preserves the gateway/logs/service/workspace phase contracts added in Slice 3A.
+// Later slices continue from these collected facts through ports/native/issues and completion.
 // ============================================================
 
 function findStep(events, phase) {
@@ -938,10 +916,7 @@ test('runDiagnostics gateway phase reports the default port, status line, and pi
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-gw-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-gw-1', emit: (e) => events.push(e) });
   const gatewayStep = findStep(events, 'gateway');
   assert.ok(gatewayStep);
   assert.equal(gatewayStep.label, 'Checking gateway status');
@@ -962,10 +937,7 @@ test('runDiagnostics gateway phase honors a configured port and reports a null p
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-gw-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-gw-2', emit: (e) => events.push(e) });
   const gatewayStep = findStep(events, 'gateway');
   assert.equal(gatewayStep.data.port, 9999);
   assert.equal(gatewayStep.data.pid, null);
@@ -980,10 +952,7 @@ test('runDiagnostics gateway phase reports an unknown status without calling gat
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-gw-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-gw-3', emit: (e) => events.push(e) });
   const gatewayStep = findStep(events, 'gateway');
   assert.equal(gatewayStep.data.statusLine, 'unknown');
   assert.equal(gatewayStep.data.running, false);
@@ -1005,10 +974,7 @@ test('runDiagnostics logs phase reports bounded, rounded size facts and detects 
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-logs-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-logs-1', emit: (e) => events.push(e) });
   const logsStep = findStep(events, 'logs');
   assert.ok(logsStep);
   assert.equal(logsStep.label, 'Reading recent logs');
@@ -1044,10 +1010,7 @@ test('runDiagnostics logs phase reports hasErrors=false when no gateway-log line
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-logs-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-logs-2', emit: (e) => events.push(e) });
   const logsStep = findStep(events, 'logs');
   assert.equal(logsStep.data.hasErrors, false);
   assert.equal(logsStep.data.errLogSizeMB, 0);
@@ -1057,10 +1020,7 @@ test('runDiagnostics logs phase reports zero sizes and fetches no tail when neit
   const { deps, calls } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-logs-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-logs-3', emit: (e) => events.push(e) });
   const logsStep = findStep(events, 'logs');
   assert.equal(logsStep.data.logSizeMB, 0);
   assert.equal(logsStep.data.errLogSizeMB, 0);
@@ -1077,10 +1037,7 @@ test('runDiagnostics service phase reports raw service-manager state facts with 
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-svc-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-svc-1', emit: (e) => events.push(e) });
   const serviceStep = findStep(events, 'service');
   assert.ok(serviceStep);
   assert.equal(serviceStep.label, 'Checking service health');
@@ -1094,10 +1051,7 @@ test('runDiagnostics service phase reports all-null facts when the service manag
   const { deps } = fakeDeps({ serviceManagerState: {} });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-svc-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-svc-2', emit: (e) => events.push(e) });
   const serviceStep = findStep(events, 'service');
   assert.deepEqual(serviceStep.data, {
     manager: null, runs: null, pid: null, state: null, subState: null, nRestarts: null, lastExitCode: null, uptimeStr: null, uptimeSeconds: null,
@@ -1125,10 +1079,7 @@ test('runDiagnostics workspace phase reports path resolution, markdown/memory co
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ws-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ws-1', emit: (e) => events.push(e) });
   const workspaceStep = findStep(events, 'workspace');
   assert.ok(workspaceStep);
   assert.equal(workspaceStep.label, 'Checking workspace');
@@ -1155,10 +1106,7 @@ test('runDiagnostics workspace phase reports all defaults and performs no worksp
   const { deps, calls } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ws-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ws-2', emit: (e) => events.push(e) });
   const workspaceStep = findStep(events, 'workspace');
   assert.deepEqual(workspaceStep.data, {
     path: null,
@@ -1185,10 +1133,7 @@ test('runDiagnostics workspace phase reports exists=false and skips file lookups
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ws-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ws-3', emit: (e) => events.push(e) });
   const workspaceStep = findStep(events, 'workspace');
   assert.equal(workspaceStep.data.path, workspaceDir);
   assert.equal(workspaceStep.data.exists, false);
@@ -1209,10 +1154,7 @@ test('runDiagnostics workspace phase fails open to zero counts when countMarkdow
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ws-4', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ws-4', emit: (e) => events.push(e) });
   const workspaceStep = findStep(events, 'workspace');
   assert.equal(workspaceStep.data.mdFiles, 0);
   assert.equal(workspaceStep.data.memoryFiles, 0, 'readdir throwing on an existing memory dir must fail open to zero, not crash the scan');
@@ -1227,10 +1169,7 @@ test('runDiagnostics reports the CODEX_HOME fact from injected env, not from amb
     const { deps } = fakeDeps({ env: { CODEX_HOME: '/injected/codex-home' } });
     const core = createDiagnosticsCore(deps);
     const events = [];
-    await assert.rejects(
-      core.runDiagnostics({ revision: 'rev-codex-env', emit: (e) => events.push(e) }),
-      DiagnosticsCoreIncompleteError,
-    );
+    await core.runDiagnostics({ revision: 'rev-codex-env', emit: (e) => events.push(e) });
     const workspaceStep = findStep(events, 'workspace');
     assert.deepEqual(workspaceStep.data.codexHome, {
       expected: '/home/fake-user/.openclaw/codex-home',
@@ -1256,10 +1195,7 @@ test('runDiagnostics gateway/logs/service/workspace step data never carries secr
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-secrets', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-secrets', emit: (e) => events.push(e) });
   const serialized = JSON.stringify(events);
   assert.ok(!serialized.includes('super-secret-token-value'), 'no scan.step data may leak a config secret');
   assert.ok(!serialized.includes('OPENCLAW_TOKEN'), 'no scan.step data may leak a raw config key');
@@ -1270,22 +1206,16 @@ test('runDiagnostics gateway/logs/service/workspace step data never carries secr
   }
 });
 
-test('runDiagnostics never emits scan.completed while traversing the gateway/logs/service/workspace/ports/native bands', async () => {
+test('runDiagnostics traverses every collection band before emitting one completion', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-no-complete', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
-  // Slice 3B extends the traversed bands to include ports and native — this list supersedes the
-  // Slice 3A version of this test (which stopped at 'workspace') the same way the Slice 2
-  // DiagnosticsCoreIncompleteError message assertion was later superseded by a Slice 3A one below.
+  await core.runDiagnostics({ revision: 'rev-no-complete', emit: (e) => events.push(e) });
   assert.deepEqual(events.map((e) => e.phase).filter(Boolean), ['discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues']);
-  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 1);
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
-  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
+  assert.equal(terminals[0].type, 'scan.completed');
 });
 
 test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the gateway boundary throws unexpectedly', async () => {
@@ -1305,21 +1235,15 @@ test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects 
   assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'gateway'), false);
 });
 
-test('DiagnosticsCoreIncompleteError no longer lists completed collection or issue bands as pending', async () => {
+test('runDiagnostics success returns exactly revision, diagnostic, issues, and summary', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-msg' }),
-    (error) => {
-      assert.ok(error instanceof DiagnosticsCoreIncompleteError);
-      assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.doesNotMatch(error.message, /ports and native collection bands.*pending/i);
-      assert.match(error.message, /implements all collection bands plus pure issue derivation/i);
-      assert.doesNotMatch(error.message, /pure issue derivation, envelope\/summary assembly.*pending/i);
-      assert.match(error.message, /envelope/i);
-      return true;
-    },
-  );
+  const result = await core.runDiagnostics({ revision: 'rev-result-shape' });
+  assert.deepEqual(Object.keys(result), ['revision', 'diagnostic', 'issues', 'summary']);
+  assert.equal(result.revision, 'rev-result-shape');
+  assert.equal(result.diagnostic.version, '0.9.1');
+  assert.ok(Array.isArray(result.issues));
+  assert.equal(typeof result.summary, 'object');
 });
 
 // ============================================================
@@ -1330,9 +1254,8 @@ test('DiagnosticsCoreIncompleteError no longer lists completed collection or iss
 // collectDiagnostics() lines ~781-816 in cli/bin/clawfix.js) and the native collection band
 // (OpenClaw Doctor/config validation/status/security audit — lines ~818-859), gated exactly as
 // the original: Doctor runs whenever a binary exists; config/status/security additionally require
-// the retained version probe's runtimeCompatible === true. Pure issue derivation,
-// envelope/summary assembly, and cancellation/deadline machinery remain deferred — a scan that
-// reaches past the native phase still rejects with DiagnosticsCoreIncompleteError.
+// the retained version probe's runtimeCompatible === true. Later slices consume the retained
+// native evidence for issue derivation, envelope assembly, and completion.
 // ============================================================
 
 test('createDiagnosticsCore requires the newly-injected ports/native boundary methods on nativeCollectors', () => {
@@ -1355,10 +1278,7 @@ test('runDiagnostics ports phase probes the configured gateway port plus the fix
   const { deps, calls } = fakeDeps({ config: { gateway: { port: 4321 }, env: {} } });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ports-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ports-1', emit: (e) => events.push(e) });
   assert.deepEqual(calls.collectListeningPort, [4321, 18800, 18791]);
   const portsStep = findStep(events, 'ports');
   assert.ok(portsStep);
@@ -1372,10 +1292,7 @@ test('runDiagnostics ports phase falls back to the default gateway port (18789) 
   const { deps, calls } = fakeDeps({ config: { gateway: {}, env: {} } });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ports-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ports-2', emit: (e) => events.push(e) });
   assert.deepEqual(calls.collectListeningPort, [18789, 18800, 18791]);
   const portsStep = findStep(events, 'ports');
   assert.equal(portsStep.data.gateway.port, 18789);
@@ -1406,10 +1323,7 @@ test('runDiagnostics ports phase preserves true/false/null listening tri-state a
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ports-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ports-3', emit: (e) => events.push(e) });
   const portsStep = findStep(events, 'ports');
   assert.equal(portsStep.data.gateway.listening, true);
   assert.equal(portsStep.data.gateway.available, true);
@@ -1443,10 +1357,7 @@ test('runDiagnostics ports phase preserves invalid-configuration evidence includ
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-ports-4', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-ports-4', emit: (e) => events.push(e) });
   const portsStep = findStep(events, 'ports');
   assert.equal(portsStep.data.gateway.valid, false);
   assert.equal(portsStep.data.gateway.available, false);
@@ -1498,10 +1409,7 @@ test('runDiagnostics native phase runs Doctor whenever a binary exists and runs 
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-native-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-native-1', emit: (e) => events.push(e) });
   assert.equal(calls.collectNativeDoctor, 1);
   assert.equal(calls.collectNativeConfigValidation, 1);
   assert.equal(calls.collectNativeStatus, 1);
@@ -1529,10 +1437,7 @@ test('runDiagnostics native phase reports the fail-closed defaults and calls no 
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-native-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-native-2', emit: (e) => events.push(e) });
   assert.equal(calls.collectNativeDoctor, 0);
   assert.equal(calls.collectNativeConfigValidation, 0);
   assert.equal(calls.collectNativeStatus, 0);
@@ -1565,10 +1470,7 @@ test('runDiagnostics native phase runs Doctor but gates config/status/security t
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-native-3', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-native-3', emit: (e) => events.push(e) });
   assert.equal(calls.collectNativeDoctor, 1, 'Doctor runs regardless of runtime compatibility, as long as a binary exists');
   assert.equal(calls.collectNativeConfigValidation, 0);
   assert.equal(calls.collectNativeStatus, 0);
@@ -1618,35 +1520,29 @@ test('runDiagnostics ports/native step data are frozen, JSON-safe, and never lea
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-native-4', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-native-4', emit: (e) => events.push(e) });
   const portsStep = findStep(events, 'ports');
   const nativeStep = findStep(events, 'native');
   assert.equal(Object.isFrozen(portsStep.data), true);
   assert.equal(Object.isFrozen(nativeStep.data), true);
-  const serialized = JSON.stringify(events);
-  assert.ok(!serialized.includes('super-secret-detail-XYZ'), 'native security finding detail must not leak into the semantic event');
-  assert.ok(!serialized.includes('raw-config-error-detail-ABC'), 'native config error detail must not leak into the semantic event');
-  assert.ok(!serialized.includes('raw-port-probe-error-DEF'), 'raw port collector error text must not leak into the semantic event');
+  const serialized = JSON.stringify(events.filter((event) => event.type === 'scan.step'));
+  assert.ok(!serialized.includes('super-secret-detail-XYZ'), 'native security finding detail must not leak into semantic step events');
+  assert.ok(!serialized.includes('raw-config-error-detail-ABC'), 'native config error detail must not leak into semantic step events');
+  assert.ok(!serialized.includes('raw-port-probe-error-DEF'), 'raw port collector error text must not leak into semantic step events');
 });
 
-test('runDiagnostics never emits scan.completed while traversing the ports/native/issues bands, still emits exactly one NOT_IMPLEMENTED terminal', async () => {
+test('runDiagnostics completes exactly once after the ports/native/issues bands', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-3b-no-complete', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-3b-no-complete', emit: (e) => events.push(e) });
   assert.deepEqual(events.map((e) => e.phase).filter(Boolean), [
     'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues',
   ]);
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
-  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
-  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(terminals[0].type, 'scan.completed');
+  assert.equal(events.filter((e) => e.type === 'scan.error').length, 0);
 });
 
 test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects the original error when the collectListeningPort boundary throws unexpectedly', async () => {
@@ -1691,21 +1587,24 @@ test('runDiagnostics emits exactly one INTERNAL terminal scan.error and rejects 
   assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'native'), false);
 });
 
-test('DiagnosticsCoreIncompleteError names only envelope/summary, cancellation/deadlines, and shim/renderer work as pending after Slice 4, having implemented issue derivation', async () => {
+test('runDiagnostics returns an ANSI-free semantic summary with current labels and facts', async () => {
   const { deps } = fakeDeps();
   const core = createDiagnosticsCore(deps);
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-msg-4' }),
-    (error) => {
-      assert.ok(error instanceof DiagnosticsCoreIncompleteError);
-      assert.equal(error.code, 'NOT_IMPLEMENTED');
-      assert.match(error.message, /envelope/);
-      assert.match(error.message, /summary/);
-      assert.match(error.message, /cancellation|deadline/);
-      assert.match(error.message, /shim|renderer/);
-      return true;
+  const result = await core.runDiagnostics({ revision: 'rev-summary' });
+  assert.deepEqual(result.summary, {
+    gateway: {
+      running: true,
+      pid: null,
+      port: 18789,
+      label: 'running (pid ?, port 18789)',
     },
-  );
+    config: { loaded: true, label: 'loaded' },
+    issues: { actionable: 0, optimizations: 0, label: 'No issues' },
+    node: 'v22.9.0-fake',
+    os: 'linux 6.1.0-fake',
+    ocVersion: '1.2.3',
+  });
+  assert.doesNotMatch(JSON.stringify(result.summary), /\u001b|\x1b/);
 });
 
 // ============================================================
@@ -1716,8 +1615,7 @@ test('DiagnosticsCoreIncompleteError names only envelope/summary, cancellation/d
 // no filesystem/process/console/clock/network access and no mutation of its input. runDiagnostics
 // calls it after the native band and emits exactly one JSON-safe frozen scan.step for phase
 // 'issues' carrying deterministic semantic counts only (never raw issue text/log/config content).
-// Envelope/summary assembly and cancellation/deadline machinery remain deferred — a scan that
-// reaches past the issues phase still rejects with DiagnosticsCoreIncompleteError.
+// Slice 5 consumes the full retained issue array for the completed event and result envelope.
 // ============================================================
 
 // Builds a minimal, well-formed `collected` fixture for deriveIssues() with every band defaulting
@@ -2115,7 +2013,7 @@ function makeIssuesFixtureDeps(overrides = {}) {
   });
 }
 
-test('runDiagnostics issues phase emits deterministic semantic counts only, ends the phase order at issues, and still rejects NOT_IMPLEMENTED with no scan.completed', async () => {
+test('runDiagnostics issues phase emits deterministic semantic counts and then completes with findings', async () => {
   const { deps } = makeIssuesFixtureDeps({
     nativeSecurity: {
       available: true,
@@ -2141,10 +2039,7 @@ test('runDiagnostics issues phase emits deterministic semantic counts only, ends
   });
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-issues-1', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-issues-1', emit: (e) => events.push(e) });
 
   assert.deepEqual(events.map((e) => e.phase).filter(Boolean), [
     'discover', 'system', 'config', 'gateway', 'logs', 'service', 'workspace', 'ports', 'native', 'issues',
@@ -2162,11 +2057,12 @@ test('runDiagnostics issues phase emits deterministic semantic counts only, ends
 
   const terminals = events.filter((e) => e.type === 'scan.error' || e.type === 'scan.completed');
   assert.equal(terminals.length, 1);
-  assert.equal(terminals[0].error.code, 'NOT_IMPLEMENTED');
-  assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
+  assert.equal(terminals[0].type, 'scan.completed');
+  assert.equal(terminals[0].findings.length, issuesStep.data.total);
+  assert.equal(events.filter((e) => e.type === 'scan.error').length, 0);
 
-  const serialized = JSON.stringify(events);
-  assert.ok(!serialized.includes('super-secret-title-XYZ'), 'raw issue text must not leak into the semantic issues event');
+  const serialized = JSON.stringify(events.filter((event) => event.type === 'scan.step'));
+  assert.ok(!serialized.includes('super-secret-title-XYZ'), 'raw issue text must not leak into semantic step events');
   assert.ok(!serialized.includes('super-secret-detail-XYZ'));
   assert.ok(!serialized.includes('rotate-it-ABC'));
   assert.ok(!serialized.includes('something-secret-DEF'));
@@ -2176,10 +2072,7 @@ test('runDiagnostics issues phase reports all-zero counts when no local, native,
   const { deps } = makeIssuesFixtureDeps();
   const core = createDiagnosticsCore(deps);
   const events = [];
-  await assert.rejects(
-    core.runDiagnostics({ revision: 'rev-issues-2', emit: (e) => events.push(e) }),
-    DiagnosticsCoreIncompleteError,
-  );
+  await core.runDiagnostics({ revision: 'rev-issues-2', emit: (e) => events.push(e) });
   const issuesStep = findStep(events, 'issues');
   assert.deepEqual(issuesStep.data, {
     total: 0,
@@ -2206,4 +2099,194 @@ test('runDiagnostics emits exactly one INTERNAL terminal scan.error when the iss
   assert.equal(terminal.error.code, 'INTERNAL');
   assert.equal(events.filter((e) => e.type === 'scan.completed').length, 0);
   assert.equal(events.some((e) => e.type === 'scan.step' && e.phase === 'issues'), false);
+});
+
+// ============================================================
+// Slice 5 — exact envelope + semantic summary + success terminal
+// ============================================================
+
+test('runDiagnostics builds the exact populated redacted diagnostic envelope and reuses workspace existence evidence', async () => {
+  const openclawDir = '/home/fake-user/.openclaw';
+  const workspaceDir = '/home/fake-user/workspace';
+  const browserDir = `${openclawDir}/browser`;
+  const logPath = `${openclawDir}/logs/gateway.log`;
+  const errLogPath = `${openclawDir}/logs/gateway.err.log`;
+  const config = {
+    gateway: { port: 4321 },
+    agents: { defaults: { workspace: workspaceDir } },
+    env: { OPENCLAW_TOKEN: 'raw-secret-must-not-survive' },
+  };
+  const service = {
+    manager: 'systemd', runs: true, pid: '777', state: 'active', subState: 'running',
+    nRestarts: 0, lastExitCode: 0, uptimeStr: '2h', uptimeSeconds: 7200,
+  };
+  const nativeDoctor = {
+    available: true, exitCode: 0, ok: true, checksRun: 2, checksSkipped: 1, findings: [],
+  };
+  const nativeConfig = {
+    available: true, exitCode: 0, valid: true, path: `${openclawDir}/openclaw.json`, warnings: [], errors: [],
+  };
+  const nativeStatus = {
+    available: true,
+    exitCode: 0,
+    runtimeVersion: '1.2.3',
+    gateway: { mode: 'local', reachable: true, misconfigured: false, connectLatencyMs: 8, error: '', authWarning: '' },
+    gatewayService: { label: 'svc', installed: true, loaded: true, externallyManaged: false, status: 'active', detail: null },
+    tasks: { total: 1, active: 1, failures: 0 },
+    secretDiagnosticCount: 0,
+  };
+  const nativeSecurity = {
+    available: true,
+    exitCode: 0,
+    summary: { critical: 0, warning: 0, info: 1 },
+    findings: [],
+    suppressedFindingCount: 0,
+    secretDiagnosticCount: 0,
+  };
+  let redactInvocation = 0;
+  const { deps, calls } = fakeDeps({
+    coreVersion: '9.9.9-test',
+    now: new Date('2026-07-23T14:15:16.000Z'),
+    config,
+    existingPaths: new Set([
+      openclawDir,
+      `${openclawDir}/openclaw.json`,
+      workspaceDir,
+      `${workspaceDir}/SOUL.md`,
+      `${workspaceDir}/AGENTS.md`,
+      `${workspaceDir}/memory`,
+      browserDir,
+      logPath,
+      errLogPath,
+    ]),
+    mdFileCount: 4,
+    dirEntries: { [`${workspaceDir}/memory`]: ['a.md', 'b.md', 'ignore.txt'] },
+    fileSizes: { [logPath]: 2 * 1024 * 1024, [errLogPath]: 1024 * 1024 },
+    fileTails: {
+      [logPath]: 'warn: bounded warning\nlistening on 4321 PID 777\n',
+      [errLogPath]: 'bounded stderr\n',
+    },
+    gatewayStatusText: 'runtime: ok\nrunning, pid 777',
+    gatewayProcesses: '777',
+    serviceManagerState: service,
+    nativeDoctor,
+    nativeConfig,
+    nativeStatus,
+    nativeSecurity,
+    portResults: {
+      4321: { valid: true, available: true, listening: true, process: 'openclaw', pid: 777, endpoint: '127.0.0.1:4321', collector: 'lsof' },
+      18800: { valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss' },
+      18791: { valid: true, available: false, listening: null, process: null, pid: null, collector: null, error: 'probe unavailable' },
+    },
+    redact: (value) => {
+      redactInvocation += 1;
+      return redactInvocation === 1
+        ? { ...value, sanitizedConfig: true }
+        : { ...value, finalRedacted: true };
+    },
+  });
+  const rawConfigSnapshot = structuredClone(config);
+  const result = await createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-envelope-golden' });
+
+  const expectedHostHash = createHash('sha256').update('unit-test-marker-host').digest('hex').slice(0, 8);
+  assert.deepEqual(result.diagnostic, {
+    version: '9.9.9-test',
+    timestamp: '2026-07-23T14:15:16.000Z',
+    hostHash: expectedHostHash,
+    system: { os: 'linux', osVersion: '6.1.0-fake', arch: 'x64', nodeVersion: 'v22.9.0-fake', npmVersion: '10.2.0' },
+    openclaw: {
+      version: '1.2.3',
+      binary: '/usr/local/bin/openclaw',
+      configDir: openclawDir,
+      configExists: true,
+      gatewayStatus: 'runtime: ok\nrunning, pid 777',
+      gatewayPid: '777',
+      gatewayPort: 4321,
+      processExists: true,
+      portListening: true,
+      runtimeCompatible: true,
+      runtimeRequired: '',
+      runtimeCurrent: '',
+    },
+    config: {
+      gateway: { port: 4321 },
+      agents: { defaults: { workspace: workspaceDir } },
+      sanitizedConfig: true,
+    },
+    nativeConfig,
+    nativeDoctor,
+    nativeStatus,
+    nativeSecurity,
+    ports: {
+      gateway: { port: 4321, valid: true, available: true, listening: true, process: 'openclaw', pid: 777, endpoint: '127.0.0.1:4321', collector: 'lsof' },
+      browserCdp: { port: 18800, valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss' },
+      browserControl: { port: 18791, valid: true, available: false, listening: null, process: null, pid: null, collector: null, error: 'probe unavailable' },
+    },
+    logs: {
+      errors: 'warn: bounded warning',
+      stderr: 'bounded stderr\n',
+      gatewayLog: 'listening on 4321 PID 777',
+      errLogSizeMB: 1,
+      logSizeMB: 2,
+    },
+    service,
+    workspace: { path: workspaceDir, exists: true, mdFiles: 4, memoryFiles: 2, hasSoul: true, hasAgents: true },
+    browser: { status: 'configured' },
+    codex: {
+      expectedHome: `${openclawDir}/codex-home`,
+      shellCodexHomeSet: false,
+      shellCodexHomeMatchesExpected: false,
+    },
+    finalRedacted: true,
+  });
+  assert.deepEqual(config, rawConfigSnapshot, 'raw config must not be mutated');
+  assert.equal(calls.exists.filter((path) => path === workspaceDir).length, 1, 'envelope must reuse workspace existence evidence');
+  assert.equal(calls.exists.filter((path) => path === browserDir).length, 1, 'browser path is probed exactly once before envelope construction');
+  assert.equal(redactInvocation, 2);
+});
+
+test('runDiagnostics rejects an invalid final redactor result and an invalid clock with one INTERNAL terminal each', async () => {
+  let redactInvocation = 0;
+  const invalidRedactor = fakeDeps({
+    redact: (value) => {
+      redactInvocation += 1;
+      return redactInvocation === 1 ? value : undefined;
+    },
+  });
+  const redactorEvents = [];
+  await assert.rejects(
+    createDiagnosticsCore(invalidRedactor.deps).runDiagnostics({ revision: 'rev-final-redactor', emit: (event) => redactorEvents.push(event) }),
+    /diagnostic envelope/,
+  );
+  assert.equal(redactorEvents.filter((event) => event.type === 'scan.error').length, 1);
+  assert.equal(redactorEvents.some((event) => event.type === 'scan.completed'), false);
+
+  const invalidClock = fakeDeps({ now: new Date(Number.NaN) });
+  const clockEvents = [];
+  await assert.rejects(
+    createDiagnosticsCore(invalidClock.deps).runDiagnostics({ revision: 'rev-invalid-clock', emit: (event) => clockEvents.push(event) }),
+    /valid Date/,
+  );
+  assert.equal(clockEvents.filter((event) => event.type === 'scan.error').length, 1);
+  assert.equal(clockEvents.some((event) => event.type === 'scan.completed'), false);
+});
+
+test('runDiagnostics does not attempt a second terminal when the scan.completed sink throws', async () => {
+  const { deps } = fakeDeps();
+  const core = createDiagnosticsCore(deps);
+  const boom = new Error('completion sink exploded');
+  const events = [];
+  await assert.rejects(
+    core.runDiagnostics({
+      revision: 'rev-completion-sink',
+      emit: (event) => {
+        events.push(event);
+        if (event.type === 'scan.completed') throw boom;
+      },
+    }),
+    (error) => error === boom,
+  );
+  const terminals = events.filter((event) => event.type === 'scan.completed' || event.type === 'scan.error');
+  assert.equal(terminals.length, 1);
+  assert.equal(terminals[0].type, 'scan.completed');
 });

@@ -1,14 +1,16 @@
 import { join } from 'node:path';
 
-import { scanError, scanStarted, scanStep } from './events.js';
+import {
+  scanCompleted, scanError, scanStarted, scanStep,
+} from './events.js';
 
 // ClawFix Task 4 extracts collectDiagnostics() (cli/bin/clawfix.js) into this console-free,
 // transport-neutral, cancellable core in small vertical RED-GREEN slices. This module currently
-// implements the discover, system, config, gateway, logs, service, and workspace collection
-// phases (Slices 2-3A). The ports and native collection bands, pure issue derivation,
-// envelope/summary assembly, and cancellation/deadline machinery land in later slices (3B-6).
-// Nothing in cli/bin/clawfix.js imports this module yet, so its incompleteness does not affect
-// the running CLI.
+// implements the discover, system, config, gateway, logs, service, workspace, ports, and native
+// collection bands, pure issue derivation, and envelope/semantic-summary assembly (Slices 2-5).
+// Cancellation/deadline machinery lands in a later slice (6), and the cli/bin/clawfix.js
+// shim/renderer swap-in lands in Slice 7. Nothing in cli/bin/clawfix.js imports this module yet,
+// so its incompleteness does not affect the running CLI.
 export class DiagnosticsCoreIncompleteError extends Error {
   constructor(message) {
     super(message);
@@ -19,6 +21,13 @@ export class DiagnosticsCoreIncompleteError extends Error {
 
 function requireFunction(value, name) {
   if (typeof value !== 'function') throw new TypeError(`${name} must be a function`);
+  return value;
+}
+
+function requireNonEmptyString(value, name) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`${name} must be a non-empty string`);
+  }
   return value;
 }
 
@@ -328,6 +337,7 @@ export function deriveIssues(collected) {
 // directly) keeps cli/core/ from depending on cli/bin/ — the real redactOutbound is wired in by
 // the cli/bin/clawfix.js entrypoint in a later slice.
 export function createDiagnosticsCore({
+  version,
   redact,
   fs,
   openclaw,
@@ -337,6 +347,7 @@ export function createDiagnosticsCore({
   createHash,
   nativeCollectors,
 } = {}) {
+  requireNonEmptyString(version, 'version');
   requireFunction(redact, 'redact');
   requireBoundary(fs, 'fs', ['exists', 'readJson', 'stat', 'readdir', 'countMarkdownFiles']);
   requireBoundary(openclaw, 'openclaw', [
@@ -604,11 +615,13 @@ export function createDiagnosticsCore({
     let redactedConfig = null;
     if (configPath && await fs.exists(configPath)) {
       config = await fs.readJson(configPath);
-      const sanitizedCopy = config && typeof config === 'object' ? { ...config } : {};
-      delete sanitizedCopy.env;
-      redactedConfig = redact(sanitizedCopy);
-      if (!isPlainObject(redactedConfig)) {
-        throw new TypeError('redact must return a plain object for an existing configuration');
+      if (config && typeof config === 'object') {
+        const sanitizedCopy = { ...config };
+        delete sanitizedCopy.env;
+        redactedConfig = redact(sanitizedCopy);
+        if (!isPlainObject(redactedConfig)) {
+          throw new TypeError('redact must return a plain object for an existing configuration');
+        }
       }
     }
     return { config, redactedConfig };
@@ -810,14 +823,108 @@ export function createDiagnosticsCore({
         },
       }));
 
-      const incomplete = new DiagnosticsCoreIncompleteError(
-        'cli/core/diagnostics.js now implements all collection bands plus pure issue derivation '
-        + '(ClawFix Task 4, Slices 2-4). The envelope/semantic-summary assembly and '
-        + 'cancellation/deadline machinery remain pending for later Task 4 slices (5-6), and the '
-        + 'cli/bin/clawfix.js shim/renderer swap-in lands in Slice 7; none of that is available yet.',
+      const browserConfigured = Boolean(
+        openclawDir && await fs.exists(join(openclawDir, 'browser')),
       );
-      emitTerminal(scanError({ revision, error: { message: incomplete.message, code: 'NOT_IMPLEMENTED' } }));
-      throw incomplete;
+      const now = clock.now();
+      if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+        throw new TypeError('clock.now() must return a valid Date');
+      }
+
+      const diagnosticEnvelope = {
+        version,
+        timestamp: now.toISOString(),
+        hostHash: system.hostHash,
+        system: {
+          os: system.osName,
+          osVersion: system.osVersion,
+          arch: system.osArch,
+          nodeVersion: system.nodeVersion,
+          npmVersion: system.npmVersion,
+        },
+        openclaw: {
+          version: system.ocVersion || 'unknown',
+          binary: openclawBin || 'not found',
+          configDir: openclawDir || 'not found',
+          configExists: config !== null,
+          gatewayStatus: gateway.gatewayStatus,
+          gatewayPid: gateway.gatewayPid || 'none',
+          gatewayPort: gateway.gatewayPort,
+          processExists: Boolean(gateway.gatewayPid),
+          portListening: ports.gateway.listening === true,
+          runtimeCompatible: system.runtimeCompatible,
+          runtimeRequired: system.runtimeRequired,
+          runtimeCurrent: system.runtimeCurrent,
+        },
+        config: redactedConfig,
+        nativeConfig,
+        nativeDoctor,
+        nativeStatus,
+        nativeSecurity,
+        ports,
+        logs: {
+          errors: logs.errorLogs,
+          stderr: logs.stderrLogs,
+          gatewayLog: logs.gatewayLogTail,
+          errLogSizeMB: logs.errLogSizeMB,
+          logSizeMB: logs.logSizeMB,
+        },
+        service: serviceHealth,
+        workspace: {
+          path: workspace.workspaceDir || 'unknown',
+          exists: workspace.workspaceExists,
+          mdFiles: workspace.mdFiles,
+          memoryFiles: workspace.memoryFiles,
+          hasSoul: workspace.hasSoul,
+          hasAgents: workspace.hasAgents,
+        },
+        browser: {
+          status: browserConfigured ? 'configured' : 'not configured',
+        },
+        codex: {
+          expectedHome: workspace.codexHome.expected,
+          shellCodexHomeSet: workspace.codexHome.shellSet,
+          shellCodexHomeMatchesExpected: workspace.codexHome.matchesExpected,
+        },
+      };
+      const diagnostic = redact(diagnosticEnvelope);
+      if (!isPlainObject(diagnostic)) {
+        throw new TypeError('redact must return a plain object for the diagnostic envelope');
+      }
+
+      const actionableIssueCount = issues.length - optimizationCount;
+      const gatewayLabel = gateway.running
+        ? `running (pid ${gateway.gatewayPid || '?'}, port ${gateway.gatewayPort})`
+        : 'not running';
+      const configLabel = config ? 'loaded' : 'not found';
+      const issueLabel = actionableIssueCount === 0
+        ? optimizationCount > 0
+          ? `Healthy; ${optimizationCount} optimization(s)`
+          : 'No issues'
+        : `${actionableIssueCount} issue(s), ${optimizationCount} optimization(s)`;
+      const summary = {
+        gateway: {
+          running: gateway.running,
+          pid: gateway.gatewayPid || null,
+          port: gateway.gatewayPort,
+          label: gatewayLabel,
+        },
+        config: {
+          loaded: Boolean(config),
+          label: configLabel,
+        },
+        issues: {
+          actionable: actionableIssueCount,
+          optimizations: optimizationCount,
+          label: issueLabel,
+        },
+        node: system.nodeVersion,
+        os: `${system.osName === 'darwin' ? 'macOS' : system.osName} ${system.osVersion}`,
+        ocVersion: system.ocVersion || 'unknown',
+      };
+
+      emitTerminal(scanCompleted({ revision, summary, findings: issues }));
+      return { revision, diagnostic, issues, summary };
     } catch (error) {
       if (!terminalEmitted) {
         emitTerminal(scanError({ revision, error: { message: toSafeErrorMessage(error), code: 'INTERNAL' } }));
