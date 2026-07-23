@@ -4,9 +4,14 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
-- Added repository-level licensing, security reporting, contributor guidance, and maintainer documentation.
-- Documented public usage evidence and maintenance ownership.
-- Updated Body Parser, used through Express, to clear a production denial-of-service advisory reported by `npm audit`.
+## 0.10.0 - 2026-07-23
+
+- Added a real diagnostic core with cancellation, deadlines, revisioned result envelopes, and stable finding identity.
+- Added a guarded repair engine with immutable plans, approval tokens, and revision checks.
+- Wired the first catalog repair (`gateway-not-running`) through injected OpenClaw adapters only.
+- Added a session controller and offline local assistant for scan/rescan, explain, issues, and repair proposals.
+- Expanded the published CLI package to the 18-file allowlisted core surface.
+- Kept config-mutating legacy repairs on the compatibility path for this release.
 
 ## 0.9.1 - 2026-07-17
 

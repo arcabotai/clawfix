@@ -61,15 +61,15 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents truthful evidence for the published 0.9.1 seven-file package', async () => {
+test('landing page presents truthful evidence for the published 0.10.0 eighteen-file package', async () => {
   const landing = await read('src/landing.js');
-  assert.match(landing, /npx clawfix@0\.9\.1/);
+  assert.match(landing, /npx clawfix@0\.10\.0/);
   assert.match(landing, /GitHub OIDC publish/);
   assert.match(landing, /npm attestation verified/);
-  assert.match(landing, /7-file allowlisted package/);
-  assert.doesNotMatch(landing, /11-file allowlisted package/);
+  assert.match(landing, /18-file allowlisted package/);
+  assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
-  assert.match(landing, /releases\/tag\/v0\.9\.1/);
+  assert.match(landing, /releases\/tag\/v0\.10\.0/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
 });
@@ -207,15 +207,22 @@ test('scenario scripts wire fail-closed contracts into every fault and restorati
   assert.match(nativeEvidence, /parseJsonOutput/);
 });
 
-test('next candidate CLI source manifest remains exactly eleven allowlisted files', async () => {
+test('next candidate CLI source manifest remains exactly eighteen allowlisted files', async () => {
   const { EXPECTED_CLI_FILES, validateCliPackageManifest } = await import('../scripts/verify-cli-package.mjs');
   assert.ok(EXPECTED_CLI_FILES.includes('bin/security.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('bin/workspace.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/diagnostics.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/events.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/findings.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('core/modes.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/offline-analyzer.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('core/options.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/repair-catalog.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/repair-engine.js'));
+  assert.ok(EXPECTED_CLI_FILES.includes('core/session.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/process.js'));
   assert.ok(EXPECTED_CLI_FILES.includes('adapters/openclaw.js'));
-  assert.equal(EXPECTED_CLI_FILES.length, 11);
+  assert.equal(EXPECTED_CLI_FILES.length, 18);
   const manifest = [{ name: 'clawfix', version: '0.9.0', files: EXPECTED_CLI_FILES.map(path => ({ path })) }];
 
   assert.doesNotThrow(() => validateCliPackageManifest(manifest, { name: 'clawfix', version: '0.9.0' }));

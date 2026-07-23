@@ -26,8 +26,14 @@ import {
 import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
 import { openClawAdapter } from '../adapters/openclaw.js';
+import { createDiagnosticsCore } from '../core/diagnostics.js';
 import { resolveCliMode } from '../core/modes.js';
 import { parseCliOptions } from '../core/options.js';
+import { dedupeFindingsForDisplay, normalizeFindings } from '../core/findings.js';
+import { repairCatalog } from '../core/repair-catalog.js';
+import { createRepairEngine } from '../core/repair-engine.js';
+import { createSessionController } from '../core/session.js';
+import { createOfflineAnalyzer } from '../core/offline-analyzer.js';
 
 // --- Config ---
 const CLI_OPTIONS = parseCliOptions(process.argv.slice(2), process.env);
@@ -48,7 +54,7 @@ const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   } catch {
-    return '0.9.1';
+    return '0.10.0';
   }
 })();
 
@@ -376,6 +382,62 @@ const BUILTIN_FIXES = {
   },
 };
 
+const repairEngine = createRepairEngine({ catalog: repairCatalog });
+
+async function applyCatalogRepair(issue, rl, session) {
+  const proposal = session.proposeRepair(issue.id);
+  if (proposal.status !== 'proposed') {
+    console.log(c.yellow(`  Repair unavailable: ${proposal.status}`));
+    return proposal;
+  }
+  const { plan } = proposal;
+  const preview = await repairEngine.previewPlan(plan, {});
+
+  console.log('');
+  console.log(c.bold(`  Fix: ${issue.title}`));
+  console.log(`  ${c.dim(plan.description)}`);
+  console.log(`  Risk: ${plan.risk === 'low' ? c.green('low') : c.yellow(plan.risk)}`);
+  console.log('');
+  console.log(c.bold('  Plan:'));
+  for (const [index, step] of preview.steps.entries()) {
+    console.log(`    ${index + 1}. ${step}`);
+  }
+  console.log('');
+
+  const answer = await new Promise(resolve => {
+    rl.question(`  ${c.yellow('Apply?')} [y/N] `, resolve);
+  });
+  if (!/^y(es)?$/i.test(answer.trim())) {
+    console.log(c.dim('  Cancelled.'));
+    console.log('');
+    return { status: 'cancelled' };
+  }
+
+  const result = await session.applyRepair({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    findingId: issue.id,
+    ctx: {
+      openclaw: openClawAdapter,
+      wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+    },
+  });
+
+  if (result.status === 'applied') {
+    console.log(`  ${c.green('✅')} Gateway restarted and verified.`);
+  } else if (result.status === 'verify_failed') {
+    console.log(`  ${c.yellow('⚠️')} Restart ran, but the gateway is still unavailable.`);
+  } else if (result.status === 'blocked') {
+    console.log(`  ${c.dim('ℹ️')} Repair no longer needed: ${result.reason}`);
+  } else if (result.status === 'rejected') {
+    console.log(`  ${c.yellow('⚠️')} Repair plan rejected: ${result.reason}`);
+  } else {
+    console.log(`  ${c.red('❌')} Repair failed: ${result.error || result.status}`);
+  }
+  console.log('');
+  return result;
+}
+
 /**
  * Apply a single builtin fix with full safety: backup → apply → write → restart → rescan
  */
@@ -450,10 +512,7 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
       const scanResult = await scanFn();
       if (scanResult) {
         const allAfter = mergeIssues(scanResult.issues, scanResult.serverIssues);
-        const stillPresent = allAfter.some(i =>
-          (i.id && i.id === issue.id) ||
-          ((i.title || i.text || '').toLowerCase().includes((issue.title || issue.text || '').toLowerCase().slice(0, 20)))
-        );
+        const stillPresent = allAfter.some(candidate => candidate.id === issue.id);
 
         if (stillPresent) {
           console.log(` ${c.yellow('⚠️  issue may persist until gateway fully restarts')}`);
@@ -483,7 +542,7 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
  */
 async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   const allIssues = mergeIssues(issues, serverIssues);
-  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.id] && !BUILTIN_FIXES[i.id].informational);
+  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.repairId] && !BUILTIN_FIXES[i.repairId].informational);
 
   if (fixable.length === 0) {
     console.log(c.dim('  No auto-fixable issues found.'));
@@ -493,13 +552,13 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   console.log('');
   console.log(c.bold(`  Fix plan (${fixable.length} issues):`));
   for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.id];
+    const fix = BUILTIN_FIXES[issue.repairId];
     const risk = fix.risk === 'low' ? c.green('low') : c.yellow(fix.risk);
     console.log(`    ${c.blue('🔧')} [${risk}] ${issue.title || issue.text}`);
     console.log(`       ${c.dim(fix.description)}`);
   }
 
-  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.id]?.informational);
+  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.repairId]?.informational);
   if (skipped.length) {
     console.log('');
     for (const issue of skipped) {
@@ -507,7 +566,7 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
     }
   }
 
-  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.id] && !i.fix);
+  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.repairId] && !i.fix);
   if (noFix.length) {
     console.log('');
     for (const issue of noFix) {
@@ -536,7 +595,7 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
   let applied = 0;
 
   for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.id];
+    const fix = BUILTIN_FIXES[issue.repairId];
     try {
       const result = await fix.apply(config);
       for (const change of result.changes) {
@@ -575,9 +634,92 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
 }
 
 // ============================================================
-// collectDiagnostics() — reusable scan, returns { diagnostic, issues, summary }
+// Diagnostic core compatibility bridge
 // ============================================================
-async function collectDiagnostics({ quiet = false } = {}) {
+function createCliDiagnosticsCore() {
+  return createDiagnosticsCore({
+    version: VERSION,
+    redact: redactOutbound,
+    fs: {
+      exists,
+      readJson,
+      stat,
+      readdir,
+      countMarkdownFiles,
+    },
+    openclaw: openClawAdapter,
+    os: {
+      homedir,
+      platform,
+      release,
+      arch,
+      hostname,
+      nodeVersion: () => process.version,
+    },
+    env: { ...process.env },
+    clock: { now: () => new Date() },
+    createHash,
+    timers: {
+      setTimeout: (callback, ms) => setTimeout(callback, ms),
+      clearTimeout: handle => clearTimeout(handle),
+    },
+    nativeCollectors: {
+      collectOpenClawVersion,
+      collectListeningPort,
+      collectNativeDoctor,
+      collectNativeConfigValidation,
+      collectNativeStatus,
+      collectNativeSecurityAudit,
+    },
+  });
+}
+
+const diagnosticsCore = createCliDiagnosticsCore();
+
+function renderScanEvent(event, log) {
+  if (event.type !== 'scan.step') return;
+  log(c.blue(`🔎 ${event.label}...`));
+}
+
+function legacySummary(summary) {
+  return {
+    gateway: {
+      icon: summary.gateway.running ? c.green('✓') : c.red('✗'),
+      label: summary.gateway.label,
+    },
+    config: {
+      icon: summary.config.loaded ? c.green('✓') : c.yellow('⚠'),
+      label: summary.config.label,
+    },
+    issues: {
+      icon: summary.issues.actionable === 0 ? c.green('✓') : c.yellow('⚠'),
+      label: summary.issues.label,
+    },
+    node: summary.node,
+    os: summary.os,
+    ocVersion: summary.ocVersion,
+  };
+}
+
+async function collectDiagnostics({ quiet = false, signal } = {}) {
+  const log = quiet ? () => {} : (...args) => console.log(...args);
+  const result = await diagnosticsCore.runDiagnostics({
+    revision: randomUUID(),
+    signal,
+    emit: event => renderScanEvent(event, log),
+  });
+  if (result.error) return { error: result.error };
+  return {
+    revision: result.revision,
+    diagnostic: result.diagnostic,
+    issues: result.issues,
+    summary: legacySummary(result.summary),
+  };
+}
+
+// Legacy collector retained temporarily as executable parity reference. Remove after the
+// compatibility bridge has shipped and exercised real installations.
+async function collectDiagnosticsLegacy({ quiet = false } = {}) {
   const log = quiet ? () => {} : (...a) => console.log(...a);
 
   // --- Detect OpenClaw ---
@@ -1383,11 +1525,45 @@ async function runOneShotMode() {
 async function runInteractiveMode() {
   const conversationId = randomUUID();
   let diagnosticId = null;
+  let revision = null;
   let issues = [];
   let diagnostic = null;
   let summary = null;
   let serverIssues = null; // issues returned from server after /api/diagnose
   let sendConsent = AUTO_SEND;
+  let sessionQuiet = true;
+
+  const session = createSessionController({
+    runDiagnostics: async args => {
+      const result = await diagnosticsCore.runDiagnostics(args);
+      if (result.error) return result;
+      return { ...result, summary: legacySummary(result.summary) };
+    },
+    repairEngine,
+    normalizeFindings,
+    knownRepairIds: Object.keys(BUILTIN_FIXES),
+    makeRevisionId: randomUUID,
+    onEvent: event => {
+      if (!sessionQuiet && event.type.startsWith('scan.')) {
+        renderScanEvent(event, (...args) => console.log(...args));
+      }
+    },
+  });
+  const offlineAnalyzer = createOfflineAnalyzer({ session });
+
+  async function scanSession({ quiet = true } = {}) {
+    sessionQuiet = quiet;
+    const state = await session.scan();
+    if (state.scanError) return { error: state.scanError.message };
+    return state;
+  }
+
+  function syncSessionState(state) {
+    revision = state.revision;
+    diagnostic = state.diagnostic;
+    issues = state.issues;
+    summary = state.summary;
+  }
 
   async function uploadDiagnostic() {
     if (!sendConsent) return;
@@ -1425,7 +1601,7 @@ async function runInteractiveMode() {
   console.log('');
 
   // --- Auto-scan on startup ---
-  const scanResult = await collectDiagnostics({ quiet: true });
+  const scanResult = await scanSession({ quiet: true });
 
   if (scanResult.error) {
     console.log(c.red(`❌ ${scanResult.error}`));
@@ -1433,9 +1609,7 @@ async function runInteractiveMode() {
     process.exit(1);
   }
 
-  diagnostic = scanResult.diagnostic;
-  issues = scanResult.issues;
-  summary = scanResult.summary;
+  syncSessionState(scanResult);
 
   // Explicit consent is required before the first upload. This decision is
   // retained for manual rescans and post-repair verification scans.
@@ -1494,11 +1668,9 @@ async function runInteractiveMode() {
       console.log('');
       console.log(c.dim('Rescanning...'));
       console.log('');
-      const result = await collectDiagnostics({ quiet: true });
+      const result = await scanSession({ quiet: true });
       if (!result.error) {
-        diagnostic = result.diagnostic;
-        issues = result.issues;
-        summary = result.summary;
+        syncSessionState(result);
 
         // Preserve the startup consent decision for rescans.
         if (sendConsent) {
@@ -1525,11 +1697,9 @@ async function runInteractiveMode() {
     // fix-all — apply all auto-fixable issues at once
     if (/^fix[\s-]?all$/i.test(input)) {
       const scanFn = async () => {
-        const result = await collectDiagnostics({ quiet: true });
+        const result = await scanSession({ quiet: true });
         if (!result.error) {
-          diagnostic = result.diagnostic;
-          issues = result.issues;
-          summary = result.summary;
+          syncSessionState(result);
           // Preserve the startup consent decision for post-fix rescans.
           if (sendConsent) {
             try { await uploadDiagnostic(); } catch {}
@@ -1553,16 +1723,17 @@ async function runInteractiveMode() {
         console.log(c.red(`  No issue #${fixMatch[1]}. Use ${c.cyan('issues')} to see the list.`));
       } else {
         const issue = allIssues[idx];
-        const builtinFix = BUILTIN_FIXES[issue.id];
+        const catalogRepair = repairCatalog[issue.repairId];
+        const builtinFix = BUILTIN_FIXES[issue.repairId];
 
-        if (builtinFix) {
+        if (catalogRepair) {
+          await applyCatalogRepair(issue, rl, session);
+        } else if (builtinFix) {
           // Safe builtin fix — backup, apply, restart, verify
           const scanFn = async () => {
-            const result = await collectDiagnostics({ quiet: true });
+            const result = await scanSession({ quiet: true });
             if (!result.error) {
-              diagnostic = result.diagnostic;
-              issues = result.issues;
-              summary = result.summary;
+              syncSessionState(result);
               if (sendConsent) {
                 try { await uploadDiagnostic(); } catch {}
               }
@@ -1613,9 +1784,11 @@ async function runInteractiveMode() {
 
     // --- Natural language → send to /chat ---
     if (!sendConsent) {
+      session.appendMessage('user', input);
+      const response = await offlineAnalyzer.handle(input);
+      session.appendMessage('assistant', response.message || '');
       console.log('');
-      console.log(c.yellow('  AI chat is local-only until you restart and explicitly opt in to upload.'));
-      console.log(c.dim('  Local commands still work: fix <#>, fix-all, scan, issues'));
+      if (response.message) console.log(`  ${response.message.replaceAll('\n', '\n  ')}`);
       console.log('');
       rl.prompt();
       return;
@@ -1745,35 +1918,15 @@ function renderHelp() {
 }
 
 /**
- * Merge local CLI-detected issues with server-detected known issues.
- * Server issues (from known-issues.js pattern matching) include fix scripts.
- * Local issues are simpler {severity, text} objects.
- * Deduplicate by rough text matching.
+ * Normalize every provenance into the stable Finding contract, then deduplicate for display only.
+ * Repair authorization remains attached exclusively to explicit local/native mappings.
  */
 function mergeIssues(localIssues, serverIssues) {
-  const merged = [];
-  const seen = new Set();
-
-  // Server issues first (they have fix scripts)
-  if (serverIssues) {
-    for (const si of serverIssues) {
-      merged.push(si);
-      seen.add((si.title || '').toLowerCase());
-    }
-  }
-
-  // Then local issues that aren't duplicated
-  for (const li of localIssues) {
-    const key = (li.text || '').toLowerCase();
-    const isDup = [...seen].some(s =>
-      s.includes(key.slice(0, 20)) || key.includes(s.slice(0, 20))
-    );
-    if (!isDup) {
-      merged.push(li);
-    }
-  }
-
-  return merged;
+  return dedupeFindingsForDisplay(normalizeFindings({
+    localIssues,
+    serverFindings: serverIssues,
+    knownRepairIds: Object.keys(BUILTIN_FIXES),
+  }));
 }
 
 function severityColor(sev) {

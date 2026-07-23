@@ -8,8 +8,8 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
-      version: '0.9.1',
-      fix: 'npx clawfix@0.9.1',
+      version: '0.10.0',
+      fix: 'npx clawfix@0.10.0',
     });
   }
 
@@ -22,14 +22,14 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawFix 0.9.1 — OpenClaw Diagnostics & Repair</title>
-  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.9.1 is signed on npm with GitHub provenance.">
-  <meta property="og:title" content="ClawFix 0.9.1 — Evidence Before Repair">
+  <title>ClawFix 0.10.0 — OpenClaw Diagnostics & Repair</title>
+  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.10.0 is signed on npm with GitHub provenance.">
+  <meta property="og:title" content="ClawFix 0.10.0 — Evidence Before Repair">
   <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, reviewable repair scripts, and a signed npm release.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ClawFix 0.9.1 — Evidence Before Repair">
+  <meta name="twitter:title" content="ClawFix 0.10.0 — Evidence Before Repair">
   <meta name="twitter:description" content="Local OpenClaw diagnostics and reviewable repairs. Signed on npm with GitHub provenance.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
   <style>
@@ -416,7 +416,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
       <nav class="nav-links">
-        <a href="#release">v0.9.1</a>
+        <a href="#release">v0.10.0</a>
         <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
         <a href="#pricing" class="nav-optional">Hosted Service</a>
@@ -434,26 +434,26 @@ const LANDING_HTML = `<!DOCTYPE html>
           Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
         </p>
 
-        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.9.1">
-          <span class="release-tag">v0.9.1 live</span>
+        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.10.0">
+          <span class="release-tag">v0.10.0 live</span>
           <span class="release-copy">Modernized diagnostics. Stricter repair safety.</span>
           <span class="release-arrow">→</span>
         </a>
 
         <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-npx">npx clawfix@0.9.1</code>
+          <code id="cmd-npx">npx clawfix@0.10.0</code>
           <button type="button" class="copy-btn" id="copyBtn-npx" onclick="copyCommand('npx')">Copy</button>
         </div>
         <p class="command-hint" style="margin-bottom: 8px;">
           <strong style="color:var(--green)">Recommended</strong> — auditable source on <a href="https://www.npmjs.com/package/clawfix" style="color:var(--muted)">npm</a> and <a href="https://github.com/arcabotai/clawfix" style="color:var(--muted)">GitHub</a>
         </p>
-        <p class="command-hint" style="margin-bottom: 4px;">Want to inspect before running? <code style="color:var(--green)">npx clawfix@0.9.1 --dry-run</code></p>
+        <p class="command-hint" style="margin-bottom: 4px;">Want to inspect before running? <code style="color:var(--green)">npx clawfix@0.10.0 --dry-run</code></p>
         <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Requires Node.js 18+.</p>
         <div class="proof-row" aria-label="Release verification">
           <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
           <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
-          <span class="proof-pill"><strong>✓</strong> 7-file allowlisted package</span>
+          <span class="proof-pill"><strong>✓</strong> 18-file allowlisted package</span>
         </div>
       </div>
     </section>
@@ -463,11 +463,11 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="release-panel">
           <div class="release-panel-head">
             <div>
-              <div class="eyebrow">Release 0.9.1</div>
+              <div class="eyebrow">Release 0.10.0</div>
               <h2>Evidence before repair.</h2>
               <p>ClawFix now rejects incomplete diagnostics instead of turning uncertainty into repair advice. The release itself is signed, attested, and reproducible from public source.</p>
             </div>
-            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.9.1">Release notes →</a>
+            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.10.0">Release notes →</a>
           </div>
           <div class="release-grid">
             <div class="release-item">
