@@ -64,6 +64,9 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
 test('landing page presents truthful evidence for the published 0.10.0 eighteen-file package', async () => {
   const landing = await read('src/landing.js');
   assert.match(landing, /npx clawfix@0\.10\.0/);
+  assert.match(landing, /clawfix\.dev\/install/);
+  assert.match(landing, /install\/sha256/);
+  assert.match(landing, /No global npm/);
   assert.match(landing, /GitHub OIDC publish/);
   assert.match(landing, /npm attestation verified/);
   assert.match(landing, /18-file allowlisted package/);
@@ -82,11 +85,33 @@ test('script download guidance requires HTTPS and review before execution', asyn
   assert.doesNotMatch(scriptRoute, /curl[^\n]*\|\s*(?:ba)?sh/);
 });
 
+
+test('bash installer is recommended and never pipes curl into a shell', async () => {
+  const [installScript, installRoute, landing, readme, server] = await Promise.all([
+    read('scripts/install.sh'),
+    read('src/routes/install.js'),
+    read('src/landing.js'),
+    read('README.md'),
+    read('src/server.js'),
+  ]);
+  assert.match(server, /installRouter/);
+  assert.match(installRoute, /install\/sha256/);
+  assert.match(installScript, /#!\/usr\/bin\/env bash/);
+  assert.match(installScript, /openssl dgst -sha512/);
+  assert.match(readme, /clawfix\.dev\/install/);
+  assert.match(landing, /cmd-install/);
+  for (const source of [installScript, installRoute, landing, readme]) {
+    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
+  }
+});
+
 test('public surfaces avoid remote shell pipes and privacy absolutes', async () => {
   const sources = await Promise.all([
     read('src/landing.js'),
     read('src/routes/results.js'),
     read('src/routes/script.js'),
+    read('src/routes/install.js'),
+    read('scripts/install.sh'),
     read('cli/bin/clawfix.js'),
   ]);
   for (const source of sources) {

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { diagnoseRouter } from './routes/diagnose.js';
 import { healthRouter } from './routes/health.js';
 import { scriptRouter } from './routes/script.js';
+import { installRouter } from './routes/install.js';
 import { resultsRouter } from './routes/results.js';
 import { paymentRouter } from './routes/payment.js';
 import { webhooksRouter } from './routes/webhooks.js';
@@ -52,6 +53,7 @@ app.use('/api', paymentRouter);  // POST /api/checkout, /api/webhook/lemonsqueez
 app.use('/', paymentRouter);    // GET /pay/:fixId — payment page
 app.use('/', webhooksRouter);   // POST /webhooks/resend — inbound email
 app.use('/', scriptRouter);     // GET /fix — diagnostic script
+app.use('/', installRouter);    // GET /install — bash installer
 app.use('/', resultsRouter);    // GET /results/:fixId — web results page
 app.use('/', landingRouter);    // GET / — landing page (must be last)
 
