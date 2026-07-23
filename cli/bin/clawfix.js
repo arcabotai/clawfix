@@ -26,6 +26,7 @@ import {
 import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
 import { openClawAdapter } from '../adapters/openclaw.js';
+import { createDiagnosticsCore } from '../core/diagnostics.js';
 import { resolveCliMode } from '../core/modes.js';
 import { parseCliOptions } from '../core/options.js';
 
@@ -575,9 +576,91 @@ async function applyAllFixes(issues, serverIssues, rl, scanFn) {
 }
 
 // ============================================================
-// collectDiagnostics() — reusable scan, returns { diagnostic, issues, summary }
+// Diagnostic core compatibility bridge
 // ============================================================
-async function collectDiagnostics({ quiet = false } = {}) {
+function createCliDiagnosticsCore() {
+  return createDiagnosticsCore({
+    version: VERSION,
+    redact: redactOutbound,
+    fs: {
+      exists,
+      readJson,
+      stat,
+      readdir,
+      countMarkdownFiles,
+    },
+    openclaw: openClawAdapter,
+    os: {
+      homedir,
+      platform,
+      release,
+      arch,
+      hostname,
+      nodeVersion: () => process.version,
+    },
+    env: { ...process.env },
+    clock: { now: () => new Date() },
+    createHash,
+    timers: {
+      setTimeout: (callback, ms) => setTimeout(callback, ms),
+      clearTimeout: handle => clearTimeout(handle),
+    },
+    nativeCollectors: {
+      collectOpenClawVersion,
+      collectListeningPort,
+      collectNativeDoctor,
+      collectNativeConfigValidation,
+      collectNativeStatus,
+      collectNativeSecurityAudit,
+    },
+  });
+}
+
+const diagnosticsCore = createCliDiagnosticsCore();
+
+function renderScanEvent(event, log) {
+  if (event.type !== 'scan.step') return;
+  log(c.blue(`🔎 ${event.label}...`));
+}
+
+function legacySummary(summary) {
+  return {
+    gateway: {
+      icon: summary.gateway.running ? c.green('✓') : c.red('✗'),
+      label: summary.gateway.label,
+    },
+    config: {
+      icon: summary.config.loaded ? c.green('✓') : c.yellow('⚠'),
+      label: summary.config.label,
+    },
+    issues: {
+      icon: summary.issues.actionable === 0 ? c.green('✓') : c.yellow('⚠'),
+      label: summary.issues.label,
+    },
+    node: summary.node,
+    os: summary.os,
+    ocVersion: summary.ocVersion,
+  };
+}
+
+async function collectDiagnostics({ quiet = false, signal } = {}) {
+  const log = quiet ? () => {} : (...args) => console.log(...args);
+  const result = await diagnosticsCore.runDiagnostics({
+    revision: randomUUID(),
+    signal,
+    emit: event => renderScanEvent(event, log),
+  });
+  if (result.error) return { error: result.error };
+  return {
+    diagnostic: result.diagnostic,
+    issues: result.issues,
+    summary: legacySummary(result.summary),
+  };
+}
+
+// Legacy collector retained temporarily as executable parity reference. Remove after the
+// compatibility bridge has shipped and exercised real installations.
+async function collectDiagnosticsLegacy({ quiet = false } = {}) {
   const log = quiet ? () => {} : (...a) => console.log(...a);
 
   // --- Detect OpenClaw ---
