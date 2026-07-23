@@ -176,6 +176,147 @@ test('version and gatewayStatus construct immutable argv and bounded process opt
   assert.equal(calls[1].options.maxStderrBytes, 256 * 1024);
 });
 
+test('runtime collectors pass hostile values as literal argv and parse Linux service evidence', async () => {
+  const calls = [];
+  const processAdapter = {
+    async run(executable, argv, options) {
+      calls.push({ executable, argv, options });
+      if (executable === 'npm') return Object.freeze({ status: 0, stdout: '10.9.4\n', stderr: '' });
+      if (executable === 'pgrep') return Object.freeze({ status: 0, stdout: '42\n', stderr: '' });
+      if (executable === 'systemctl') {
+        return Object.freeze({
+          status: 0,
+          stdout: 'NRestarts=3\nActiveState=active\nSubState=running\nExecMainPID=42\n',
+          stderr: '',
+        });
+      }
+      assert.fail(`unexpected executable: ${executable}`);
+    },
+  };
+  const adapter = createOpenClawAdapter({
+    env: { PATH: '/hostile path;touch nope\n/bin' },
+    fs: {
+      async access() { throw new Error('not used'); },
+      async stat() { throw new Error('not used'); },
+    },
+    platform: 'linux',
+    processAdapter,
+  });
+
+  assert.equal(await adapter.npmVersion(), '10.9.4');
+  assert.equal(await adapter.gatewayProcesses(), '42');
+  assert.deepEqual(await adapter.serviceManagerState(), {
+    manager: 'systemd',
+    nRestarts: 3,
+    state: 'active',
+    subState: 'running',
+    pid: 42,
+  });
+  assert.deepEqual(calls.map(({ executable, argv }) => ({ executable, argv })), [
+    { executable: 'npm', argv: ['--version'] },
+    { executable: 'pgrep', argv: ['-f', 'openclaw.*gateway'] },
+    {
+      executable: 'systemctl',
+      argv: [
+        'show',
+        'openclaw-gateway',
+        '--property=NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp',
+      ],
+    },
+  ]);
+  for (const call of calls) {
+    assert.equal(call.options.shell, false);
+    assert.equal(Object.isFrozen(call.argv), true);
+  }
+});
+
+test('text collectors discard failed and truncated process evidence', async () => {
+  let calls = 0;
+  const adapter = createOpenClawAdapter({
+    fs: {
+      async access() { throw new Error('not used'); },
+      async stat() { throw new Error('not used'); },
+    },
+    processAdapter: {
+      async run() {
+        calls += 1;
+        return calls === 1
+          ? Object.freeze({ status: 7, stdout: 'untrusted-version', stderr: 'failed' })
+          : Object.freeze({ status: 0, stdout: '42', stderr: '', stdoutTruncated: true });
+      },
+    },
+  });
+
+  assert.equal(await adapter.npmVersion(), '');
+  assert.equal(await adapter.gatewayProcesses(), '');
+});
+
+test('gatewayStatusText rejects truncated status evidence from a hostile executable path', async () => {
+  let observed;
+  const adapter = createOpenClawAdapter({
+    processAdapter: {
+      async run(executable, argv) {
+        observed = { executable, argv };
+        return Object.freeze({
+          status: 0,
+          stdout: 'Runtime: running',
+          stderr: '',
+          stdoutTruncated: true,
+        });
+      },
+    },
+  });
+  const executable = '/tmp/open claw";touch nope\n/bin';
+
+  assert.equal(await adapter.gatewayStatusText({ executable }), '');
+  assert.deepEqual(observed, { executable, argv: ['gateway', 'status'] });
+});
+
+test('readFileTail reads a hostile path with bounded bytes and returns only the requested lines', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'clawfix-tail-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'gateway "log";touch nope\n.log');
+  await writeFile(path, `${Array.from({ length: 20 }, (_, index) => `line-${index}`).join('\n')}\n`);
+  const adapter = createOpenClawAdapter();
+
+  const result = await adapter.readFileTail(path, { maxLines: 3, maxBytes: 80 });
+
+  assert.equal(result.text, 'line-17\nline-18\nline-19');
+  assert.equal(result.truncated, true);
+  assert.equal(result.errorCode, null);
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test('readFileTail preserves the primary read failure when handle cleanup also fails', async () => {
+  let closeCalls = 0;
+  const adapter = createOpenClawAdapter({
+    fs: {
+      async access() {},
+      async stat() { return { isFile: () => true }; },
+      async open() {
+        return {
+          async stat() { return { size: 12 }; },
+          async read() { throw Object.assign(new Error('read failed'), { code: 'EIO' }); },
+          async close() {
+            closeCalls += 1;
+            throw new Error('close failed');
+          },
+        };
+      },
+    },
+  });
+
+  const result = await adapter.readFileTail('/literal;path', { maxLines: 2, maxBytes: 8 });
+
+  assert.deepEqual(result, {
+    text: '',
+    truncated: false,
+    errorCode: 'EIO',
+    errorSummary: 'read failed',
+  });
+  assert.equal(closeCalls, 1);
+});
+
 test('invoke snapshots mutable inputs before delayed executable discovery', async () => {
   let releaseDiscovery;
   const discoveryGate = new Promise((resolve) => { releaseDiscovery = resolve; });

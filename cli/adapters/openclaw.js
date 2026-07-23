@@ -1,6 +1,7 @@
 import { constants as fsConstants } from 'node:fs';
 import * as nodeFs from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
+import { TextDecoder } from 'node:util';
 
 import { processAdapter as defaultProcessAdapter } from './process.js';
 
@@ -331,6 +332,140 @@ export function createOpenClawAdapter({
     return invokeSnapshot(snapshotInvocation(argv, options, environment));
   }
 
+  function runSystem(executable, argv, options = {}) {
+    const invocation = snapshotInvocation(argv, { ...options, executable }, environment);
+    return processAdapter.run(
+      invocation.executable,
+      invocation.argv,
+      invocation.processOptions,
+    );
+  }
+
+  function processText(result) {
+    if (result.status !== 0
+      || result.errorCode != null
+      || result.errorSummary != null
+      || result.signal != null
+      || result.timedOut
+      || result.aborted
+      || result.outputLimitExceeded
+      || result.stdoutTruncated
+      || result.stderrTruncated) return '';
+    return String(result.stdout || '').trim();
+  }
+
+  async function successfulText(executable, argv, options = {}) {
+    return processText(await runSystem(executable, argv, options));
+  }
+
+  async function serviceManagerState(options = {}) {
+    if (platform === 'darwin') {
+      const uid = await successfulText('id', ['-u'], options);
+      if (!/^\d+$/.test(uid)) return Object.freeze({});
+      const launchdInfo = await successfulText(
+        'launchctl',
+        ['print', `gui/${uid}/ai.openclaw.gateway`],
+        options,
+      );
+      if (!launchdInfo) return Object.freeze({});
+      const runsMatch = launchdInfo.match(/runs = (\d+)/);
+      const pidMatch = launchdInfo.match(/pid = (\d+)/);
+      const stateMatch = launchdInfo.match(/state = (running|waiting|not running)/);
+      const exitCodeMatch = launchdInfo.match(/last exit code = (\d+)/);
+      const service = {
+        manager: 'launchd',
+        runs: runsMatch ? Number.parseInt(runsMatch[1], 10) : 0,
+        pid: pidMatch ? Number.parseInt(pidMatch[1], 10) : 0,
+        state: stateMatch ? stateMatch[1] : 'unknown',
+        lastExitCode: exitCodeMatch ? Number.parseInt(exitCodeMatch[1], 10) : null,
+      };
+      if (service.pid) {
+        const elapsed = await successfulText('ps', ['-p', String(service.pid), '-o', 'etime='], options);
+        if (elapsed) {
+          service.uptimeStr = elapsed;
+          const parts = elapsed.replace(/-/g, ':').split(':').reverse().map(Number);
+          service.uptimeSeconds = (parts[0] || 0)
+            + (parts[1] || 0) * 60
+            + (parts[2] || 0) * 3600
+            + (parts[3] || 0) * 86400;
+        }
+      }
+      return Object.freeze(service);
+    }
+
+    if (platform === 'linux') {
+      const systemdInfo = await successfulText('systemctl', [
+        'show',
+        'openclaw-gateway',
+        '--property=NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp',
+      ], options);
+      if (!systemdInfo) return Object.freeze({});
+      const properties = {};
+      for (const line of systemdInfo.split('\n')) {
+        const separator = line.indexOf('=');
+        if (separator <= 0) continue;
+        properties[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
+      }
+      return Object.freeze({
+        manager: 'systemd',
+        nRestarts: Number.parseInt(properties.NRestarts, 10) || 0,
+        state: properties.ActiveState || 'unknown',
+        subState: properties.SubState || 'unknown',
+        pid: Number.parseInt(properties.ExecMainPID, 10) || 0,
+      });
+    }
+
+    return Object.freeze({});
+  }
+
+  async function readFileTail(path, { maxLines, maxBytes = 1024 * 1024 } = {}) {
+    if (typeof path !== 'string' || path.length === 0 || path.includes('\0')) {
+      throw new TypeError('path must be a non-empty string without NUL bytes');
+    }
+    if (!Number.isSafeInteger(maxLines) || maxLines <= 0) {
+      throw new TypeError('maxLines must be a positive safe integer');
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new TypeError('maxBytes must be a positive safe integer');
+    }
+    if (typeof fs.open !== 'function') {
+      throw new TypeError('fs must provide an open function');
+    }
+
+    let handle;
+    try {
+      handle = await fs.open(path, 'r');
+      const fileStat = await handle.stat();
+      const length = Math.min(fileStat.size, maxBytes);
+      const offset = Math.max(0, fileStat.size - length);
+      const buffer = Buffer.allocUnsafe(length);
+      const { bytesRead } = await handle.read(buffer, 0, length, offset);
+      let text = new TextDecoder().decode(buffer.subarray(0, bytesRead));
+      let truncated = offset > 0;
+      if (offset > 0) {
+        const firstNewline = text.indexOf('\n');
+        text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
+      }
+      const lines = text.replace(/\n$/, '').split('\n');
+      if (lines.length > maxLines) truncated = true;
+      text = lines.slice(-maxLines).join('\n');
+      return Object.freeze({ text, truncated, errorCode: null, errorSummary: null });
+    } catch (error) {
+      return Object.freeze({
+        text: '',
+        truncated: false,
+        errorCode: error?.code ?? null,
+        errorSummary: error?.message ?? String(error),
+      });
+    } finally {
+      try {
+        await handle?.close();
+      } catch {
+        // A primary read result or failure remains authoritative.
+      }
+    }
+  }
+
   const versionArgv = Object.freeze(['--version']);
   const gatewayStatusArgv = Object.freeze(['gateway', 'status']);
 
@@ -343,6 +478,17 @@ export function createOpenClawAdapter({
     gatewayStatus(options = {}) {
       return invoke(gatewayStatusArgv, options);
     },
+    async gatewayStatusText(options = {}) {
+      return processText(await invoke(gatewayStatusArgv, options));
+    },
+    npmVersion(options = {}) {
+      return successfulText('npm', ['--version'], options);
+    },
+    gatewayProcesses(options = {}) {
+      return successfulText('pgrep', ['-f', 'openclaw.*gateway'], options);
+    },
+    serviceManagerState,
+    readFileTail,
   });
 }
 

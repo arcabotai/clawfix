@@ -25,6 +25,7 @@ import {
 } from './native-diagnostics.js';
 import { projectLocalIssuesForUpload, redactOutbound } from './security.js';
 import { countMarkdownFiles } from './workspace.js';
+import { openClawAdapter } from '../adapters/openclaw.js';
 import { resolveCliMode } from '../core/modes.js';
 import { parseCliOptions } from '../core/options.js';
 
@@ -584,9 +585,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const openclawDir = await exists(join(home, '.openclaw')) ? join(home, '.openclaw') :
                        await exists(join(home, '.config', 'openclaw')) ? join(home, '.config', 'openclaw') : null;
 
-  const openclawBin = run('which openclaw') ||
-                       (await exists('/opt/homebrew/bin/openclaw') ? '/opt/homebrew/bin/openclaw' : '') ||
-                       (await exists('/usr/local/bin/openclaw') ? '/usr/local/bin/openclaw' : '');
+  const openclawBin = await openClawAdapter.findExecutable() || '';
 
   const configPath = openclawDir ? join(openclawDir, 'openclaw.json') : null;
 
@@ -606,11 +605,19 @@ async function collectDiagnostics({ quiet = false } = {}) {
   const osVersion = release();
   const osArch = arch();
   const nodeVersion = process.version;
-  const npmVersion = run('npm --version');
+  const npmVersion = await openClawAdapter.npmVersion({ timeoutMs: 5000 });
   const hostHash = hashStr(hostname());
 
-  const versionProbe = openclawBin
-    ? collectOpenClawVersion(openclawBin)
+  const versionResult = openclawBin
+    ? await openClawAdapter.version({
+      executable: openclawBin,
+      timeoutMs: 10_000,
+      maxStdoutBytes: 1_200,
+      maxStderrBytes: 4_000,
+    })
+    : null;
+  const versionProbe = versionResult
+    ? collectOpenClawVersion(openclawBin, () => versionResult)
     : { version: '', runtimeCompatible: false, error: 'OpenClaw binary not found' };
   const ocVersion = versionProbe.version;
 
@@ -639,11 +646,14 @@ async function collectDiagnostics({ quiet = false } = {}) {
 
   let gatewayStatus = 'unknown';
   if (openclawBin) {
-    gatewayStatus = run(`"${openclawBin}" gateway status 2>&1`) || 'could not check';
+    gatewayStatus = await openClawAdapter.gatewayStatusText({
+      executable: openclawBin,
+      timeoutMs: 5000,
+    }) || 'could not check';
   }
 
   const gatewayPort = config?.gateway?.port || 18789;
-  const gatewayPid = run('pgrep -f "openclaw.*gateway"') || '';
+  const gatewayPid = await openClawAdapter.gatewayProcesses({ timeoutMs: 5000 });
 
   const statusLine = gatewayStatus.split('\n').find(l => /runtime:|listening|running|stopped|not running/i.test(l))
     || gatewayStatus.split('\n')[0];
@@ -668,7 +678,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
     try {
       const logStat = await stat(logPath);
       logSizeMB = Math.round(logStat.size / 1024 / 1024);
-      const tailContent = run(`tail -500 "${logPath}" 2>/dev/null`);
+      const tailContent = (await openClawAdapter.readFileTail(logPath, {
+        maxLines: 500,
+        maxBytes: 1024 * 1024,
+      })).text;
       const lines = tailContent.split('\n');
       errorLogs = lines
         .filter(l => /error|warn|fail|crash|EADDRINUSE|EACCES/i.test(l))
@@ -686,7 +699,10 @@ async function collectDiagnostics({ quiet = false } = {}) {
     try {
       const errStat = await stat(errLogPath);
       errLogSizeMB = Math.round(errStat.size / 1024 / 1024);
-      stderrLogs = run(`tail -200 "${errLogPath}" 2>/dev/null`);
+      stderrLogs = (await openClawAdapter.readFileTail(errLogPath, {
+        maxLines: 200,
+        maxBytes: 1024 * 1024,
+      })).text;
       const icon = errLogSizeMB > 50 ? c.yellow('⚠️') : c.green('✅');
       log(`   ${icon} Error log found (${errLogSizeMB}MB${errLogSizeMB > 50 ? ' — OVERSIZED!' : ''})`);
     } catch {}
@@ -696,31 +712,12 @@ async function collectDiagnostics({ quiet = false } = {}) {
   log('');
   log(c.blue('🔧 Checking service health...'));
 
-  let serviceHealth = {};
+  const serviceHealth = await openClawAdapter.serviceManagerState({ timeoutMs: 5000 });
   const isMac = osName === 'darwin';
   const isLinux = osName === 'linux';
 
   if (isMac) {
-    const uid = run('id -u');
-    const launchdInfo = run(`launchctl print gui/${uid}/ai.openclaw.gateway 2>/dev/null`);
-    if (launchdInfo) {
-      const runsMatch = launchdInfo.match(/runs = (\d+)/);
-      const pidMatch = launchdInfo.match(/pid = (\d+)/);
-      const stateMatch = launchdInfo.match(/state = (running|waiting|not running)/);
-      const exitCodeMatch = launchdInfo.match(/last exit code = (\d+)/);
-      serviceHealth = {
-        manager: 'launchd',
-        runs: runsMatch ? parseInt(runsMatch[1]) : 0,
-        pid: pidMatch ? parseInt(pidMatch[1]) : 0,
-        state: stateMatch ? stateMatch[1] : 'unknown',
-        lastExitCode: exitCodeMatch ? parseInt(exitCodeMatch[1]) : null,
-      };
-      if (serviceHealth.pid) {
-        const elapsed = run(`ps -p ${serviceHealth.pid} -o etime= 2>/dev/null`).trim();
-        serviceHealth.uptimeStr = elapsed;
-        const parts = elapsed.replace(/-/g, ':').split(':').reverse().map(Number);
-        serviceHealth.uptimeSeconds = (parts[0] || 0) + (parts[1] || 0) * 60 + (parts[2] || 0) * 3600 + (parts[3] || 0) * 86400;
-      }
+    if (serviceHealth.manager === 'launchd') {
       const runsIcon = serviceHealth.runs > 2 ? c.yellow('⚠️') : c.green('✅');
       log(`   ${runsIcon} LaunchAgent: ${serviceHealth.state} (${serviceHealth.runs} run(s), PID ${serviceHealth.pid || 'none'})`);
       if (serviceHealth.uptimeStr) log(`   Uptime: ${serviceHealth.uptimeStr}`);
@@ -729,20 +726,7 @@ async function collectDiagnostics({ quiet = false } = {}) {
       log(c.dim('   LaunchAgent not found'));
     }
   } else if (isLinux) {
-    const systemdInfo = run('systemctl show openclaw-gateway --property=NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp 2>/dev/null');
-    if (systemdInfo) {
-      const props = {};
-      systemdInfo.split('\n').forEach(l => {
-        const [k, v] = l.split('=', 2);
-        if (k && v) props[k.trim()] = v.trim();
-      });
-      serviceHealth = {
-        manager: 'systemd',
-        nRestarts: parseInt(props.NRestarts) || 0,
-        state: props.ActiveState || 'unknown',
-        subState: props.SubState || 'unknown',
-        pid: parseInt(props.ExecMainPID) || 0,
-      };
+    if (serviceHealth.manager === 'systemd') {
       log(`   systemd: ${serviceHealth.state}/${serviceHealth.subState} (${serviceHealth.nRestarts} restart(s))`);
     } else {
       log(c.dim('   systemd service not found'));
