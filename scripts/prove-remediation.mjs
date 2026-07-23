@@ -65,12 +65,21 @@ await check('results and payment routes validate fix IDs', async () => {
 });
 
 await check('CLI requires consent and recursively redacts every upload', async () => {
-  const cli = await text('cli/bin/clawfix.js');
+  const [cli, options, modes] = await Promise.all([
+    text('cli/bin/clawfix.js'),
+    text('cli/core/options.js'),
+    text('cli/core/modes.js'),
+  ]);
   assert.match(cli, /Send redacted diagnostic for AI analysis\? \[y\/N\]/);
   assert.match(cli, /body: JSON\.stringify\(redactOutbound\(diagnostic\)\)/);
   assert.match(cli, /if \(!sendConsent\)[\s\S]{0,800}consentRl\.question/);
-  assert.match(cli, /serverArgIndex = args\.indexOf\('--server'\)/);
-  assert.match(cli, /const ONE_SHOT =[^;]*SHOW_DATA/);
+  assert.match(cli, /import \{ parseCliOptions \} from '\.\.\/core\/options\.js'/);
+  assert.match(cli, /import \{ resolveCliMode \} from '\.\.\/core\/modes\.js'/);
+  assert.match(cli, /CLI_OPTIONS = parseCliOptions\(process\.argv\.slice\(2\), process\.env\)/);
+  assert.match(cli, /CLI_MODE = resolveCliMode\(CLI_OPTIONS\)/);
+  assert.match(options, /serverArgIndex = args\.indexOf\('--server'\)/);
+  assert.match(options, /oneShot = args\.includes\('--scan'\)[\s\S]{0,200}showData[\s\S]{0,200}localOnly/);
+  assert.match(modes, /if \(parsed\.oneShot\) return ONE_SHOT_MODE/);
 });
 
 await check('container context and runtime import are closed', async () => {
