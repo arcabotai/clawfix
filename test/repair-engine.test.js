@@ -236,6 +236,6 @@ test('two plans for the same finding get different tokens, and each others token
 test('the real fix command routes catalog repairs through the repair engine before legacy fixes', async () => {
   const source = await readFile(new URL('../cli/bin/clawfix.js', import.meta.url), 'utf8');
   assert.match(source, /const catalogRepair = repairCatalog\[issue\.repairId\]/);
-  assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, revision, rl\)/);
+  assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, rl, session\)/);
   assert.match(source, /revision: result\.revision/);
 });

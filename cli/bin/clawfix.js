@@ -32,6 +32,8 @@ import { parseCliOptions } from '../core/options.js';
 import { dedupeFindingsForDisplay, normalizeFindings } from '../core/findings.js';
 import { repairCatalog } from '../core/repair-catalog.js';
 import { createRepairEngine } from '../core/repair-engine.js';
+import { createSessionController } from '../core/session.js';
+import { createOfflineAnalyzer } from '../core/offline-analyzer.js';
 
 // --- Config ---
 const CLI_OPTIONS = parseCliOptions(process.argv.slice(2), process.env);
@@ -382,8 +384,13 @@ const BUILTIN_FIXES = {
 
 const repairEngine = createRepairEngine({ catalog: repairCatalog });
 
-async function applyCatalogRepair(issue, revision, rl) {
-  const plan = repairEngine.createPlan({ finding: issue, revision });
+async function applyCatalogRepair(issue, rl, session) {
+  const proposal = session.proposeRepair(issue.id);
+  if (proposal.status !== 'proposed') {
+    console.log(c.yellow(`  Repair unavailable: ${proposal.status}`));
+    return proposal;
+  }
+  const { plan } = proposal;
   const preview = await repairEngine.previewPlan(plan, {});
 
   console.log('');
@@ -406,11 +413,10 @@ async function applyCatalogRepair(issue, revision, rl) {
     return { status: 'cancelled' };
   }
 
-  const result = await repairEngine.applyPlan({
+  const result = await session.applyRepair({
     planId: plan.planId,
     approvalToken: plan.approvalToken,
-    revision,
-    finding: issue,
+    findingId: issue.id,
     ctx: {
       openclaw: openClawAdapter,
       wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -1525,6 +1531,39 @@ async function runInteractiveMode() {
   let summary = null;
   let serverIssues = null; // issues returned from server after /api/diagnose
   let sendConsent = AUTO_SEND;
+  let sessionQuiet = true;
+
+  const session = createSessionController({
+    runDiagnostics: async args => {
+      const result = await diagnosticsCore.runDiagnostics(args);
+      if (result.error) return result;
+      return { ...result, summary: legacySummary(result.summary) };
+    },
+    repairEngine,
+    normalizeFindings,
+    knownRepairIds: Object.keys(BUILTIN_FIXES),
+    makeRevisionId: randomUUID,
+    onEvent: event => {
+      if (!sessionQuiet && event.type.startsWith('scan.')) {
+        renderScanEvent(event, (...args) => console.log(...args));
+      }
+    },
+  });
+  const offlineAnalyzer = createOfflineAnalyzer({ session });
+
+  async function scanSession({ quiet = true } = {}) {
+    sessionQuiet = quiet;
+    const state = await session.scan();
+    if (state.scanError) return { error: state.scanError.message };
+    return state;
+  }
+
+  function syncSessionState(state) {
+    revision = state.revision;
+    diagnostic = state.diagnostic;
+    issues = state.issues;
+    summary = state.summary;
+  }
 
   async function uploadDiagnostic() {
     if (!sendConsent) return;
@@ -1562,7 +1601,7 @@ async function runInteractiveMode() {
   console.log('');
 
   // --- Auto-scan on startup ---
-  const scanResult = await collectDiagnostics({ quiet: true });
+  const scanResult = await scanSession({ quiet: true });
 
   if (scanResult.error) {
     console.log(c.red(`❌ ${scanResult.error}`));
@@ -1570,10 +1609,7 @@ async function runInteractiveMode() {
     process.exit(1);
   }
 
-  revision = scanResult.revision;
-  diagnostic = scanResult.diagnostic;
-  issues = scanResult.issues;
-  summary = scanResult.summary;
+  syncSessionState(scanResult);
 
   // Explicit consent is required before the first upload. This decision is
   // retained for manual rescans and post-repair verification scans.
@@ -1632,12 +1668,9 @@ async function runInteractiveMode() {
       console.log('');
       console.log(c.dim('Rescanning...'));
       console.log('');
-      const result = await collectDiagnostics({ quiet: true });
+      const result = await scanSession({ quiet: true });
       if (!result.error) {
-        revision = result.revision;
-        diagnostic = result.diagnostic;
-        issues = result.issues;
-        summary = result.summary;
+        syncSessionState(result);
 
         // Preserve the startup consent decision for rescans.
         if (sendConsent) {
@@ -1664,12 +1697,9 @@ async function runInteractiveMode() {
     // fix-all — apply all auto-fixable issues at once
     if (/^fix[\s-]?all$/i.test(input)) {
       const scanFn = async () => {
-        const result = await collectDiagnostics({ quiet: true });
+        const result = await scanSession({ quiet: true });
         if (!result.error) {
-          revision = result.revision;
-          diagnostic = result.diagnostic;
-          issues = result.issues;
-          summary = result.summary;
+          syncSessionState(result);
           // Preserve the startup consent decision for post-fix rescans.
           if (sendConsent) {
             try { await uploadDiagnostic(); } catch {}
@@ -1697,16 +1727,13 @@ async function runInteractiveMode() {
         const builtinFix = BUILTIN_FIXES[issue.repairId];
 
         if (catalogRepair) {
-          await applyCatalogRepair(issue, revision, rl);
+          await applyCatalogRepair(issue, rl, session);
         } else if (builtinFix) {
           // Safe builtin fix — backup, apply, restart, verify
           const scanFn = async () => {
-            const result = await collectDiagnostics({ quiet: true });
+            const result = await scanSession({ quiet: true });
             if (!result.error) {
-              revision = result.revision;
-              diagnostic = result.diagnostic;
-              issues = result.issues;
-              summary = result.summary;
+              syncSessionState(result);
               if (sendConsent) {
                 try { await uploadDiagnostic(); } catch {}
               }
@@ -1757,9 +1784,11 @@ async function runInteractiveMode() {
 
     // --- Natural language → send to /chat ---
     if (!sendConsent) {
+      session.appendMessage('user', input);
+      const response = await offlineAnalyzer.handle(input);
+      session.appendMessage('assistant', response.message || '');
       console.log('');
-      console.log(c.yellow('  AI chat is local-only until you restart and explicitly opt in to upload.'));
-      console.log(c.dim('  Local commands still work: fix <#>, fix-all, scan, issues'));
+      if (response.message) console.log(`  ${response.message.replaceAll('\n', '\n  ')}`);
       console.log('');
       rl.prompt();
       return;

@@ -540,19 +540,19 @@ test('missing and invalid server values fail before scanning', async () => {
   }
 });
 
-test('interactive startup supports explicit decline, local-only chat, and clean exit', async () => {
+test('interactive startup supports explicit decline, deterministic offline help, and clean exit', async () => {
   const sandbox = await createCliSandbox();
   try {
     await withServer((request, response) => response.end('{}'), async ({ url, requests }) => {
       const result = await runInteractiveScript(sandbox, [
         { waitFor: /Send redacted diagnostic for AI analysis\? \[y\/N\]/, send: 'n\n' },
         { waitFor: /clawfix>\s*$/, send: 'why is it broken?\n' },
-        { waitFor: /AI chat is local-only until you restart and explicitly opt in/, send: 'exit\n' },
+        { waitFor: /Unknown local command\. Type help/, send: 'exit\n' },
       ], { apiUrl: url });
       assert.equal(result.status, 0, result.stderr);
       const output = stripAnsi(result.stdout);
       assert.match(output, /Scanning your OpenClaw installation/);
-      assert.match(output, /AI chat is local-only/);
+      assert.match(output, /Unknown local command\. Type help/);
       assert.match(output, /ClawFix — made by Arca/);
       assert.equal(requests.length, 0);
     });
