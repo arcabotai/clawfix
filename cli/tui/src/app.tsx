@@ -1,4 +1,4 @@
-import { createSignal, For, onCleanup, Show } from "solid-js"
+import { createSignal, onCleanup } from "solid-js"
 
 import { theme } from "./theme"
 import {
@@ -34,6 +34,18 @@ function severityColor(severity: string): string {
   }
 }
 
+function findingColor(line: string): string {
+  if (line.startsWith("No findings")) return theme.muted
+  if (line.includes("[error]") || line.includes("[critical]")) return severityColor("error")
+  if (line.includes("[warning]")) return severityColor("warning")
+  if (line.includes("[optimization]")) return severityColor("optimization")
+  return theme.text
+}
+
+function formatFinding(finding: TuiFinding, index: number): string {
+  return `${index + 1}. [${finding.severity}] ${finding.title}${finding.repairable ? " · repairable" : ""}`
+}
+
 export function App(props: AppProps) {
   const initial = props.source?.getView() ?? props.session ?? createFakeSession()
   const [view, setView] = createSignal<TuiSessionView>(initial)
@@ -43,8 +55,20 @@ export function App(props: AppProps) {
     onCleanup(unsubscribe)
   }
 
-  // OpenTUI Solid rejects orphan whitespace text nodes. Keep one bordered column
-  // and only emit explicit <text> children (same pattern as the original scaffold).
+  // OpenTUI Solid rejects orphan whitespace/empty text nodes outside <text>.
+  // Mirror the original scaffold: one bordered column, only explicit <text> children.
+  const current = () => view()
+  const findingLines = () => {
+    const findings = current().findings
+    if (findings.length === 0) return ["No findings yet. Run a scan."]
+    return findings.map(formatFinding)
+  }
+  const messageLines = () => {
+    const messages = current().messages
+    if (messages.length === 0) return ["No messages yet."]
+    return [...messages]
+  }
+
   return (
     <box
       style={{
@@ -57,32 +81,14 @@ export function App(props: AppProps) {
     >
       <box border borderColor={theme.border} style={{ flexDirection: "column", padding: 1 }}>
         <text fg={theme.heading}><strong>ClawFix</strong></text>
-        <text fg={theme.text}>{view().prompt}</text>
-        <text fg={theme.muted}>{view().status}</text>
-        <text fg={theme.muted}>{view().revision ? `revision ${view().revision}` : "revision none"}</text>
+        <text fg={theme.text}>{current().prompt}</text>
+        <text fg={theme.muted}>{current().status}</text>
+        <text fg={theme.muted}>{current().revision ? `revision ${current().revision}` : "revision none"}</text>
         <text fg={theme.heading}><strong>Findings</strong></text>
-        <Show when={view().findings.length === 0}>
-          <text fg={theme.muted}>No findings yet. Run a scan.</text>
-        </Show>
-        <For each={view().findings}>
-          {(finding: TuiFinding, index) => (
-            <text fg={severityColor(finding.severity)}>
-              {`${index() + 1}. [${finding.severity}] ${finding.title}${finding.repairable ? " · repairable" : ""}`}
-            </text>
-          )}
-        </For>
+        {findingLines().map((line) => <text fg={findingColor(line)}>{line}</text>)}
         <text fg={theme.heading}><strong>Transcript</strong></text>
-        <Show when={view().messages.length === 0}>
-          <text fg={theme.muted}>No messages yet.</text>
-        </Show>
-        <For each={view().messages}>
-          {(message: string) => <text fg={theme.text}>{message}</text>}
-        </For>
-        <text fg={theme.muted}>
-          {view().scanning
-            ? "Scan in progress…"
-            : "Local-first session · OpenTUI bound to ClawFix controller"}
-        </text>
+        {messageLines().map((line) => <text fg={line === "No messages yet." ? theme.muted : theme.text}>{line}</text>)}
+        <text fg={theme.muted}>{current().scanning ? "Scan in progress…" : "Local-first session · OpenTUI bound to ClawFix controller"}</text>
       </box>
     </box>
   )
