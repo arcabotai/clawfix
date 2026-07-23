@@ -1,0 +1,146 @@
+name: Release TUI binaries
+
+# Builds standalone ClawFix OpenTUI executables with Bun --compile.
+# Starts with Linux x64 (+ baseline). Expand matrix as native packages are proven.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: Comma-separated TUI targets
+        required: false
+        default: linux-x64,linux-x64-baseline
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-tui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-tui:
+    name: tui-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-x64-baseline
+            runner: ubuntu-latest
+          # Expand after linux-x64 is green:
+          # - target: linux-arm64
+          #   runner: ubuntu-24.04-arm
+          # - target: darwin-arm64
+          #   runner: macos-14
+          # - target: darwin-x64
+          #   runner: macos-13
+          # - target: windows-x64
+          #   runner: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun 1.2.21
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.2.21"
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install TUI dependencies
+        working-directory: cli/tui
+        run: bun install --frozen-lockfile
+
+      - name: Install target native OpenTUI package
+        working-directory: cli/tui
+        run: |
+          case "${{ matrix.target }}" in
+            linux-x64|linux-x64-baseline) pkg="@opentui/core-linux-x64" ;;
+            linux-arm64) pkg="@opentui/core-linux-arm64" ;;
+            darwin-arm64) pkg="@opentui/core-darwin-arm64" ;;
+            darwin-x64) pkg="@opentui/core-darwin-x64" ;;
+            windows-x64) pkg="@opentui/core-windows-x64" ;;
+            *) echo "unknown target"; exit 1 ;;
+          esac
+          bun add --optional "${pkg}@0.4.5" || true
+
+      - name: Build standalone binary
+        env:
+          TUI_TARGETS: ${{ matrix.target }}
+          TUI_OUTDIR: ${{ github.workspace }}/dist/tui
+          SKIP_INSTALL: "1"
+        run: node scripts/build-tui-release.mjs
+
+      - name: Verify artifact
+        run: |
+          shopt -s nullglob
+          bins=(dist/tui/clawfix-tui-*)
+          if [ ${#bins[@]} -eq 0 ]; then
+            echo "::error ::no clawfix-tui binaries produced"
+            exit 1
+          fi
+          for b in "${bins[@]}"; do
+            case "$b" in
+              *.sha256|*.json) continue ;;
+            esac
+            [ -f "$b" ] || continue
+            node scripts/verify-tui-artifact.mjs "$b" --target "${{ matrix.target }}"
+          done
+
+      - name: Smoke binary (linux only)
+        if: runner.os == 'Linux'
+        run: |
+          bin=$(ls "$PWD"/dist/tui/clawfix-tui-linux-* | head -1)
+          test -x "$bin"
+          # Start-smoke: proves the compiled ELF runs. Full interactive PTY smoke is
+          # gated on OpenTUI wasm path resolution inside bun --compile (see smoke script).
+          node scripts/smoke-tui-binary.mjs "$bin"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawfix-tui-${{ matrix.target }}
+          path: |
+            dist/tui/**
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-release-assets:
+    name: attach-tui-assets
+    needs: build-tui
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all TUI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-tui
+          pattern: clawfix-tui-*
+          merge-multiple: true
+
+      - name: Merge checksums
+        run: |
+          cd release-tui
+          if [ -f SHA256SUMS ]; then cat SHA256SUMS; fi
+          find . -type f -name 'clawfix-tui-*' ! -name '*.sha256' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.merged
+          mv SHA256SUMS.merged SHA256SUMS
+          ls -la
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-tui/**
+          fail_on_unmatched_files: true
