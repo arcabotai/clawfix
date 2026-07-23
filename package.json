@@ -27,7 +27,10 @@
     "lab:status": "node scripts/blaxel-lab.mjs status",
     "lab:native": "node scripts/blaxel-native-evidence.mjs",
     "lab:stop": "node scripts/blaxel-lab.mjs stop",
-    "lab:scenarios": "node scripts/blaxel-scenarios.mjs all"
+    "lab:scenarios": "node scripts/blaxel-scenarios.mjs all",
+    "build:tui": "node scripts/build-tui-release.mjs",
+    "verify:tui": "node scripts/verify-tui-artifact.mjs",
+    "smoke:tui": "node scripts/smoke-tui-binary.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",
