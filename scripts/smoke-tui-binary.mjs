@@ -14,7 +14,7 @@
  *   SMOKE_SKIP_PTY=1  only exec --help-style / version probe (exit if binary runs 0 with CLAWFIX_TUI_SMOKE=1)
  */
 import { spawn } from "node:child_process"
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createRequire } from "node:module"
@@ -53,11 +53,11 @@ async function loadPty() {
   }
 }
 
-async function smokeWithPty(binary, home) {
+async function smokeWithPty(binary, home, envExtra = {}) {
   const pty = await loadPty()
   if (!pty) {
     console.log("node-pty not installed; falling back to plain spawn smoke")
-    return smokePlain(binary, home)
+    return smokePlain(binary, home, envExtra)
   }
 
   const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 20000)
@@ -69,12 +69,12 @@ async function smokeWithPty(binary, home) {
     cwd: home,
     env: {
       ...process.env,
+      ...envExtra,
       HOME: home,
       USERPROFILE: home,
       TERM: "xterm-256color",
       NO_COLOR: "",
       CLAWFIX_TUI_SMOKE: "1",
-      // Prefer fake session path; main.tsx uses createFakeSession when no args
     },
   })
 
@@ -139,7 +139,7 @@ async function smokeWithPty(binary, home) {
   )
 }
 
-function smokePlain(binary, home) {
+function smokePlain(binary, home, envExtra = {}) {
   return new Promise((resolve, reject) => {
     const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 8000)
     const full = process.env.CLAWFIX_TUI_FULL_SMOKE === "1"
@@ -147,6 +147,7 @@ function smokePlain(binary, home) {
       cwd: home,
       env: {
         ...process.env,
+        ...envExtra,
         HOME: home,
         TERM: full ? "xterm-256color" : "dumb",
         CLAWFIX_TUI_SMOKE: "1",
@@ -170,12 +171,13 @@ function smokePlain(binary, home) {
     })
     child.on("close", (code, signal) => {
       clearTimeout(timer)
-      // Binary must start. Full interactive TUI under compile still has an upstream
-      // OpenTUI/web-tree-sitter path issue inside bun --compile ($bunfs); default smoke
-      // only requires a real process start (not ENOENT/127) and some IO or a JS error.
       if (code === 127) reject(new Error("binary not executable or missing interpreter"))
       const started = out.length + err.length > 0 || code === 0 || signal === "SIGTERM" || signal === "SIGINT"
       if (!started) reject(new Error(`binary produced no output and exit ${code}`))
+      // With OTUI_ASSET_ROOT, require no tree-sitter path crash
+      if (err.includes("normalizeLoadedFilePath") || err.includes("loadedPath.startsWith")) {
+        reject(new Error(`OpenTUI asset path still broken:\n${err.slice(-800)}`))
+      }
       if (full && code !== 0 && code !== 130 && code !== 143) {
         reject(new Error(`full smoke failed exit ${code}: ${err.slice(-500)}`))
       }
@@ -189,11 +191,8 @@ function smokePlain(binary, home) {
             signal,
             stdoutBytes: out.length,
             stderrBytes: err.length,
+            otuiAssetRoot: envExtra.OTUI_ASSET_ROOT || process.env.OTUI_ASSET_ROOT || null,
             stderrTail: err.slice(-500),
-            note:
-              code && code !== 0
-                ? "Compile start OK; non-zero exit may be OpenTUI wasm path under bun --compile (tracked)"
-                : undefined,
           },
           null,
           2,
@@ -206,25 +205,30 @@ function smokePlain(binary, home) {
 
 async function main() {
   const binaryArg = process.argv[2]
-  if (!binaryArg) fail("usage: node scripts/smoke-tui-binary.mjs <binary>")
-  const { resolve } = await import("node:path")
+  if (!binaryArg) fail("usage: node scripts/smoke-tui-binary.mjs <binary-or-launcher>")
+  const { resolve, dirname, join } = await import("node:path")
   const binary = resolve(binaryArg)
   if (!existsSync(binary)) fail(`missing binary: ${binary}`)
 
-  if (process.env.SMOKE_SKIP_PTY === "1" || process.env.CLAWFIX_TUI_FULL_SMOKE !== "1") {
-    const home = makeFixture()
-    try {
-      // Default: plain start smoke (absolute path). Opt into PTY with CLAWFIX_TUI_FULL_SMOKE=1.
-      await smokePlain(binary, home)
-    } finally {
-      rmSync(home, { recursive: true, force: true })
-    }
-    return
+  // Prefer OTUI_ASSET_ROOT next to launcher (assets-<target>/)
+  const dir = dirname(binary)
+  const assetCandidates = readdirSync(dir).filter((n) => n.startsWith("assets-"))
+  const envExtra = {}
+  if (!process.env.OTUI_ASSET_ROOT && assetCandidates.length) {
+    envExtra.OTUI_ASSET_ROOT = join(dir, assetCandidates[0])
+    envExtra.OTUI_TREE_SITTER_WORKER_PATH = join(
+      envExtra.OTUI_ASSET_ROOT,
+      "@opentui/core/parser.worker.js",
+    )
   }
 
   const home = makeFixture()
   try {
-    await smokeWithPty(binary, home)
+    if (process.env.CLAWFIX_TUI_FULL_SMOKE === "1") {
+      await smokeWithPty(binary, home, envExtra)
+    } else {
+      await smokePlain(binary, home, envExtra)
+    }
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

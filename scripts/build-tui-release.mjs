@@ -8,11 +8,10 @@
  *   SKIP_INSTALL  if 1, do not run bun install in cli/tui
  */
 import { spawnSync } from "node:child_process"
-import { mkdirSync, writeFileSync, existsSync, readdirSync } from "node:fs"
+import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const TUI = join(ROOT, "cli", "tui")
@@ -58,8 +57,15 @@ function main() {
     built.push(target)
   }
 
-  // checksums for every file in outdir (binaries only)
-  const files = readdirSync(outdir).filter((f) => !f.endsWith(".sha256") && !f.endsWith(".json"))
+  // checksums for binaries + launchers only (skip asset directories)
+  const files = readdirSync(outdir).filter((f) => {
+    const p = join(outdir, f)
+    try {
+      return statSync(p).isFile() && !f.endsWith(".sha256") && !f.endsWith(".json") && f !== "SHA256SUMS"
+    } catch {
+      return false
+    }
+  })
   const lines = []
   const manifest = { generatedAt: new Date().toISOString(), targets: built, artifacts: [] }
   for (const f of files) {
