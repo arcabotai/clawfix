@@ -9,8 +9,7 @@ landingRouter.get('/', (req, res) => {
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
       version: '0.11.1',
-      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh && bash install-clawfix.sh
-          <span style="display:block;margin-top:0.5rem;color:var(--muted);font-size:0.9em">Requires Node.js 22+. curl/openssl optional. TUI release binaries need glibc Linux (not Alpine/musl).</span>',
+      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh && bash install-clawfix.sh',
       fix: 'npx clawfix@0.11.1',
     });
   }
