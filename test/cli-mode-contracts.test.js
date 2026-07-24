@@ -305,9 +305,9 @@ test('help and version aliases exit before scanning or sending', async () => {
     for (const [flag, expected] of [
       ['--help', /Usage: npx clawfix \[options\]/],
       ['-h', /Usage: npx clawfix \[options\]/],
-      ['--version', /^clawfix v0\.11\.0\n$/],
-      ['-v', /^clawfix v0\.11\.0\n$/],
-      ['-V', /^clawfix v0\.11\.0\n$/],
+      ['--version', /^clawfix v0\.11\.1\n$/],
+      ['-v', /^clawfix v0\.11\.1\n$/],
+      ['-V', /^clawfix v0\.11\.1\n$/],
     ]) {
       const result = await runCli(sandbox, [flag]);
       assert.equal(result.status, 0, `${flag}: ${result.stderr}`);
@@ -339,7 +339,7 @@ test('JSON mode keeps stdout parseable and makes no request even when combined w
   }
 });
 
-test('JSON failure is pure JSON when OpenClaw is absent from isolated HOME and PATH', async t => {
+test('JSON soft-miss when OpenClaw is absent from isolated HOME and PATH', async t => {
   const unsafeHostFallbacks = await findUnsafeHostAbsoluteOpenClawFallbacks();
   if (unsafeHostFallbacks.length > 0) {
     const reason = `host absolute OpenClaw fallback is present or could not be proven absent: ${unsafeHostFallbacks.join(', ')}`;
@@ -351,15 +351,38 @@ test('JSON failure is pure JSON when OpenClaw is absent from isolated HOME and P
   const sandbox = await createCliSandbox({ withOpenClaw: false });
   try {
     const result = await runCli(sandbox, ['--json']);
-    assert.equal(result.status, 1, result.stderr);
+    assert.equal(result.status, 0, result.stderr);
     assert.equal(result.timedOut, false);
     // The sandboxed fake `which` fails quietly instead of falling through to
     // a host shell implementation.
     assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), {
-      ok: false,
+      ok: true,
+      openclawFound: false,
+      code: 'OPENCLAW_NOT_FOUND',
       error: 'OpenClaw not found on this system.',
     });
+  } finally {
+    await sandbox.cleanup();
+  }
+});
+
+test('dry-run soft-miss exits 0 when OpenClaw is absent', async t => {
+  const unsafeHostFallbacks = await findUnsafeHostAbsoluteOpenClawFallbacks();
+  if (unsafeHostFallbacks.length > 0) {
+    const reason = `host absolute OpenClaw fallback is present or could not be proven absent: ${unsafeHostFallbacks.join(', ')}`;
+    if (process.env.CI) assert.fail(`CI isolation requirement failed: ${reason}`);
+    t.skip(reason);
+    return;
+  }
+
+  const sandbox = await createCliSandbox({ withOpenClaw: false });
+  try {
+    const result = await runCli(sandbox, ['--dry-run']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(stripAnsi(result.stdout), /LOCAL-ONLY MODE — nothing will be sent/);
+    assert.match(stripAnsi(result.stdout), /OpenClaw not found on this system/);
+    assert.match(stripAnsi(result.stdout), /Local scan complete — nothing was sent/);
   } finally {
     await sandbox.cleanup();
   }
@@ -511,7 +534,7 @@ test('conflicting flags preserve current precedence', async () => {
   try {
     const versionBeforeHelp = await runCli(sandbox, ['--help', '--version']);
     assert.equal(versionBeforeHelp.status, 0);
-    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.11.0\n');
+    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.11.1\n');
 
     await withServer((request, response) => response.end('{}'), async ({ url, requests }) => {
       const localBeforeAutoSend = await runCli(sandbox, ['--dry-run', '--yes', '--server', url]);

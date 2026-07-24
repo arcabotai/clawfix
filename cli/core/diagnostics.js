@@ -810,7 +810,9 @@ export function createDiagnosticsCore({
       if (!openclawBin && !openclawDir) {
         const message = 'OpenClaw not found on this system.';
         emitTerminal(scanError({ revision, error: { message, code: 'OPENCLAW_NOT_FOUND' } }));
-        return Object.freeze({ revision, error: message });
+        // Soft outcome: the scan completed successfully and found no OpenClaw.
+        // Callers (especially --dry-run / local-only) should treat this as exit 0.
+        return Object.freeze({ revision, error: message, errorCode: 'OPENCLAW_NOT_FOUND' });
       }
 
       emit?.(scanStep({

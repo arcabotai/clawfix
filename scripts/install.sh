@@ -12,6 +12,12 @@
 #   ✗ Require root or a global npm install
 #   ✗ Modify OpenClaw config
 #
+# PREREQUISITES:
+#   - Node.js 22+
+#   - tar, mktemp, mkdir (standard on macOS/Linux)
+#   - curl preferred for downloads; Node fetch is used if curl is missing
+#   - openssl preferred for integrity; Node crypto is used if openssl is missing
+#
 # VERIFY BEFORE RUNNING:
 #   curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh
 #   cat install-clawfix.sh
@@ -24,7 +30,7 @@
 
 set -euo pipefail
 
-VERSION="${CLAWFIX_VERSION:-0.11.0}"
+VERSION="${CLAWFIX_VERSION:-0.11.1}"
 PREFIX="${CLAWFIX_PREFIX:-${HOME}/.clawfix}"
 BIN_DIR="${CLAWFIX_BIN_DIR:-${HOME}/.local/bin}"
 REGISTRY="${CLAWFIX_REGISTRY:-https://registry.npmjs.org}"
@@ -54,7 +60,7 @@ sha256_file() {
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | awk '{print $1}'
   else
-    die "Need sha256sum or shasum to verify downloads"
+    node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));' "$1"
   fi
 }
 
@@ -73,6 +79,33 @@ process.stdout.write(String(out));
 ' "$1"
 }
 
+download_url() {
+  # download_url <url> <output-path>
+  local url="$1"
+  local out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl --fail --show-error --silent --location "$url" --output "$out"
+    return 0
+  fi
+  # Node 22+ has global fetch — enough for npm registry / tarball downloads.
+  node -e '
+const fs = require("fs");
+const url = process.argv[1];
+const out = process.argv[2];
+fetch(url).then(async (res) => {
+  if (!res.ok) {
+    console.error("HTTP " + res.status + " for " + url);
+    process.exit(2);
+  }
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(out, buf);
+}).catch((err) => {
+  console.error(String(err && err.message ? err.message : err));
+  process.exit(3);
+});
+' "$url" "$out"
+}
+
 verify_sri() {
   # verify_sri <file> <sha512-<base64>>
   local file="$1"
@@ -81,7 +114,17 @@ verify_sri() {
   algo="${integrity%%-*}"
   b64="${integrity#*-}"
   [ "$algo" = "sha512" ] || die "Unsupported integrity algorithm: $algo"
-  actual="$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)"
+  if command -v openssl >/dev/null 2>&1; then
+    actual="$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)"
+  else
+    actual="$(node -e '
+const fs = require("fs");
+const crypto = require("crypto");
+const file = process.argv[1];
+const digest = crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64");
+process.stdout.write(digest);
+' "$file")"
+  fi
   [ "$actual" = "$b64" ] || die "Integrity check failed for $file"
 }
 
@@ -91,12 +134,17 @@ main() {
   info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   log ""
 
-  need_cmd curl
   need_cmd tar
   need_cmd node
-  need_cmd openssl
   need_cmd mktemp
   need_cmd mkdir
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "⚠️  curl not found — using Node fetch for downloads"
+  fi
+  if ! command -v openssl >/dev/null 2>&1; then
+    warn "⚠️  openssl not found — using Node crypto for integrity checks"
+  fi
 
   local major
   major="$(node_major)"
@@ -116,9 +164,7 @@ main() {
   extract_dir="$tmp/extract"
 
   info "📦 Fetching package metadata for ${PACKAGE_NAME}@${VERSION}..."
-  curl --fail --show-error --silent --location \
-    "${REGISTRY%/}/${PACKAGE_NAME}/${VERSION}" \
-    --output "$meta"
+  download_url "${REGISTRY%/}/${PACKAGE_NAME}/${VERSION}" "$meta"
 
   local tarball_url integrity resolved_version
   tarball_url="$(json_get "$meta" 'd.dist && d.dist.tarball')"
@@ -127,9 +173,7 @@ main() {
   [ "$resolved_version" = "$VERSION" ] || die "Registry returned version ${resolved_version}, expected ${VERSION}"
 
   info "⬇️  Downloading ${tarball_url}"
-  curl --fail --show-error --silent --location \
-    "$tarball_url" \
-    --output "$tarball"
+  download_url "$tarball_url" "$tarball"
 
   info "🔒 Verifying package integrity (${integrity%%-*})..."
   verify_sri "$tarball" "$integrity"

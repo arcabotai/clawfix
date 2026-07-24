@@ -65,7 +65,7 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents truthful evidence for the published 0.11.0 twenty-one-file package', async () => {
+test('landing page presents truthful evidence for the published 0.11.1 twenty-one-file package', async () => {
   const landing = await read('src/landing.js');
   assert.match(landing, /npx clawfix@0\.11\.0/);
   assert.match(landing, /clawfix\.dev\/install/);

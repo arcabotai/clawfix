@@ -40,7 +40,9 @@ test('install route is mounted and serves scripts/install.sh with sha256 metadat
   assert.match(installScript, /Compare the printed hashes exactly before running the script/);
   assert.match(installScript, /CLAWFIX_VERSION/);
   assert.match(installScript, /registry\.npmjs\.org/);
-  assert.match(installScript, /openssl dgst -sha512/);
+  assert.match(installScript, /openssl dgst -sha512|createHash\("sha512"\)/);
+  assert.match(installScript, /download_url|curl --fail/);
+  assert.match(installScript, /Node fetch|crypto/);
   assert.match(installScript, /\$\{HOME\}\/\.local\/bin|\$\{HOME\}\/\.clawfix/);
   assert.match(installScript, /CLAWFIX_BIN_DIR/);
 

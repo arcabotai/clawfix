@@ -707,13 +707,24 @@ async function collectDiagnostics({ quiet = false, signal } = {}) {
     signal,
     emit: event => renderScanEvent(event, log),
   });
-  if (result.error) return { error: result.error };
+  if (result.error) {
+    return {
+      error: result.error,
+      errorCode: result.errorCode || null,
+    };
+  }
   return {
     revision: result.revision,
     diagnostic: result.diagnostic,
     issues: result.issues,
     summary: legacySummary(result.summary),
   };
+}
+
+/** Soft diagnostic outcomes that still mean "the tool worked". */
+function isSoftDiagnosticMiss(result) {
+  return result?.errorCode === 'OPENCLAW_NOT_FOUND'
+    || result?.error === 'OpenClaw not found on this system.';
 }
 
 // ============================================================
@@ -723,12 +734,20 @@ async function runOneShotMode() {
   if (JSON_ONLY) {
     const result = await collectDiagnostics({ quiet: true });
     if (result.error) {
-      console.log(JSON.stringify({ ok: false, error: result.error }, null, 2));
-      process.exitCode = 1;
+      const soft = isSoftDiagnosticMiss(result);
+      console.log(JSON.stringify({
+        ok: soft,
+        openclawFound: false,
+        code: result.errorCode || (soft ? 'OPENCLAW_NOT_FOUND' : 'DIAGNOSTIC_ERROR'),
+        error: result.error,
+      }, null, 2));
+      // Soft miss (no OpenClaw) is a completed scan, not a CLI failure.
+      process.exitCode = soft ? 0 : 1;
       return;
     }
     console.log(JSON.stringify({
       ok: true,
+      openclawFound: true,
       diagnostic: result.diagnostic,
       issues: result.issues,
     }, null, 2));
@@ -744,9 +763,17 @@ async function runOneShotMode() {
   const result = await collectDiagnostics();
 
   if (result.error) {
+    const soft = isSoftDiagnosticMiss(result);
     console.log(c.red(`❌ ${result.error}`));
     console.log('Make sure OpenClaw is installed: https://openclaw.ai');
-    process.exit(1);
+    if (LOCAL_ONLY && soft) {
+      console.log('');
+      console.log(c.dim('Local scan complete — nothing was sent.'));
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = 1;
+    return;
   }
 
   const { diagnostic, issues } = result;

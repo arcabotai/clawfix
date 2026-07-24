@@ -661,7 +661,7 @@ test('runDiagnostics resolves an OpenClaw-not-found result, emits exactly one te
   const events = [];
   const result = await core.runDiagnostics({ revision: 'rev-2', emit: (e) => events.push(e) });
 
-  assert.deepEqual(result, { revision: 'rev-2', error: 'OpenClaw not found on this system.' });
+  assert.deepEqual(result, { revision: 'rev-2', error: 'OpenClaw not found on this system.', errorCode: 'OPENCLAW_NOT_FOUND' });
   assert.deepEqual(events.map((e) => e.type), ['scan.started', 'scan.error']);
   assert.equal(events[1].revision, 'rev-2');
   assert.equal(events[1].error.code, 'OPENCLAW_NOT_FOUND');
@@ -2522,7 +2522,7 @@ test('success and OpenClaw-not-found outcomes each clear their one deadline time
     existingPaths: new Set(),
   });
   const absentResult = await createDiagnosticsCore(absent.deps).runDiagnostics({ revision: 'rev-timer-absent' });
-  assert.deepEqual(absentResult, { revision: 'rev-timer-absent', error: 'OpenClaw not found on this system.' });
+  assert.deepEqual(absentResult, { revision: 'rev-timer-absent', error: 'OpenClaw not found on this system.', errorCode: 'OPENCLAW_NOT_FOUND' });
   assert.equal(absentTimers.handles.length, 1);
   assert.equal(absentTimers.clearCalls.length, 1);
 });
