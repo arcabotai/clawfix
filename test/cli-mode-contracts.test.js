@@ -305,9 +305,9 @@ test('help and version aliases exit before scanning or sending', async () => {
     for (const [flag, expected] of [
       ['--help', /Usage: npx clawfix \[options\]/],
       ['-h', /Usage: npx clawfix \[options\]/],
-      ['--version', /^clawfix v0\.11\.1\n$/],
-      ['-v', /^clawfix v0\.11\.1\n$/],
-      ['-V', /^clawfix v0\.11\.1\n$/],
+      ['--version', /^clawfix v0\.11\.2\n$/],
+      ['-v', /^clawfix v0\.11\.2\n$/],
+      ['-V', /^clawfix v0\.11\.2\n$/],
     ]) {
       const result = await runCli(sandbox, [flag]);
       assert.equal(result.status, 0, `${flag}: ${result.stderr}`);
@@ -383,6 +383,7 @@ test('dry-run soft-miss exits 0 when OpenClaw is absent', async t => {
     assert.match(stripAnsi(result.stdout), /LOCAL-ONLY MODE — nothing will be sent/);
     assert.match(stripAnsi(result.stdout), /OpenClaw not found on this system/);
     assert.match(stripAnsi(result.stdout), /Local scan complete — nothing was sent/);
+    assert.doesNotMatch(stripAnsi(result.stdout), /❌/);
   } finally {
     await sandbox.cleanup();
   }
@@ -534,7 +535,7 @@ test('conflicting flags preserve current precedence', async () => {
   try {
     const versionBeforeHelp = await runCli(sandbox, ['--help', '--version']);
     assert.equal(versionBeforeHelp.status, 0);
-    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.11.1\n');
+    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.11.2\n');
 
     await withServer((request, response) => response.end('{}'), async ({ url, requests }) => {
       const localBeforeAutoSend = await runCli(sandbox, ['--dry-run', '--yes', '--server', url]);

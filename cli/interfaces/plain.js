@@ -723,8 +723,7 @@ async function collectDiagnostics({ quiet = false, signal } = {}) {
 
 /** Soft diagnostic outcomes that still mean "the tool worked". */
 function isSoftDiagnosticMiss(result) {
-  return result?.errorCode === 'OPENCLAW_NOT_FOUND'
-    || result?.error === 'OpenClaw not found on this system.';
+  return result?.errorCode === 'OPENCLAW_NOT_FOUND';
 }
 
 // ============================================================
@@ -742,6 +741,7 @@ async function runOneShotMode() {
         error: result.error,
       }, null, 2));
       // Soft miss (no OpenClaw) is a completed scan, not a CLI failure.
+      // Contract since 0.11.1: exit 0 + ok:true when code=OPENCLAW_NOT_FOUND.
       process.exitCode = soft ? 0 : 1;
       return;
     }
@@ -764,14 +764,17 @@ async function runOneShotMode() {
 
   if (result.error) {
     const soft = isSoftDiagnosticMiss(result);
-    console.log(c.red(`❌ ${result.error}`));
-    console.log('Make sure OpenClaw is installed: https://openclaw.ai');
+    // LOCAL_ONLY covers --dry-run / -n / --no-send / --json (see options.js).
     if (LOCAL_ONLY && soft) {
+      console.log(c.dim(`ℹ️  ${result.error}`));
+      console.log(c.dim('Install OpenClaw: https://openclaw.ai'));
       console.log('');
       console.log(c.dim('Local scan complete — nothing was sent.'));
       process.exitCode = 0;
       return;
     }
+    console.log(c.red(`❌ ${result.error}`));
+    console.log('Make sure OpenClaw is installed: https://openclaw.ai');
     process.exitCode = 1;
     return;
   }

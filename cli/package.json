@@ -1,6 +1,6 @@
 {
   "name": "clawfix",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "AI-powered diagnostic and repair for OpenClaw installations",
   "bin": {
     "clawfix": "bin/clawfix.js"

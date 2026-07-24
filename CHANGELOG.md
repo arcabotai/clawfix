@@ -4,7 +4,7 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
-## 0.11.1 - 2026-07-24
+## 0.11.2 - 2026-07-24
 
 - Shipped the full post-0.10.0 mainline as one end-to-end release: installer, hosted service, npm CLI, and OpenTUI standalone assets.
 - Extracted the Node plain interface into `cli/interfaces/plain.js` and thinned `cli/bin/clawfix.js` to mode dispatch only.
@@ -13,9 +13,9 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 - Added CLI remote analyzer adapter for agent v2 SSE with fragmented-frame parsing, inbound validation, local repair-ID revalidation, consent-gated uploads, and network-boundary projection/redaction.
 - Added OpenTUI conversation UI (transcript, composer, privacy consent, repair approval/diff dialogs) plus standalone Bun compile pipeline with embedded wasm assets.
 - Added verified bash installer at `/install` that downloads a pinned package tarball, checks integrity, and installs into `~/.clawfix` + `~/.local/bin` without global npm.
-- Made download-verify-bash the recommended install path on the landing page and README. `npx clawfix@0.11.1` remains supported.
+- Made download-verify-bash the recommended install path on the landing page and README. `npx clawfix@0.11.2` remains supported.
 
-Release: https://github.com/arcabotai/clawfix/releases/tag/v0.11.1
+Release: https://github.com/arcabotai/clawfix/releases/tag/v0.11.2
 
 ## 0.10.0 - 2026-07-23
 

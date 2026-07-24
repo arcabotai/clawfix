@@ -144,7 +144,7 @@ function resultsPage(fixId) {
     function showError(msg) {
       document.getElementById('content').innerHTML = 
         '<div class="error-box"><strong>❌ Error</strong><br>' + msg + '</div>' +
-        '<p style="color:var(--muted)">Run the diagnostic again: <code>npx clawfix@0.11.1</code></p>';
+        '<p style="color:var(--muted)">Run the diagnostic again: <code>npx clawfix@0.11.2</code></p>';
     }
 
     function renderResults(data) {

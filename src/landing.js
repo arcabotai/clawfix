@@ -8,9 +8,9 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
-      version: '0.11.1',
+      version: '0.11.2',
       install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh && bash install-clawfix.sh',
-      fix: 'npx clawfix@0.11.1',
+      fix: 'npx clawfix@0.11.2',
     });
   }
 
@@ -23,14 +23,14 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawFix 0.11.1 — OpenClaw Diagnostics & Repair</title>
-  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.11.1 is signed on npm with GitHub provenance.">
-  <meta property="og:title" content="ClawFix 0.11.1 — Evidence Before Repair">
+  <title>ClawFix 0.11.2 — OpenClaw Diagnostics & Repair</title>
+  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.11.2 is signed on npm with GitHub provenance.">
+  <meta property="og:title" content="ClawFix 0.11.2 — Evidence Before Repair">
   <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, reviewable repair scripts, and a signed npm release.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ClawFix 0.11.1 — Evidence Before Repair">
+  <meta name="twitter:title" content="ClawFix 0.11.2 — Evidence Before Repair">
   <meta name="twitter:description" content="Local OpenClaw diagnostics and reviewable repairs. Signed on npm with GitHub provenance.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
   <style>
@@ -417,7 +417,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
       <nav class="nav-links">
-        <a href="#release">v0.11.1</a>
+        <a href="#release">v0.11.2</a>
         <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
         <a href="#pricing" class="nav-optional">Hosted Service</a>
@@ -435,8 +435,8 @@ const LANDING_HTML = `<!DOCTYPE html>
           Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
         </p>
 
-        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.1">
-          <span class="release-tag">v0.11.1 live</span>
+        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">
+          <span class="release-tag">v0.11.2 live</span>
           <span class="release-copy">Installer, agent v2, plain CLI, OpenTUI standalone.</span>
           <span class="release-arrow">→</span>
         </a>
@@ -455,8 +455,8 @@ const LANDING_HTML = `<!DOCTYPE html>
           · compare hashes · <code style="color:var(--green)">bash install-clawfix.sh</code>
         </p>
         <p class="command-hint" style="margin-bottom: 8px;">
-          Already on npm? <code id="cmd-npx" style="color:var(--muted)">npx clawfix@0.11.1</code>
-          · dry-run: <code style="color:var(--green)">npx clawfix@0.11.1 --dry-run</code>
+          Already on npm? <code id="cmd-npx" style="color:var(--muted)">npx clawfix@0.11.2</code>
+          · dry-run: <code style="color:var(--green)">npx clawfix@0.11.2 --dry-run</code>
         </p>
         <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Installer requires Node.js 22+.</p>
         <div class="proof-row" aria-label="Release verification">
@@ -472,11 +472,11 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="release-panel">
           <div class="release-panel-head">
             <div>
-              <div class="eyebrow">Release 0.11.1</div>
+              <div class="eyebrow">Release 0.11.2</div>
               <h2>Evidence before repair.</h2>
               <p>One end-to-end release: bash installer, 21-file CLI with plain interface and remote analyzer, constrained agent v2 on the host, and OpenTUI standalone binaries. Signed, attested, and reproducible from public source.</p>
             </div>
-            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.1">Release notes →</a>
+            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">Release notes →</a>
           </div>
           <div class="release-grid">
             <div class="release-item">

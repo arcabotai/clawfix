@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-VERSION="${CLAWFIX_VERSION:-0.11.1}"
+VERSION="${CLAWFIX_VERSION:-0.11.2}"
 PREFIX="${CLAWFIX_PREFIX:-${HOME}/.clawfix}"
 BIN_DIR="${CLAWFIX_BIN_DIR:-${HOME}/.local/bin}"
 REGISTRY="${CLAWFIX_REGISTRY:-https://registry.npmjs.org}"
@@ -55,13 +55,17 @@ need_cmd() {
 }
 
 sha256_file() {
+  local hash=""
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
+    hash="$(sha256sum "$1" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
+    hash="$(shasum -a 256 "$1" | awk '{print $1}')"
   else
-    node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));' "$1"
+    hash="$(node -e 'const fs=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"));' "$1")" \
+      || die "sha256 fallback failed (need sha256sum, shasum, or working Node crypto)"
   fi
+  [ -n "$hash" ] || die "sha256 produced empty digest for $1"
+  printf '%s\n' "$hash"
 }
 
 node_major() {
@@ -83,23 +87,65 @@ download_url() {
   # download_url <url> <output-path>
   local url="$1"
   local out="$2"
+  local loopback=0
+  case "$url" in
+    https://*) ;;
+    http://127.0.0.1:*|http://localhost:*|http://\[::1\]:*)
+      loopback=1
+      ;;
+    *) die "Refusing non-HTTPS download URL: $url" ;;
+  esac
   if command -v curl >/dev/null 2>&1; then
-    curl --fail --show-error --silent --location "$url" --output "$out"
+    if [[ "$loopback" -eq 1 ]]; then
+      curl --fail --show-error --silent --location \
+        --connect-timeout 20 --max-time 120 \
+        "$url" --output "$out"
+    else
+      curl --fail --show-error --silent --location --proto '=https' --tlsv1.2 \
+        --connect-timeout 20 --max-time 120 \
+        "$url" --output "$out"
+    fi
     return 0
   fi
   # Node 22+ has global fetch — enough for npm registry / tarball downloads.
   node -e '
 const fs = require("fs");
+const { URL } = require("url");
 const url = process.argv[1];
 const out = process.argv[2];
-fetch(url).then(async (res) => {
+const part = out + ".part";
+const timeoutMs = 120000;
+(async () => {
+  const parsed = new URL(url);
+  const host = parsed.hostname;
+  const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
+    console.error("Refusing non-HTTPS URL: " + url);
+    process.exit(2);
+  }
+  const res = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) {
     console.error("HTTP " + res.status + " for " + url);
     process.exit(2);
   }
+  // Final URL after redirects must stay on HTTPS (or loopback http).
+  if (res.url) {
+    const finalUrl = new URL(res.url);
+    const fh = finalUrl.hostname;
+    const floop = fh === "127.0.0.1" || fh === "localhost" || fh === "::1";
+    if (finalUrl.protocol !== "https:" && !(finalUrl.protocol === "http:" && floop)) {
+      console.error("Refusing non-HTTPS redirect target: " + res.url);
+      process.exit(2);
+    }
+  }
   const buf = Buffer.from(await res.arrayBuffer());
-  fs.writeFileSync(out, buf);
-}).catch((err) => {
+  fs.writeFileSync(part, buf);
+  fs.renameSync(part, out);
+})().catch((err) => {
+  try { fs.unlinkSync(part); } catch {}
   console.error(String(err && err.message ? err.message : err));
   process.exit(3);
 });
@@ -115,7 +161,8 @@ verify_sri() {
   b64="${integrity#*-}"
   [ "$algo" = "sha512" ] || die "Unsupported integrity algorithm: $algo"
   if command -v openssl >/dev/null 2>&1; then
-    actual="$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)"
+    actual="$(openssl dgst -sha512 -binary "$file" | openssl base64 -A)" \
+      || die "openssl integrity check failed"
   else
     actual="$(node -e '
 const fs = require("fs");
@@ -123,8 +170,9 @@ const crypto = require("crypto");
 const file = process.argv[1];
 const digest = crypto.createHash("sha512").update(fs.readFileSync(file)).digest("base64");
 process.stdout.write(digest);
-' "$file")"
+' "$file")" || die "Node crypto integrity check failed"
   fi
+  [ -n "$actual" ] || die "Empty integrity digest for $file"
   [ "$actual" = "$b64" ] || die "Integrity check failed for $file"
 }
 

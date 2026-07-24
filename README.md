@@ -30,8 +30,8 @@ clawfix
 ### Alternative: npx
 
 ```bash
-npx clawfix@0.11.1
-npx clawfix@0.11.1 --dry-run
+npx clawfix@0.11.2
+npx clawfix@0.11.2 --dry-run
 ```
 
 ### Legacy diagnostic script
