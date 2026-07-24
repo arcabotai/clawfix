@@ -126,18 +126,47 @@ jobs:
         with:
           path: release-tui
           pattern: clawfix-tui-*
-          merge-multiple: true
+          merge-multiple: false
 
-      - name: Merge checksums
+      - name: Package target tarballs
         run: |
-          cd release-tui
-          if [ -f SHA256SUMS ]; then cat SHA256SUMS; fi
-          find . -type f -name 'clawfix-tui-*' ! -name '*.sha256' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.merged
-          mv SHA256SUMS.merged SHA256SUMS
-          ls -la
+          set -euo pipefail
+          mkdir -p release-dist
+          # download-artifact layout with merge-multiple=false:
+          #   release-tui/clawfix-tui-<target>/{launcher,.bin,assets-<target>/,...}
+          shopt -s nullglob
+          packed=0
+          for dir in release-tui/clawfix-tui-*; do
+            [ -d "$dir" ] || continue
+            target=$(basename "$dir" | sed 's/^clawfix-tui-//')
+            launcher="$dir/clawfix-tui-$target"
+            binary="$dir/clawfix-tui-$target.bin"
+            assets="$dir/assets-$target"
+            if [ ! -f "$launcher" ] || [ ! -f "$binary" ] || [ ! -d "$assets" ]; then
+              echo "::error ::incomplete artifact tree for $target under $dir"
+              ls -la "$dir" || true
+              exit 1
+            fi
+            tar -C "$dir" -czf "release-dist/clawfix-tui-${target}.tar.gz" .
+            echo "packed clawfix-tui-${target}.tar.gz"
+            packed=$((packed + 1))
+          done
+          if [ "$packed" -lt 1 ]; then
+            echo "::error ::no TUI target tarballs produced"
+            find release-tui -maxdepth 3 -type f | head -100
+            exit 1
+          fi
+          (
+            cd release-dist
+            sha256sum ./*.tar.gz > TUI-SHA256SUMS
+            ls -lah
+            test -s TUI-SHA256SUMS
+          )
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-tui/**
+          files: |
+            release-dist/*.tar.gz
+            release-dist/TUI-SHA256SUMS
           fail_on_unmatched_files: true
