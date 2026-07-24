@@ -305,9 +305,9 @@ test('help and version aliases exit before scanning or sending', async () => {
     for (const [flag, expected] of [
       ['--help', /Usage: npx clawfix \[options\]/],
       ['-h', /Usage: npx clawfix \[options\]/],
-      ['--version', /^clawfix v0\.10\.0\n$/],
-      ['-v', /^clawfix v0\.10\.0\n$/],
-      ['-V', /^clawfix v0\.10\.0\n$/],
+      ['--version', /^clawfix v0\.11\.0\n$/],
+      ['-v', /^clawfix v0\.11\.0\n$/],
+      ['-V', /^clawfix v0\.11\.0\n$/],
     ]) {
       const result = await runCli(sandbox, [flag]);
       assert.equal(result.status, 0, `${flag}: ${result.stderr}`);
@@ -511,7 +511,7 @@ test('conflicting flags preserve current precedence', async () => {
   try {
     const versionBeforeHelp = await runCli(sandbox, ['--help', '--version']);
     assert.equal(versionBeforeHelp.status, 0);
-    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.10.0\n');
+    assert.equal(versionBeforeHelp.stdout, 'clawfix v0.11.0\n');
 
     await withServer((request, response) => response.end('{}'), async ({ url, requests }) => {
       const localBeforeAutoSend = await runCli(sandbox, ['--dry-run', '--yes', '--server', url]);

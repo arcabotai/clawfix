@@ -65,9 +65,9 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents truthful evidence for the published 0.10.0 twenty-one-file package', async () => {
+test('landing page presents truthful evidence for the published 0.11.0 twenty-one-file package', async () => {
   const landing = await read('src/landing.js');
-  assert.match(landing, /npx clawfix@0\.10\.0/);
+  assert.match(landing, /npx clawfix@0\.11\.0/);
   assert.match(landing, /clawfix\.dev\/install/);
   assert.match(landing, /install\/sha256/);
   assert.match(landing, /No global npm/);
@@ -77,7 +77,7 @@ test('landing page presents truthful evidence for the published 0.10.0 twenty-on
   assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.doesNotMatch(landing, /18-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
-  assert.match(landing, /releases\/tag\/v0\.10\.0/);
+  assert.match(landing, /releases\/tag\/v0\.11\.0/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
 });
