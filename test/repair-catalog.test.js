@@ -90,3 +90,74 @@ test('rollback is informational only — a gateway restart has no state to rever
   assert.equal(result.rolledBack, false);
   assert.equal(typeof result.note, 'string');
 });
+
+// ============================================================
+// Gateway liveness: the port is the verdict
+//
+// verify() previously returned ok:true with nothing listening, because the PID probe matched
+// ClawFix's own concurrent `openclaw gateway status` call. That let a repair which changed
+// nothing be reported as `applied`.
+// ============================================================
+
+function gatewayCtx({ listening, pid = '', statusText = 'Service: systemd user (disabled)' }) {
+  return {
+    openclaw: {
+      async gatewayStatusText() { return statusText; },
+      async gatewayProcesses() { return pid; },
+      async gatewayListening() { return listening; },
+    },
+    wait: async () => {},
+  };
+}
+
+test('verify fails when nothing is listening, even if a PID probe matches', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  // A stray PID must not outvote an unlistening port.
+  const result = await entry.verify(gatewayCtx({ listening: false, pid: '4242' }));
+  assert.equal(result.ok, false);
+  assert.equal(result.evidence.listening, false);
+});
+
+test('verify succeeds when the gateway port is accepting connections', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  const result = await entry.verify(gatewayCtx({ listening: true, pid: '4242' }));
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.listening, true);
+});
+
+test('preflight allows the repair when the port is closed', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  const result = await entry.preflight(gatewayCtx({ listening: false }));
+  assert.equal(result.ok, true);
+});
+
+test('preflight blocks the repair when the gateway is already up', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  const result = await entry.preflight(gatewayCtx({ listening: true, pid: '4242' }));
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'gateway_already_running');
+});
+
+test('status prose alone never counts as the gateway running', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  const result = await entry.verify(gatewayCtx({
+    listening: false,
+    statusText: 'Gateway: running, pid 999\nstate active',
+  }));
+  assert.equal(result.ok, false);
+});
+
+test('without a port probe the filtered PID evidence is used', async () => {
+  const entry = repairCatalog['gateway-not-running'];
+  const ctx = {
+    openclaw: {
+      async gatewayStatusText() { return ''; },
+      async gatewayProcesses() { return '4242'; },
+      // Older adapter with no port probe at all.
+    },
+    wait: async () => {},
+  };
+  const result = await entry.verify(ctx);
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.listening, null);
+});

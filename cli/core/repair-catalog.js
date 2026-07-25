@@ -12,14 +12,43 @@
 // which itself only ever spawns argv arrays (shell: false). ctx.wait is an injectable delay hook
 // so tests can drive apply -> verify without real timers.
 
+/**
+ * Is the gateway actually up?
+ *
+ * The answer is the listening port. Two weaker signals were previously treated as proof and
+ * both were wrong on a real install:
+ *
+ *  - `pgrep -f 'openclaw.*gateway'` matched ClawFix's own `openclaw gateway status` probe (run
+ *    concurrently with it, right here) and never matched a real gateway, whose argv is just
+ *    `openclaw`. verify() therefore returned ok with nothing listening on the port, which is
+ *    how a repair that did nothing could be reported as applied.
+ *  - the `/running.*pid|state active/i` test against status prose never fired on the real
+ *    `openclaw gateway status` output at all.
+ *
+ * Status text and PIDs are still collected, as evidence for the caller — never as the verdict.
+ */
 async function checkGatewayRunning(ctx) {
   const { openclaw } = ctx;
-  const [statusText, pid] = await Promise.all([
+  const port = Number.isInteger(ctx.gatewayPort) ? ctx.gatewayPort : 18789;
+  const [statusText, pid, listening] = await Promise.all([
     openclaw.gatewayStatusText({ timeoutMs: 5000 }),
-    openclaw.gatewayProcesses({ timeoutMs: 5000 }),
+    typeof openclaw.gatewayProcesses === 'function'
+      ? openclaw.gatewayProcesses({ timeoutMs: 5000 })
+      : Promise.resolve(''),
+    typeof openclaw.gatewayListening === 'function'
+      ? openclaw.gatewayListening(port, { timeoutMs: 5000 })
+      : Promise.resolve(null),
   ]);
-  const running = Boolean(pid) || /running.*pid|state active/i.test(statusText || '');
-  return Object.freeze({ running, statusText: statusText || '', pid: pid || '' });
+
+  // Without a port probe, fall back to filtered PIDs rather than claiming knowledge.
+  const running = listening === null ? Boolean(pid) : Boolean(listening);
+  return Object.freeze({
+    running,
+    listening: listening === null ? null : Boolean(listening),
+    port,
+    statusText: statusText || '',
+    pid: pid || '',
+  });
 }
 
 const gatewayNotRunning = Object.freeze({
