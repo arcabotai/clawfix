@@ -528,7 +528,7 @@ gateway up   -> verify {"ok":true,"listening":true,"pid":"8855"} preflight {"ok"
 A full repair run with the service unavailable now reports `verify_failed`, and a rescan agrees
 with the reported outcome.
 
-## Limitation found (not fixed): the TUI cannot run on Alpine/musl
+## Limitation found — NOW FIXED, see the second pass below: the TUI cannot run on Alpine/musl
 
 `@opentui/core` resolves its native library as `@opentui/core-linux-x64` with no musl detection.
 On Alpine the glibc `libopentui.so` fails to load (`ld-linux-x86-64.so.2` missing), `gcompat` does
@@ -540,3 +540,60 @@ The CLI core is unaffected: the full node suite and the plain interface work on 
 what `npx clawfix` uses. But an operator running OpenClaw in an Alpine container cannot use the
 TUI from source or from the release binary. Worth deciding whether to ship a musl target or to
 state the requirement on the site; it is an upstream OpenTUI limitation either way.
+
+
+---
+
+# Second pass — webhook security and musl support
+
+## B-25 — HIGH (fixed): `/webhooks/resend` was an unauthenticated email relay
+
+The route checked only that `svix-id`, `svix-timestamp` and `svix-signature` were **present** —
+never that the signature was valid — and skipped even that when no secret was configured. It
+sends mail from `arca@arcabot.ai` to a real inbox, so anyone who knew the URL could forge an
+`email.received` event and choose the from, subject and body.
+
+Verified against the running server before and after: a forged delivery with junk `svix-*`
+headers now returns **401** (`Rejected Resend webhook: not_configured`), a correctly signed
+delivery returns **200**, and a forged signature against a configured secret returns **401**.
+
+Signatures are now verified as Svix specifies — HMAC-SHA256 over `id.timestamp.rawBody` keyed by
+the base64 secret, constant-time compare, and a timestamp tolerance that bounds replay of a
+captured delivery.
+
+Two related issues in the same path: `email_id` came from the webhook body and was interpolated
+into a Resend API path called with the **full-access** key (now constrained to an opaque id and
+encoded), and inbound `from`/`to`/`subject` went unescaped into the forwarded HTML.
+
+## B-26 — HIGH (fixed): the Lemon Squeezy webhook could not verify a real signature
+
+It hashed `JSON.stringify(req.body)` — the parsed object re-serialized, not the bytes Lemon
+Squeezy signed. Key order, spacing and unicode escaping all differ, so a genuine signature could
+never match; the comparison was also `!==` rather than constant-time, and verification was
+skipped entirely when no secret was set, accepting any POST as a payment notification.
+
+The raw body is now captured in the json parser for `/webhook` routes and both endpoints fail
+closed on an unset secret, a missing raw body, or a bad signature.
+
+## Alpine/musl TUI — fixed
+
+`@opentui/core` resolves its native library by a hardcoded package name per platform with no
+musl detection, so on Alpine it asks for `@opentui/core-linux-x64` and fails to load. The new
+`linux-x64-musl` target compiles with `bun-linux-x64-musl` and stages the **musl** library under
+the asset key the runtime actually asks for.
+
+Verified on a real Alpine 3.21 machine, driving the compiled binary through a PTY:
+
+```
+{ "ok": true, "mode": "pty", "rendered": true, "acceptsInput": true, "exitCode": "0" }
+```
+
+Added to the release matrix, so Alpine-based OpenClaw containers get a working binary.
+
+## Still open (not fixed)
+
+**Payments are received but never recorded.** `src/routes/payment.js` handles `order_created`
+with `// TODO: Mark fix as paid in database`. With Lemon Squeezy configured a user can be charged
+$2 and nothing in the system records it or unlocks anything. The checkout path is otherwise
+sound. This needs a product decision — record and gate on payment, or remove the paid path until
+it is real — so it is flagged rather than guessed at.

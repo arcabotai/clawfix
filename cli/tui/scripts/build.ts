@@ -34,6 +34,7 @@ const NM = join(TUI_ROOT, "node_modules")
 export type TuiTargetId =
   | "linux-x64"
   | "linux-x64-baseline"
+  | "linux-x64-musl"
   | "linux-arm64"
   | "darwin-arm64"
   | "darwin-x64"
@@ -44,6 +45,15 @@ export interface TargetSpec {
   readonly bunCompileTarget: string
   readonly outfileName: string
   readonly nativePackage: string
+  /**
+   * Asset-root key the runtime asks for, when it differs from nativePackage.
+   *
+   * @opentui/core resolves its native library by a hardcoded package name per platform and
+   * has no musl detection, so on Alpine it asks for @opentui/core-linux-x64 and fails. The
+   * musl build stages the musl library under that key, which is what makes the binary run
+   * on musl at all.
+   */
+  readonly nativeAssetPackage?: string
   readonly nativeFileName: string
   readonly platform: "linux" | "darwin" | "windows"
   readonly arch: "x64" | "arm64"
@@ -69,6 +79,16 @@ export const TARGETS: Readonly<Record<TuiTargetId, TargetSpec>> = Object.freeze(
     platform: "linux",
     arch: "x64",
     baseline: true,
+  },
+  "linux-x64-musl": {
+    id: "linux-x64-musl",
+    bunCompileTarget: "bun-linux-x64-musl",
+    outfileName: "clawfix-tui-linux-x64-musl.bin",
+    nativePackage: "@opentui/core-linux-x64-musl",
+    nativeAssetPackage: "@opentui/core-linux-x64",
+    nativeFileName: "libopentui.so",
+    platform: "linux",
+    arch: "x64",
   },
   "linux-arm64": {
     id: "linux-arm64",
@@ -166,7 +186,7 @@ export function stageOtuiAssetRoot(spec: TargetSpec, assetRoot: string): void {
   const nativeDir = join(NM, ...spec.nativePackage.split("/"))
   const nativeSrc = join(nativeDir, spec.nativeFileName)
   if (!existsSync(nativeSrc)) throw new Error(`missing native ${nativeSrc}`)
-  copyFile(nativeSrc, join(assetRoot, spec.nativePackage, spec.nativeFileName))
+  copyFile(nativeSrc, join(assetRoot, spec.nativeAssetPackage ?? spec.nativePackage, spec.nativeFileName))
 
   // inventory
   const files: string[] = []

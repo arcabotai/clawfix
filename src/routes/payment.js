@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { validateFixId } from '../../cli/bin/security.js';
+import { verifyLemonSqueezySignature } from '../webhook-signatures.js';
 
 export const paymentRouter = Router();
 
@@ -122,19 +123,16 @@ paymentRouter.post('/checkout', async (req, res) => {
 
 // Lemon Squeezy webhook handler
 paymentRouter.post('/webhook/lemonsqueezy', async (req, res) => {
-  // Verify webhook signature
-  if (LS_CONFIG.webhookSecret) {
-    const crypto = await import('crypto');
-    const signature = req.headers['x-signature'];
-    const rawBody = JSON.stringify(req.body);
-    const hmac = crypto.createHmac('sha256', LS_CONFIG.webhookSecret)
-      .update(rawBody)
-      .digest('hex');
-    
-    if (signature !== hmac) {
-      console.warn('Invalid webhook signature');
-      return res.status(401).json({ error: 'Invalid signature' });
-    }
+  // Fail closed: an unsigned request is never a payment notification, and an unconfigured
+  // secret must not turn this into an open endpoint that logs whatever it is sent.
+  const verified = verifyLemonSqueezySignature({
+    secret: LS_CONFIG.webhookSecret,
+    rawBody: req.rawBody,
+    signature: req.headers['x-signature'],
+  });
+  if (!verified.ok) {
+    console.warn(`Rejected Lemon Squeezy webhook: ${verified.reason}`);
+    return res.status(401).json({ error: 'Invalid signature' });
   }
 
   const event = req.headers['x-event-name'];

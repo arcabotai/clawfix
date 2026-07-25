@@ -35,6 +35,10 @@ jobs:
             runner: ubuntu-latest
           - target: linux-x64-baseline
             runner: ubuntu-latest
+          # Alpine and other musl distros are common OpenClaw container bases, and the glibc
+          # build cannot load its native library there.
+          - target: linux-x64-musl
+            runner: ubuntu-latest
           # Expand after linux-x64 is green:
           # - target: linux-arm64
           #   runner: ubuntu-24.04-arm
@@ -69,6 +73,7 @@ jobs:
         run: |
           case "${{ matrix.target }}" in
             linux-x64|linux-x64-baseline) pkg="@opentui/core-linux-x64" ;;
+            linux-x64-musl) pkg="@opentui/core-linux-x64-musl" ;;
             linux-arm64) pkg="@opentui/core-linux-arm64" ;;
             darwin-arm64) pkg="@opentui/core-darwin-arm64" ;;
             darwin-x64) pkg="@opentui/core-darwin-x64" ;;
@@ -99,7 +104,9 @@ jobs:
           test -x "dist/tui/clawfix-tui-${{ matrix.target }}" -o -f "dist/tui/clawfix-tui-${{ matrix.target }}.cmd"
 
       - name: Smoke binary (linux only)
-        if: runner.os == 'Linux'
+        # The musl binary builds here but cannot execute on the glibc runner, so its runtime
+        # smoke runs on Alpine instead. Its build is still verified above.
+        if: runner.os == 'Linux' && matrix.target != 'linux-x64-musl'
         run: |
           launcher="$PWD/dist/tui/clawfix-tui-${{ matrix.target }}"
           test -x "$launcher"

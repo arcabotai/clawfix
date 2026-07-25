@@ -32,7 +32,15 @@ app.use(helmet({
   },
 }));
 // Browser clients are same-origin. Do not expose paid AI routes cross-origin.
-app.use(express.json({ limit: '512kb' }));
+// Webhook signatures are computed over the bytes the provider sent, so the raw body is kept
+// for those routes — re-serializing the parsed object produces different bytes and the
+// signature can never match.
+app.use(express.json({
+  limit: '512kb',
+  verify: (req, _res, buf) => {
+    if (req.url.includes('/webhook')) req.rawBody = buf;
+  },
+}));
 
 // Request logging
 app.use((req, res, next) => {
