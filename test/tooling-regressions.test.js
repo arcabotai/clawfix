@@ -79,7 +79,7 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.match(landing, /Evidence before repair/);
   assert.match(landing, /Chat-first TUI is now the default session/);
   assert.match(landing, /pull\/20/);
-  assert.match(landing, /Current public installer and npm package remain v0\.11\.2/);
+  assert.match(landing, /v0\.11\.2 is the current signed release/);
   assert.match(landing, /Approval defaults to Cancel/);
   assert.match(landing, /Deterministic local commands never upload/);
   assert.match(landing, /releases\/tag\/v0\.11\.2/);

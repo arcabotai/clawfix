@@ -9,7 +9,7 @@ landingRouter.get('/', (req, res) => {
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
       version: '0.11.2',
-      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh && bash install-clawfix.sh',
+      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install.sh && bash install.sh',
       fix: 'npx clawfix@0.11.2',
     });
   }
@@ -91,12 +91,12 @@ const LANDING_HTML = `<!DOCTYPE html>
 
     /* Hero */
     .hero {
-      padding: 80px 0 60px;
+      padding: 56px 0 48px;
       text-align: center;
     }
     .hero-emoji {
-      font-size: 4rem;
-      margin-bottom: 24px;
+      font-size: 2.75rem;
+      margin-bottom: 18px;
       display: block;
     }
     h1 {
@@ -115,8 +115,8 @@ const LANDING_HTML = `<!DOCTYPE html>
     .subtitle {
       font-size: 1.25rem;
       color: var(--muted);
-      max-width: 600px;
-      margin: 0 auto 40px;
+      max-width: 680px;
+      margin: 0 auto 28px;
     }
 
     /* Command box */
@@ -124,15 +124,17 @@ const LANDING_HTML = `<!DOCTYPE html>
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
-      padding: 20px 24px;
-      max-width: 560px;
-      margin: 0 auto 16px;
-      display: flex;
+      padding: 18px 20px;
+      max-width: 720px;
+      margin: 0 auto 12px;
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
       align-items: center;
       gap: 12px;
       cursor: pointer;
       transition: border-color 0.2s, box-shadow 0.2s;
       position: relative;
+      text-align: left;
     }
     .command-box:hover {
       border-color: var(--accent);
@@ -140,10 +142,13 @@ const LANDING_HTML = `<!DOCTYPE html>
     }
     .command-box code {
       font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-      font-size: 1.1rem;
+      font-size: 0.98rem;
       color: var(--green);
       flex: 1;
       user-select: all;
+      white-space: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
     }
     .command-box .prompt {
       color: var(--muted);
@@ -165,49 +170,55 @@ const LANDING_HTML = `<!DOCTYPE html>
       color: white;
     }
 
-    /* Release banner */
-    .release-banner {
-      background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(249,115,22,0.08));
-      border: 1px solid rgba(239,68,68,0.55);
-      border-radius: 12px;
-      padding: 16px 24px;
-      max-width: 560px;
-      margin: 0 auto 32px;
+    .status-row {
       display: flex;
-      align-items: center;
       justify-content: center;
+      align-items: center;
+      flex-wrap: wrap;
       gap: 10px;
-      color: var(--text);
+      margin: 0 auto 28px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255,255,255,0.025);
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1;
+      padding: 9px 12px;
       text-decoration: none;
-      transition: border-color 0.2s, transform 0.2s;
+      transition: border-color 0.2s, color 0.2s;
     }
-    .release-banner:hover {
-      border-color: var(--accent);
-      transform: translateY(-1px);
-    }
-    .release-tag {
-      display: inline-block;
-      background: var(--accent);
-      color: white;
-      font-size: 0.7rem;
-      padding: 3px 8px;
-      border-radius: 4px;
-      font-weight: 700;
+    .status-pill:hover { border-color: var(--accent); color: var(--text); }
+    .status-pill strong {
+      color: var(--accent);
+      font-size: 0.68rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      white-space: nowrap;
     }
-    .release-copy { font-size: 0.9rem; font-weight: 600; }
-    .release-arrow { color: var(--accent); font-weight: 700; }
-    .release-banner + .release-banner { margin-top: -20px; }
     .free-tag { color: var(--green); font-weight: 800; }
 
     .command-hint {
       color: var(--muted);
-      font-size: 0.85rem;
+      font-size: 0.9rem;
       text-align: center;
-      margin-bottom: 48px;
+      max-width: 760px;
+      margin: 0 auto 10px;
     }
+    .command-hint code {
+      color: var(--text);
+      background: rgba(255,255,255,0.045);
+      border: 1px solid rgba(255,255,255,0.055);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-size: 0.82rem;
+    }
+    .command-hint a { color: var(--muted); }
+    .command-hint a:hover { color: var(--text); }
 
     .proof-row {
       display: flex;
@@ -271,8 +282,8 @@ const LANDING_HTML = `<!DOCTYPE html>
       grid-template-columns: 0.9fr 1.1fr;
       gap: 24px;
       align-items: center;
-      background: linear-gradient(135deg, rgba(34,197,94,0.08), rgba(20,20,20,0.72));
-      border: 1px solid rgba(34,197,94,0.35);
+      background: var(--surface);
+      border: 1px solid var(--border);
       border-radius: 16px;
       padding: 32px;
     }
@@ -364,7 +375,7 @@ const LANDING_HTML = `<!DOCTYPE html>
       border-radius: 8px;
     }
     .issue-icon { font-size: 1.2rem; flex-shrink: 0; }
-    .issue-item h4 { font-size: 0.95rem; margin-bottom: 2px; }
+    .issue-item h3 { font-size: 0.95rem; margin-bottom: 2px; }
     .issue-item p { color: var(--muted); font-size: 0.8rem; }
 
     /* Pricing */
@@ -393,7 +404,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     .price-card .badge {
       display: inline-block;
       background: var(--accent);
-      color: white;
+      color: #140b0a;
       font-size: 0.7rem;
       padding: 2px 8px;
       border-radius: 4px;
@@ -414,7 +425,7 @@ const LANDING_HTML = `<!DOCTYPE html>
       align-items: flex-start;
     }
     .trust-icon { font-size: 1.5rem; flex-shrink: 0; }
-    .trust-item h4 { font-size: 0.95rem; margin-bottom: 4px; }
+    .trust-item h3 { font-size: 0.95rem; margin-bottom: 4px; }
     .trust-item p { color: var(--muted); font-size: 0.85rem; }
 
     /* Footer */
@@ -440,12 +451,14 @@ const LANDING_HTML = `<!DOCTYPE html>
 
     @media (max-width: 640px) {
       h1 { font-size: 2rem; }
-      .hero { padding: 48px 0 40px; }
+      .hero { padding: 40px 0 36px; }
       .nav-optional { display: none; }
       .nav-links a { margin-left: 16px; }
-      .release-banner { align-items: flex-start; text-align: left; }
-      .command-box { padding: 16px; }
-      .command-box code { font-size: 0.8rem; }
+      .status-row { gap: 8px; margin-bottom: 24px; }
+      .status-pill { width: 100%; justify-content: center; }
+      .command-box { grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; padding: 14px; }
+      .command-box code { font-size: 0.78rem; white-space: normal; overflow-wrap: normal; }
+      .command-box code span { white-space: nowrap; }
       .proof-row { align-items: stretch; flex-direction: column; }
       .proof-pill { border-radius: 8px; }
       .release-panel { padding: 24px 18px; }
@@ -477,41 +490,34 @@ const LANDING_HTML = `<!DOCTYPE html>
   <main>
     <section class="hero">
       <div class="container">
-        <span class="hero-emoji">🦞</span>
+        <span class="hero-emoji" aria-hidden="true">🦞</span>
         <h1>Fix your OpenClaw<br>in <span class="highlight">one command</span></h1>
         <p class="subtitle">
           Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
         </p>
 
-        <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">
-          <span class="release-tag">v0.11.2 live</span>
-          <span class="release-copy">Installer, agent v2, plain CLI, OpenTUI standalone.</span>
-          <span class="release-arrow">→</span>
-        </a>
-        <a class="release-banner" href="https://github.com/arcabotai/clawfix/pull/20">
-          <span class="release-tag">new on main</span>
-          <span class="release-copy">Chat-first OpenTUI default session merged. Release pending.</span>
-          <span class="release-arrow">→</span>
-        </a>
+        <div class="status-row" aria-label="Release status">
+          <a class="status-pill" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">
+            <strong>Current release</strong>
+            <span>v0.11.2 · installer + agent v2</span>
+          </a>
+          <a class="status-pill" href="https://github.com/arcabotai/clawfix/pull/20">
+            <strong>New on main</strong>
+            <span>Chat-first OpenTUI merged</span>
+          </a>
+        </div>
 
         <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-install">curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh</code>
-          <button type="button" class="copy-btn" id="copyBtn-install" onclick="copyCommand('install')">Copy</button>
+          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span></code>
+          <button type="button" class="copy-btn" id="copyBtn-install" aria-live="polite" onclick="copyCommand('install')">Copy</button>
         </div>
-        <p class="command-hint" style="margin-bottom: 8px;">
-          <strong style="color:var(--green)">Recommended</strong> — download, verify hash, then install with bash. No global npm.
+        <p class="command-hint" style="margin-bottom: 6px;">
+          <strong style="color:var(--green)">Recommended</strong> Verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run <code>bash install.sh</code>. No global npm.
         </p>
-        <p class="command-hint" style="margin-bottom: 4px;">
-          Then: <code style="color:var(--green)">shasum -a 256 install-clawfix.sh</code>
-          · <code style="color:var(--green)">curl --fail --show-error --silent https://clawfix.dev/install/sha256</code>
-          · compare hashes · <code style="color:var(--green)">bash install-clawfix.sh</code>
+        <p class="command-hint" style="margin-bottom: 18px;">
+          Prefer npm? <code id="cmd-npx">npx clawfix@0.11.2</code> · Dry run: <code>npx clawfix@0.11.2 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
         </p>
-        <p class="command-hint" style="margin-bottom: 8px;">
-          Already on npm? <code id="cmd-npx" style="color:var(--muted)">npx clawfix@0.11.2</code>
-          · dry-run: <code style="color:var(--green)">npx clawfix@0.11.2 --dry-run</code>
-        </p>
-        <p class="command-hint" style="margin-bottom: 16px;">Works on macOS, Linux, and WSL. Installer requires Node.js 22+.</p>
         <div class="proof-row" aria-label="Release verification">
           <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
           <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
@@ -562,7 +568,7 @@ const LANDING_HTML = `<!DOCTYPE html>
               <li><strong>✓</strong><span>Remote AI stays opt-in. Deterministic local commands never upload.</span></li>
             </ul>
             <p><a class="release-link" href="https://github.com/arcabotai/clawfix/pull/20">Review the merge →</a></p>
-            <p class="tui-note">Current public installer and npm package remain v0.11.2 while macOS verification and release prep finish.</p>
+            <p class="tui-note">v0.11.2 is the current signed release. The chat-first TUI ships in the next release.</p>
           </div>
           <div class="tui-preview" aria-label="Preview of the chat-first ClawFix terminal interface">
 <pre><span class="muted">assistant</span>
@@ -618,133 +624,133 @@ gateway-restart repair. Want me to?
           <div class="issue-item">
             <span class="issue-icon">💀</span>
             <div>
-              <h4>Gateway Crashes</h4>
+              <h3>Gateway Crashes</h3>
               <p>Port conflicts, process hangs, restart loops</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🧠</span>
             <div>
-              <h4>Memory Issues</h4>
+              <h3>Memory Issues</h3>
               <p>Mem0 silent failures, missing flush, broken search</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🌐</span>
             <div>
-              <h4>Browser Automation</h4>
+              <h3>Browser Automation</h3>
               <p>CDP port failures, extension loading, headless issues</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🔌</span>
             <div>
-              <h4>Plugin Configs</h4>
+              <h3>Plugin Configs</h3>
               <p>Broken plugins, missing dependencies, wrong settings</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">⚡</span>
             <div>
-              <h4>Native Codex Harness</h4>
+              <h3>Native Codex Harness</h3>
               <p>PI route drift, Codex home mismatches, fast tier gaps, timeout boundaries</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">💸</span>
             <div>
-              <h4>Token Waste</h4>
+              <h3>Token Waste</h3>
               <p>Excessive heartbeats, no pruning, bloated context</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🍎</span>
             <div>
-              <h4>macOS Quirks</h4>
+              <h3>macOS Quirks</h3>
               <p>Metal GPU crashes, Apple Silicon issues, Peekaboo</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🔧</span>
             <div>
-              <h4>Service Manager Crashes</h4>
+              <h3>Service Manager Crashes</h3>
               <p>launchd/systemd SIGTERM recovery, crash loops, backoff detection</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">👻</span>
             <div>
-              <h4>Zombie Processes</h4>
+              <h3>Zombie Processes</h3>
               <p>PID exists but port not listening — stale gateway detection</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">📜</span>
             <div>
-              <h4>Error Log Bloat</h4>
+              <h3>Error Log Bloat</h3>
               <p>Chrome extension spam, handshake storms, 200MB+ log files</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🐕</span>
             <div>
-              <h4>Gateway Watchdog</h4>
+              <h3>Gateway Watchdog</h3>
               <p>Recommends independent health checks to avoid launchd backoff gaps</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🧵</span>
             <div>
-              <h4>Provider Prefix Typos</h4>
+              <h3>Provider Prefix Typos</h3>
               <p><code>codex/gpt-5.4</code> vs <code>openai-codex/gpt-5.4</code> — silent 403 + fallback loop on every cron</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🎣</span>
             <div>
-              <h4>Discord Silent Drops</h4>
+              <h3>Discord Silent Drops</h3>
               <p><code>groupPolicy: allowlist</code> with empty <code>allowFrom</code> — group messages disappear without logs</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🔒</span>
             <div>
-              <h4>Plaintext Secrets in Config</h4>
+              <h3>Plaintext Secrets in Config</h3>
               <p>Flags fields still inline that should be SecretRefs pointing at <code>~/.openclaw/.env</code></p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🪪</span>
             <div>
-              <h4>Invalid GH Token Override</h4>
+              <h3>Invalid GH Token Override</h3>
               <p>Invalid <code>GH_TOKEN</code> env shadows a working <code>gh</code> login and breaks every GitHub-using cron</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">📡</span>
             <div>
-              <h4>Stale Paired Nodes</h4>
+              <h3>Stale Paired Nodes</h3>
               <p>Endless <code>skills-remote</code> probe timeouts from a paired node with no host daemon behind it</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🌊</span>
             <div>
-              <h4>Context Overflow</h4>
+              <h3>Context Overflow</h3>
               <p>Session stuck &gt;100 % of ctx window, auto-compaction failing — manifests as slow replies</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">🔐</span>
             <div>
-              <h4>FileVault Blocks Reboots</h4>
+              <h3>FileVault Blocks Reboots</h3>
               <p>macOS — pre-boot prompt gates all services; any unattended reboot leaves the mac off-network</p>
             </div>
           </div>
           <div class="issue-item">
             <span class="issue-icon">📦</span>
             <div>
-              <h4>Plist Stale Secrets</h4>
+              <h3>Plist Stale Secrets</h3>
               <p>macOS — LaunchAgent <code>EnvironmentVariables</code> carries old secrets after a <code>.env</code> migration</p>
             </div>
           </div>
@@ -777,42 +783,42 @@ gateway-restart repair. Want me to?
           <div class="trust-item">
             <span class="trust-icon">🔍</span>
             <div>
-              <h4>Inspect Before Running</h4>
+              <h3>Inspect Before Running</h3>
               <p><code>npx clawfix --dry-run</code> shows exactly what data would be collected — sends nothing. Read the output. Decide for yourself.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">🔓</span>
             <div>
-              <h4>Open Source</h4>
+              <h3>Open Source</h3>
               <p><a href="https://github.com/arcabotai/clawfix" style="color:var(--blue)">The CLI, server, and diagnostic script are public</a> under the MIT license.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">🔒</span>
             <div>
-              <h4>Recognized Secrets Redacted</h4>
+              <h3>Recognized Secrets Redacted</h3>
               <p>Recognized API keys, tokens, passwords, private keys, and home paths are redacted before upload. The top-level config <code>env</code> block is omitted. Inspect <code>--dry-run</code> before sending.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">🚫</span>
             <div>
-              <h4>Workspace Documents Stay Local</h4>
+              <h3>Workspace Documents Stay Local</h3>
               <p>ClawFix checks whether workspace documents such as SOUL.md exist, but it does not read their contents. Config fields and matching error lines may be collected.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">👀</span>
             <div>
-              <h4>Consent by Default</h4>
+              <h3>Consent by Default</h3>
               <p>The diagnostic asks <code>[y/N]</code> before uploading. Automatic upload only happens when you explicitly pass <code>--yes</code>, <code>-y</code>, or set <code>CLAWFIX_AUTO=1</code>.</p>
             </div>
           </div>
           <div class="trust-item">
             <span class="trust-icon">💾</span>
             <div>
-              <h4>Fix Scripts = Your Review</h4>
+              <h3>Fix Scripts = Your Review</h3>
               <p>Fix scripts are saved to <code>/tmp</code> for you to read first. Every fix backs up your config. Nothing auto-executes.</p>
             </div>
           </div>
