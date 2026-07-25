@@ -2,15 +2,22 @@ import { createSignal, onCleanup } from "solid-js"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 
 import { resolveComposerSubmit } from "./components/composer"
+import { ComposerBox } from "./components/composer-box"
+import { ChatTranscript } from "./components/chat"
+import { DialogBox } from "./components/dialog-box"
+import { Sidebar } from "./components/sidebar"
+import { Splash } from "./components/splash"
 import { buildUnifiedDiff } from "./components/diff-dialog"
-import { helpText, KEY_HINTS, NARROW_KEY_HINTS } from "./keymap"
-import { resolveLayout, type DialogState, type TranscriptItem } from "./lib/models"
+import { helpText } from "./keymap"
+import { resolveLayout, type TranscriptItem } from "./lib/models"
 import {
   createFakeSession,
   type TuiFinding,
   type TuiSessionView,
 } from "./session-bridge"
-import { severityColor, theme } from "./theme"
+import { theme } from "./theme"
+
+import cliPackage from "../../package.json"
 
 export type { TuiFinding, TuiSessionView }
 export { createFakeSession, buildUnifiedDiff, resolveComposerSubmit }
@@ -40,136 +47,7 @@ export interface AppProps {
   readonly simpleComposer?: boolean
 }
 
-function itemLines(items: readonly TranscriptItem[]): Array<{ text: string; color: string }> {
-  const lines: Array<{ text: string; color: string }> = []
-  if (!items || items.length === 0) {
-    lines.push({ text: "No messages yet.", color: theme.muted })
-    return lines
-  }
-  for (const item of items) {
-    if (item.kind === "message") {
-      const who = item.role === "user" ? "You" : item.role === "assistant" ? (item.streaming ? "ClawFix …" : "ClawFix") : "System"
-      lines.push({ text: who, color: item.role === "user" ? theme.accent : theme.heading })
-      for (const line of item.text.split("\n")) {
-        lines.push({ text: line.length ? line : " ", color: theme.text })
-      }
-      lines.push({ text: " ", color: theme.muted })
-      continue
-    }
-    if (item.kind === "activity") {
-      lines.push({ text: `· ${item.label}`, color: theme.info })
-      continue
-    }
-    if (item.kind === "finding") {
-      const sev = String(item.severity || "info").toLowerCase()
-      lines.push({ text: `[${sev}] ${item.title}`, color: severityColor(sev) })
-      lines.push({
-        text: item.repairable ? "repairable · reviewed catalog only" : "advisory · no automatic repair",
-        color: theme.muted,
-      })
-      if (item.evidence) lines.push({ text: item.evidence, color: theme.muted })
-      lines.push({ text: " ", color: theme.muted })
-      continue
-    }
-    if (item.kind === "repair") {
-      lines.push({ text: `Repair proposal · ${item.status}`, color: theme.warning })
-      lines.push({ text: item.plan.summary, color: theme.text })
-      if (item.rationale) lines.push({ text: `Why: ${item.rationale}`, color: theme.muted })
-      lines.push({ text: `Risk: ${item.plan.risk} · ${item.plan.repairIds.join(", ")}`, color: theme.muted })
-      lines.push({ text: " ", color: theme.muted })
-      continue
-    }
-    if (item.kind === "warning") {
-      lines.push({ text: `Warning: ${item.message}`, color: theme.warning })
-      continue
-    }
-    if (item.kind === "error") {
-      lines.push({ text: `Error: ${item.message}`, color: theme.danger })
-    }
-  }
-  return lines
-}
-
-function dialogLines(dialog: DialogState | undefined): Array<{ text: string; color: string }> {
-  const lines: Array<{ text: string; color: string }> = []
-  if (!dialog || dialog.type === "none") return lines
-
-  if (dialog.type === "privacy") {
-    lines.push({ text: "Privacy approval", color: theme.heading })
-    lines.push({ text: "ClawFix can send this message and a redacted diagnostic to:", color: theme.text })
-    lines.push({ text: dialog.disclosure.providerLabel, color: theme.accent })
-    lines.push({ text: `Destination: ${dialog.disclosure.destination}`, color: theme.muted })
-    lines.push({ text: `Endpoint: ${dialog.disclosure.endpointUrl}`, color: theme.muted })
-    if (dialog.pendingMessage) {
-      lines.push({ text: `Message: ${dialog.pendingMessage.slice(0, 120)}`, color: theme.muted })
-    }
-    lines.push({ text: "Included", color: theme.heading })
-    for (const item of dialog.disclosure.included) lines.push({ text: `• ${item}`, color: theme.text })
-    lines.push({ text: "Not included", color: theme.heading })
-    for (const item of dialog.disclosure.excluded) lines.push({ text: `• ${item}`, color: theme.text })
-    if (dialog.showPayload) {
-      lines.push({ text: "Exact payload (redacted preview)", color: theme.heading })
-      for (const line of dialog.payloadJson.split("\n").slice(0, 24)) {
-        lines.push({ text: line.length ? line : " ", color: theme.muted })
-      }
-    }
-    const mark = (key: string) => (dialog.focus === key ? ">" : " ")
-    lines.push({
-      text: `${mark("stay-local")}[ Stay local ]  ${mark("inspect")}[ Inspect exact payload ]  ${mark("continue")}[ Continue ]`,
-      color: theme.focus,
-    })
-    lines.push({ text: "Default focus is Stay local. Enter confirms. Esc stays local.", color: theme.muted })
-    return lines
-  }
-
-  if (dialog.type === "approval") {
-    const risk = String(dialog.plan.risk || "medium").toLowerCase()
-    const high = risk === "high" || risk === "critical"
-    lines.push({ text: "Repair approval", color: theme.heading })
-    lines.push({ text: dialog.plan.summary, color: theme.text })
-    lines.push({ text: `Why: ${dialog.rationale || dialog.plan.summary}`, color: theme.muted })
-    lines.push({
-      text: `Changes: ${dialog.plan.previewText || (dialog.plan.unifiedDiff ? "config diff available" : "no configuration files will be changed.")}`,
-      color: theme.muted,
-    })
-    lines.push({
-      text: dialog.plan.restartRequired
-        ? "Interruption: OpenClaw may be briefly unavailable during restart."
-        : "Interruption: no restart required.",
-      color: theme.muted,
-    })
-    lines.push({
-      text: dialog.plan.backupRequired ? "Backup: required before mutation." : "Backup: not required for this repair.",
-      color: theme.muted,
-    })
-    lines.push({ text: "Verification: ClawFix will re-check local detectors afterward.", color: theme.muted })
-    lines.push({ text: `Risk: ${risk}`, color: high ? theme.danger : theme.warning })
-    if (high) {
-      lines.push({ text: "High-risk repairs cannot be auto-approved. Use technical details / manual guidance.", color: theme.danger })
-    }
-    const mark = (key: string) => (dialog.focus === key ? ">" : " ")
-    lines.push({
-      text: `${mark("cancel")}[ Cancel ]  ${mark("details")}[ Technical details ]  ${mark("approve")}[ Fix it ]`,
-      color: theme.focus,
-    })
-    lines.push({ text: "Default focus is Cancel. Enter alone never approves a destructive action from default focus.", color: theme.muted })
-    return lines
-  }
-
-  if (dialog.type === "diff") {
-    lines.push({ text: dialog.title || "Diff preview", color: theme.heading })
-    for (const line of (dialog.unifiedDiff || "(empty diff)").split("\n").slice(0, 40)) {
-      let color = theme.text
-      if (line.startsWith("+") && !line.startsWith("+++")) color = theme.added
-      else if (line.startsWith("-") && !line.startsWith("---")) color = theme.removed
-      else if (line.startsWith("@@")) color = theme.info
-      else if (line.startsWith("diff ") || line.startsWith("index ")) color = theme.muted
-      lines.push({ text: line.length ? line : " ", color })
-    }
-    lines.push({ text: "Esc returns to the previous dialog. No changes are applied from this view.", color: theme.muted })
-  }
-  return lines
-}
+const SIDEBAR_WIDTH = 34
 
 export function App(props: AppProps) {
   const initial = props.source?.getView() ?? props.session ?? createFakeSession()
@@ -241,7 +119,7 @@ export function App(props: AppProps) {
       return
     }
 
-    if (name === "?" && !key.ctrl && !key.meta) {
+    if (name === "p" && key.ctrl) {
       controller?.toggleHelp?.()
       key.preventDefault?.()
       return
@@ -252,12 +130,12 @@ export function App(props: AppProps) {
     }
   })
 
-  const bodyLines = () => {
-    const lines: Array<{ text: string; color: string }> = []
-    // Prefer explicit transcript items; also surface findings if items empty but findings exist.
-    const items = current().items?.length
-      ? current().items
-      : (current().findings || []).map((f) => ({
+  /** Transcript items, with the findings fallback and help block appended. */
+  const transcriptItems = (): readonly TranscriptItem[] => {
+    const state = current()
+    let items: TranscriptItem[] = state.items?.length
+      ? [...state.items]
+      : (state.findings || []).map((f) => ({
           kind: "finding" as const,
           id: `finding-card-${f.id}`,
           findingId: f.id,
@@ -267,43 +145,50 @@ export function App(props: AppProps) {
           repairId: f.repairId,
           evidence: null,
         }))
-    lines.push(...itemLines(items))
-    if (current().helpVisible) {
-      lines.push({ text: "— help —", color: theme.heading })
-      for (const line of helpText().split("\n")) {
-        lines.push({ text: line.length ? line : " ", color: theme.muted })
-      }
+    if (state.helpVisible) {
+      return [{ kind: "message", id: "help", role: "system", text: helpText(dims().width <= 64) }]
     }
-    lines.push(...dialogLines(current().dialog))
-    return lines
+    return items
   }
 
-  const sidebarLines = () => {
-    if (!layout().showSidebar) return [] as Array<{ text: string; color: string }>
-    return [
-      { text: "System", color: theme.heading },
-      { text: `Revision ${current().revision || "none"}`, color: theme.muted },
-      { text: `Issues   ${current().findings?.length || 0}`, color: theme.muted },
-      { text: current().aiMode === "remote" ? "AI       Remote" : "AI       Local only", color: theme.muted },
-      { text: current().scanning ? "Scan     running" : "Scan     idle", color: theme.muted },
-    ]
+  const showSplash = () =>
+    transcriptItems().length === 0 && !(current().findings?.length)
+
+  const aiLabel = () =>
+    current().aiMode === "remote"
+      ? "Remote · clawfix.dev"
+      : current().aiMode === "remote-pending"
+        ? "Remote (pending consent)"
+        : "Local only"
+
+  const modelLine = () => {
+    const hints = dims().width <= 64
+      ? "Enter send · Ctrl+P help"
+      : "Enter send · Shift+Enter newline · Ctrl+P help · Ctrl+C cancel"
+    return `${aiLabel()} · ${hints}`
   }
 
-  const footerLines = () => {
-    const lines: Array<{ text: string; color: string }> = []
-    if (current().queueNote) lines.push({ text: current().queueNote, color: theme.warning })
-    if (current().composerLocked) lines.push({ text: "Composer locked while a dialog is open.", color: theme.muted })
-    const draft = current().draft || ""
-    lines.push({ text: draft ? `> ${draft}` : "> Tell me what is going wrong…", color: draft ? theme.text : theme.muted })
-    if (layout().showKeyHints) {
-      const hints = layout().mode === "wide" ? KEY_HINTS : NARROW_KEY_HINTS
-      lines.push({ text: hints.join("  "), color: theme.muted })
-    }
-    return lines
+  const statusLine = () => {
+    const state = current()
+    const rev = state.revision ? ` · revision ${state.revision}` : ""
+    const full = `🦞 ClawFix v${cliPackage.version}${rev} · ${state.status}`
+    const budget = dims().width - 4
+    if (budget <= 0) return ""
+    if (full.length <= budget) return full
+    if (budget === 1) return "…"
+    return `${full.slice(0, budget - 1)}…`
   }
 
-  // OpenTUI Solid rejects orphan whitespace/empty text nodes outside <text>.
-  // One bordered column, only explicit <text> children via .map().
+  const handleSubmit = (text: string) => {
+    const decision = resolveComposerSubmit({
+      draft: text,
+      locked: current().composerLocked || current().dialog.type !== "none",
+      busy: current().busy,
+    })
+    if (decision.action !== "submit") return
+    void controller?.send?.(decision.text)
+  }
+
   return (
     <box
       style={{
@@ -311,17 +196,49 @@ export function App(props: AppProps) {
         height: "100%",
         flexDirection: "column",
         backgroundColor: theme.background,
-        padding: 1,
       }}
     >
-      <box border borderColor={theme.border} style={{ flexDirection: "column", padding: 1 }}>
-        <text fg={theme.heading}>ClawFix</text>
-        <text fg={theme.text}>{current().prompt}</text>
-        <text fg={theme.muted}>{current().status}</text>
-        <text fg={theme.muted}>{current().revision ? `revision ${current().revision}` : "revision none"}</text>
-        {bodyLines().map((line) => <text fg={line.color}>{line.text}</text>)}
-        {sidebarLines().map((line) => <text fg={line.color}>{line.text}</text>)}
-        {footerLines().map((line) => <text fg={line.color}>{line.text}</text>)}
+      {showSplash()
+        ? (
+          <Splash
+            version={cliPackage.version}
+            aiLabel={aiLabel()}
+            scanning={current().scanning}
+            narrow={layout().mode === "narrow"}
+          />
+        )
+        : (
+          <box style={{ flexDirection: "row", flexGrow: 1, flexShrink: 1, minHeight: 0 }}>
+            <box style={{ flexDirection: "column", flexGrow: 1, flexShrink: 1, minHeight: 0 }}>
+              <ChatTranscript items={transcriptItems()} topAligned={current().helpVisible} />
+            </box>
+            {layout().showSidebar && (
+              <Sidebar
+                width={SIDEBAR_WIDTH}
+                revision={current().revision}
+                aiMode={current().aiMode}
+                scanning={current().scanning}
+                findings={current().findings || []}
+                status={current().status}
+              />
+            )}
+          </box>
+        )}
+
+      <DialogBox
+        dialog={current().dialog}
+        maxHeight={Math.max(8, Math.floor(dims().height * 0.5))}
+        width={dims().width}
+      />
+
+      <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1, paddingBottom: 0 }}>
+        <ComposerBox
+          locked={current().composerLocked || current().dialog.type !== "none"}
+          note={current().queueNote}
+          modelLine={modelLine()}
+          onSubmit={handleSubmit}
+        />
+        <text fg={theme.faint}>{statusLine()}</text>
       </box>
     </box>
   )

@@ -16,6 +16,8 @@ afterEach(() => {
 
 const samplePlan: RepairPlanView = Object.freeze({
   planId: "plan-1",
+  findingId: "finding-gateway",
+  approvalToken: "token-1",
   scanFingerprint: "rev-1",
   repairIds: Object.freeze(["gateway-not-running"]),
   risk: "low",
@@ -74,12 +76,12 @@ describe("approval dialog", () => {
   })
 
   test("stale/cancel/approve paths via bridge", async () => {
-    const approved: string[] = []
+    const approved: any[] = []
     const session = {
       getState: () => ({ revision: "rev-1", findings: [], transcript: [], scanning: false, scanError: null }),
       scan: async () => ({}),
       appendMessage() {},
-      async approveRepair(id: string) { approved.push(id) },
+      async applyRepair(input: any) { approved.push(input); return { status: "applied" } },
       cancelRepair() { return true },
     }
     const bridge = createSessionBridge({ session })
@@ -103,7 +105,12 @@ describe("approval dialog", () => {
     bridge._testOpenApproval(samplePlan, "why")
     bridge.approvalSetFocus("approve")
     await bridge.approvalConfirm()
-    expect(approved).toEqual(["plan-1"])
+    expect(approved).toEqual([{
+      planId: "plan-1",
+      approvalToken: "token-1",
+      findingId: "finding-gateway",
+      ctx: undefined,
+    }])
   })
 
   test("app shell shows approval dialog from session view", async () => {

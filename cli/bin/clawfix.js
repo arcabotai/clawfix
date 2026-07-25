@@ -4,9 +4,10 @@
  * ClawFix CLI entrypoint — mode dispatch only.
  * https://clawfix.dev
  *
- * Usage: npx clawfix          (interactive plain session)
+ * Usage: npx clawfix          (OpenTUI session; plain fallback without Bun)
+ *        npx clawfix --plain  (classic interactive session)
  *        npx clawfix --scan   (one-shot scan)
- *        npx clawfix --tui    (experimental OpenTUI; requires Bun)
+ *        npx clawfix --tui    (force OpenTUI; requires Bun)
  */
 
 import { readFileSync } from 'node:fs';
@@ -40,8 +41,9 @@ function printHelp() {
 Usage: npx clawfix [options]
 
 Modes:
-  (default)            Interactive readline session: scan, review, fix, optional chat
-  --tui                Experimental OpenTUI session UI (requires Bun)
+  (default)            OpenTUI session UI (falls back to plain session without Bun)
+  --plain              Classic interactive readline session: scan, review, fix, optional chat
+  --tui                Force the OpenTUI session UI (requires Bun)
   --scan               One-shot scan (legacy mode)
   --no-interactive     Same as --scan
 
@@ -78,39 +80,50 @@ Security:
   • Source code: https://github.com/arcabotai/clawfix
 
 Examples:
-  npx clawfix                  # Interactive session (default)
-  npx clawfix --tui            # Experimental OpenTUI (Bun required)
+  npx clawfix                  # OpenTUI session (default; plain fallback without Bun)
+  npx clawfix --plain          # Classic interactive session
   npx clawfix --scan           # One-shot scan + repair guidance
   npx clawfix --dry-run        # See what data would be collected
   npx clawfix --yes --scan     # Auto-send for CI/scripting
 `);
 }
 
-async function runOpenTuiMode() {
+async function runOpenTuiMode({ quiet = false } = {}) {
   const cliDir = dirname(fileURLToPath(import.meta.url));
   const tuiEntry = join(cliDir, '../tui/src/main.tsx');
   let bunPath = '';
   try {
     bunPath = execSync('command -v bun', { encoding: 'utf8' }).trim();
   } catch {
+    if (quiet) return false;
     console.error(c.red('OpenTUI mode requires Bun 1.2.21+ on PATH.'));
     console.error(c.dim('Install: https://bun.sh  then: cd cli/tui && bun install && bun run src/main.tsx'));
     process.exitCode = 2;
-    return;
+    return false;
   }
 
-  await new Promise((resolve, reject) => {
+  const result = await new Promise(resolve => {
     const child = spawn(bunPath, [tuiEntry], {
       stdio: 'inherit',
       env: process.env,
       cwd: join(cliDir, '../tui'),
     });
-    child.on('error', reject);
-    child.on('exit', code => {
-      process.exitCode = code ?? 1;
-      resolve();
-    });
+    child.on('error', error => resolve({ error }));
+    child.on('exit', code => resolve({ code: code ?? 1 }));
   });
+
+  if (result.error) {
+    if (!quiet) {
+      console.error(c.red(`OpenTUI failed to start: ${result.error.message}`));
+      process.exitCode = 1;
+    }
+    return false;
+  }
+  if (result.code !== 0) {
+    if (!quiet) process.exitCode = result.code;
+    return false;
+  }
+  return true;
 }
 
 async function main() {
@@ -135,7 +148,23 @@ async function main() {
     return;
   }
 
-  if (CLI_MODE.kind === 'one-shot' || CLI_MODE.kind === 'interactive') {
+  if (CLI_MODE.kind === 'interactive') {
+    // Default UI: OpenTUI when interactive TTY + Bun are available; plain session otherwise.
+    const wantTui = !CLI_OPTIONS.plain && Boolean(process.stdout.isTTY && process.stdin.isTTY);
+    if (wantTui) {
+      const launched = await runOpenTuiMode({ quiet: true });
+      if (launched) return;
+      console.error(c.dim('OpenTUI unavailable — falling back to the plain session. Install Bun for the TUI: https://bun.sh'));
+    }
+    await runPlainInterface({
+      mode: CLI_MODE.kind,
+      options: CLI_OPTIONS,
+      version: VERSION,
+    });
+    return;
+  }
+
+  if (CLI_MODE.kind === 'one-shot') {
     await runPlainInterface({
       mode: CLI_MODE.kind,
       options: CLI_OPTIONS,

@@ -19,6 +19,8 @@ export interface RepairEffectView {
 
 export interface RepairPlanView {
   readonly planId: string
+  readonly findingId?: string
+  readonly approvalToken?: string
   readonly scanFingerprint: string
   readonly repairIds: readonly string[]
   readonly risk: string

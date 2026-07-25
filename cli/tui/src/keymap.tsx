@@ -3,16 +3,15 @@
 export const KEY_HINTS = Object.freeze([
   "Enter send",
   "Shift+Enter newline",
-  "Ctrl+J newline",
+  "Ctrl+P help",
   "Ctrl+C cancel",
-  "? help",
   "Esc close dialog",
 ] as const)
 
 export const NARROW_KEY_HINTS = Object.freeze([
   "Enter send",
+  "Ctrl+P help",
   "Ctrl+C cancel",
-  "Esc dialog",
 ] as const)
 
 export const COMPOSER_KEY_BINDINGS = Object.freeze([
@@ -24,15 +23,25 @@ export const COMPOSER_KEY_BINDINGS = Object.freeze([
   { name: "linefeed", action: "newline" as const },
 ])
 
-export function helpText(): string {
+export function helpText(compact = false): string {
+  if (compact) {
+    return [
+      "ClawFix keys",
+      "  Enter send · Ctrl+J newline",
+      "  Ctrl+P help · Ctrl+C cancel",
+      "  Esc close · Tab/Arrows move",
+      "  Local: help, issues, scan, explain <#|id>, fix <#|id>",
+      "  Remote AI requires explicit privacy consent.",
+    ].join("\n")
+  }
   return [
     "ClawFix keys",
     "  Enter          Send message",
     "  Shift+Enter    Newline (when terminal supports modifiers)",
     "  Ctrl+J         Newline fallback",
+    "  Ctrl+P         Toggle this help",
     "  Ctrl+C         Cancel active scan/remote request",
     "  Esc            Close dialog / return focus to composer",
-    "  ?              Toggle this help",
     "  Tab/Arrows     Move dialog focus (default never on destructive action)",
     "",
     "Local commands: help, issues, scan, explain <#|id>, fix <#|id>",

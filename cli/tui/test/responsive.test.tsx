@@ -35,7 +35,7 @@ describe("layout breakpoints", () => {
 })
 
 describe("responsive frames", () => {
-  test("wide frame includes System sidebar", async () => {
+  test("wide frame shows splash with brand and composer", async () => {
     const setup = await testRender(
       () => <App session={createFakeSession()} simpleComposer />,
       { width: 120, height: 40 },
@@ -43,8 +43,28 @@ describe("responsive frames", () => {
     renderers.push(setup.renderer)
     await setup.renderOnce()
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("ClawFix")
-    expect(frame).toContain("System")
+    expect(frame).toContain("OpenClaw diagnostics and guarded repairs")
+    expect(frame).toContain("Tell me what is going wrong")
+    expect(frame).toMatch(/Local only/)
+  })
+
+  test("wide frame with findings shows Session sidebar", async () => {
+    const withFindings = Object.freeze({
+      ...createFakeSession(),
+      findings: [
+        { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-restart" },
+      ],
+      revision: "a1b2c3d",
+    })
+    const setup = await testRender(
+      () => <App session={withFindings} simpleComposer />,
+      { width: 120, height: 40 },
+    )
+    renderers.push(setup.renderer)
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("Session")
+    expect(frame).toContain("Gateway service is not running")
     expect(frame).toMatch(/Local only|AI/)
   })
 

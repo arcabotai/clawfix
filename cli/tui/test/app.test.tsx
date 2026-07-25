@@ -63,6 +63,18 @@ describe("OpenTUI package compatibility", () => {
     expect(source).not.toMatch(/https?:\/\//)
     expect(source).not.toMatch(/tree[-_]?sitter|parser/i)
   })
+
+  test("standalone entry invokes the TUI main runner", async () => {
+    const [standalone, mainSource] = await Promise.all([
+      readFile(new URL("../src/standalone.ts", import.meta.url), "utf8"),
+      readFile(new URL("../src/main.tsx", import.meta.url), "utf8"),
+    ])
+
+    expect(standalone).toContain("runTuiMain")
+    expect(standalone).toMatch(/runTuiMain\(\)/)
+    expect(standalone).not.toMatch(/await import\("\.\/main"\)\s*$/)
+    expect(mainSource).toContain("createCliRenderer({ ...rendererConfig })")
+  })
 })
 
 describe("conversation app", () => {
