@@ -24,14 +24,14 @@ const LANDING_HTML = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ClawFix 0.11.2 — OpenClaw Diagnostics & Repair</title>
-  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review repair scripts before applying them. ClawFix 0.11.2 is signed on npm with GitHub provenance.">
+  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.11.2 is signed on npm, and the chat-first TUI is now merged on main.">
   <meta property="og:title" content="ClawFix 0.11.2 — Evidence Before Repair">
-  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, reviewable repair scripts, and a signed npm release.">
+  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, guarded repairs, and a chat-first TUI now merged on main.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="ClawFix 0.11.2 — Evidence Before Repair">
-  <meta name="twitter:description" content="Local OpenClaw diagnostics and reviewable repairs. Signed on npm with GitHub provenance.">
+  <meta name="twitter:description" content="Local OpenClaw diagnostics and guarded repairs. Chat-first TUI now merged on main.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -199,6 +199,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     }
     .release-copy { font-size: 0.9rem; font-weight: 600; }
     .release-arrow { color: var(--accent); font-weight: 700; }
+    .release-banner + .release-banner { margin-top: -20px; }
     .free-tag { color: var(--green); font-weight: 800; }
 
     .command-hint {
@@ -262,6 +263,50 @@ const LANDING_HTML = `<!DOCTYPE html>
     }
     .release-item h3 { font-size: 0.9rem; margin-bottom: 6px; }
     .release-item p { color: var(--muted); font-size: 0.8rem; }
+
+    /* Latest main update */
+    .tui-section { padding-top: 0; }
+    .tui-panel {
+      display: grid;
+      grid-template-columns: 0.9fr 1.1fr;
+      gap: 24px;
+      align-items: center;
+      background: linear-gradient(135deg, rgba(34,197,94,0.08), rgba(20,20,20,0.72));
+      border: 1px solid rgba(34,197,94,0.35);
+      border-radius: 16px;
+      padding: 32px;
+    }
+    .tui-copy h2 { font-size: 1.6rem; line-height: 1.2; margin-bottom: 10px; }
+    .tui-copy p { color: var(--muted); font-size: 0.95rem; margin-bottom: 14px; }
+    .tui-list { list-style: none; margin: 18px 0; }
+    .tui-list li {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 10px;
+    }
+    .tui-list strong { color: var(--green); }
+    .tui-note { font-size: 0.8rem !important; color: var(--muted); }
+    .tui-preview {
+      background: #050505;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px;
+      overflow: auto;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.35);
+    }
+    .tui-preview pre {
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: 0.76rem;
+      line-height: 1.45;
+      color: #d4d4d8;
+      white-space: pre;
+    }
+    .tui-preview .accent { color: var(--accent); font-weight: 700; }
+    .tui-preview .green { color: var(--green); }
+    .tui-preview .muted { color: var(--muted); }
 
     /* How it works */
     .section { padding: 60px 0; }
@@ -407,6 +452,8 @@ const LANDING_HTML = `<!DOCTYPE html>
       .release-panel-head { display: block; }
       .release-link { display: inline-block; margin-top: 16px; }
       .release-grid { grid-template-columns: 1fr; }
+      .tui-panel { grid-template-columns: 1fr; padding: 24px 18px; }
+      .tui-preview pre { font-size: 0.68rem; }
       .issues-grid { grid-template-columns: 1fr; }
       .sent-grid { grid-template-columns: 1fr !important; }
     }
@@ -417,6 +464,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
       <nav class="nav-links">
+        <a href="#tui">New TUI</a>
         <a href="#release">v0.11.2</a>
         <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
@@ -438,6 +486,11 @@ const LANDING_HTML = `<!DOCTYPE html>
         <a class="release-banner" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">
           <span class="release-tag">v0.11.2 live</span>
           <span class="release-copy">Installer, agent v2, plain CLI, OpenTUI standalone.</span>
+          <span class="release-arrow">→</span>
+        </a>
+        <a class="release-banner" href="https://github.com/arcabotai/clawfix/pull/20">
+          <span class="release-tag">new on main</span>
+          <span class="release-copy">Chat-first OpenTUI default session merged. Release pending.</span>
           <span class="release-arrow">→</span>
         </a>
 
@@ -491,6 +544,45 @@ const LANDING_HTML = `<!DOCTYPE html>
               <h3>OpenTUI standalone</h3>
               <p>Optional conversation UI ships as verified Bun-compiled binaries on the GitHub release.</p>
             </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section tui-section" id="tui">
+      <div class="container">
+        <div class="tui-panel">
+          <div class="tui-copy">
+            <div class="eyebrow">Latest main update</div>
+            <h2>Chat-first TUI is now the default session.</h2>
+            <p>PR #20 is merged on main. The next release opens directly into a conversation, keeps local commands offline, and asks before remote AI or guarded repairs.</p>
+            <ul class="tui-list">
+              <li><strong>✓</strong><span>Scrollable transcript, findings sidebar, and responsive terminal layouts.</span></li>
+              <li><strong>✓</strong><span>Approval defaults to Cancel and reports success only after verified repairs.</span></li>
+              <li><strong>✓</strong><span>Remote AI stays opt-in. Deterministic local commands never upload.</span></li>
+            </ul>
+            <p><a class="release-link" href="https://github.com/arcabotai/clawfix/pull/20">Review the merge →</a></p>
+            <p class="tui-note">Current public installer and npm package remain v0.11.2 while macOS verification and release prep finish.</p>
+          </div>
+          <div class="tui-preview" aria-label="Preview of the chat-first ClawFix terminal interface">
+<pre><span class="muted">assistant</span>
+Your gateway service is registered but
+currently stopped. The common cause is a
+missing Node PATH after reboot.
+
+I can restart it with the reviewed
+gateway-restart repair. Want me to?
+
+<span class="accent">│ Repair proposal · proposed</span>
+<span class="accent">│</span> Restart the OpenClaw gateway service
+<span class="accent">│</span> Why: Gateway is down; port 18789 closed.
+<span class="accent">│</span> Risk: medium · gateway-restart
+
+┌──────────────────────────────────────┐
+│ Tell me what is going wrong...       │
+└──────────────────────────────────────┘
+<span class="green">Local only · Enter send · Ctrl+P help</span>
+<span class="muted">🦞 ClawFix · revision a1b2c3d</span></pre>
           </div>
         </div>
       </div>
