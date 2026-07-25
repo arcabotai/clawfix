@@ -4,6 +4,7 @@ import { testRender } from "@opentui/solid"
 import { App, createFakeSession } from "../src/app"
 import type { TuiSessionView } from "../src/session-bridge"
 import type { RepairPlanView, DialogState } from "../src/lib/models"
+import { buildDisclosureView } from "../src/lib/disclosure"
 
 const renderers: Array<{ destroy(): void }> = []
 afterEach(() => {
@@ -82,15 +83,8 @@ describe("new layout", () => {
       composerLocked: true,
       dialog: {
         type: "privacy",
-        disclosure: {
-          destination: "clawfix.dev hosted AI",
-          baseUrl: "https://clawfix.dev",
-          endpointUrl: "https://clawfix.dev/api/analyze",
-          providerLabel: "ClawFix hosted AI (deepseek v4 flash)",
-          providerChain: ["clawfix.dev"],
-          included: ["Your message", "Redacted diagnostic summary"],
-          excluded: ["API keys", "Tokens", "File contents"],
-        },
+        // Built from the real builder so the dialog under test renders shipping copy.
+        disclosure: buildDisclosureView({ uploadsDiagnostic: true }),
         payloadJson: "{}",
         pendingMessage: "hello",
         focus: "stay-local",

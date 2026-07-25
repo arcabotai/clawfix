@@ -81,6 +81,12 @@ export interface OfflineAnalyzerLike {
 
 /** Optional remote analyzer — never called without consent. */
 export interface RemoteAnalyzerLike {
+  /** Exact description of what send() would transmit, for the consent dialog. */
+  describeOutbound?(message: string): {
+    readonly uploadsDiagnostic?: boolean
+    readonly diagnosticEndpointUrl?: string | null
+    readonly payload?: unknown
+  }
   send(input: {
     readonly message: string
     readonly consentGranted: boolean
@@ -349,7 +355,13 @@ export function createSessionBridge(options: {
   }
 
   function openPrivacyDialog(message: string) {
-    const payload = {
+    // Prefer the analyzer's own description: the dialog must show what will actually be sent,
+    // including the separate /api/diagnose upload that a remote turn performs first.
+    const described = typeof options.remoteAnalyzer?.describeOutbound === "function"
+      ? options.remoteAnalyzer.describeOutbound(message)
+      : null
+
+    const payload = described?.payload ?? {
       conversationId: "pending-session",
       message,
       diagnosticId: null,
@@ -358,7 +370,10 @@ export function createSessionBridge(options: {
         .slice(0, 32)
         .map((f) => ({ id: f.repairId, title: f.title, risk: "medium" })),
     }
-    disclosureCache = buildDisclosureView({ baseUrl: options.remoteBaseUrl })
+    disclosureCache = buildDisclosureView({
+      baseUrl: options.remoteBaseUrl,
+      uploadsDiagnostic: Boolean(described?.uploadsDiagnostic),
+    })
     dialog = Object.freeze({
       type: "privacy",
       disclosure: disclosureCache,

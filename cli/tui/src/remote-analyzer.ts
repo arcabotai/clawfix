@@ -128,6 +128,29 @@ export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
     conversationId,
     baseUrl,
     endpointUrl: `${baseUrl}/api/v2/agent/messages`,
+
+    /**
+     * Describe exactly what send() would transmit for `message`, for the consent dialog.
+     * Built from the same conversationId and availableRepairs() the request uses, so the
+     * "Inspect exact payload" view cannot drift from the real body.
+     */
+    describeOutbound(message: string) {
+      const state = options.session.getState()
+      const uploadsDiagnostic = Boolean(state.diagnostic) && !diagnosticId
+      return Object.freeze({
+        uploadsDiagnostic,
+        diagnosticEndpointUrl: uploadsDiagnostic ? `${baseUrl}/api/diagnose` : null,
+        payload: {
+          ...(uploadsDiagnostic
+            ? { ">> first, POST /api/diagnose": "the redacted diagnostic below is uploaded and returns the diagnosticId used here" }
+            : {}),
+          conversationId,
+          message: String(message || "").slice(0, 4000),
+          ...(diagnosticId ? { diagnosticId } : {}),
+          availableRepairs: availableRepairs(),
+        },
+      })
+    },
     async *send(input: { readonly message: string; readonly consentGranted: boolean; readonly signal?: AbortSignal }) {
       const signal = input.signal
       let diagId: string | null = null
