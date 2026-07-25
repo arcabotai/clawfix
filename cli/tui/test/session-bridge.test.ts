@@ -17,12 +17,12 @@ function fakeSession(initial: {
     transcript: initial.transcript ?? [],
   }
   let scanCalls = 0
-  let approved: string[] = []
+  let applied: any[] = []
 
   return {
     getState: () => state,
     scanCalls: () => scanCalls,
-    approved: () => approved,
+    approved: () => applied,
     async scan() {
       scanCalls += 1
       state = {
@@ -59,6 +59,8 @@ function fakeSession(initial: {
         status: "proposed",
         plan: {
           planId: "plan-1",
+          findingId: finding.id,
+          approvalToken: "token-1",
           scanFingerprint: state.revision || "rev-1",
           repairIds: [finding.repairId],
           risk: "low",
@@ -71,9 +73,9 @@ function fakeSession(initial: {
         },
       }
     },
-    async approveRepair(planId: string) {
-      approved.push(planId)
-      return { ok: true }
+    async applyRepair(input: any) {
+      applied.push(input)
+      return { status: "applied" }
     },
     cancelRepair() {
       return true
@@ -324,11 +326,13 @@ describe("session bridge", () => {
     expect(bridge.getView().dialog.type).toBe("none")
   })
 
-  test("approval approve executes session.approveRepair", async () => {
+  test("approval approve executes session.applyRepair with the plan token", async () => {
     const session = fakeSession()
-    const bridge = createSessionBridge({ session })
+    const bridge = createSessionBridge({ session, repairContext: { marker: "ctx" } })
     bridge._testOpenApproval({
       planId: "plan-ok",
+      findingId: "finding-gateway",
+      approvalToken: "token-ok",
       scanFingerprint: "rev-1",
       repairIds: ["gateway-not-running"],
       risk: "low",
@@ -342,7 +346,41 @@ describe("session bridge", () => {
     })
     bridge.approvalSetFocus("approve")
     await bridge.approvalConfirm()
-    expect(session.approved()).toEqual(["plan-ok"])
+    expect(session.approved()).toEqual([{
+      planId: "plan-ok",
+      approvalToken: "token-ok",
+      findingId: "finding-gateway",
+      ctx: { marker: "ctx" },
+    }])
+    expect(bridge.getView().items.some((i) => i.kind === "message" && i.text.includes("Verification passed"))).toBe(true)
+  })
+
+  test("rejected repair does not fabricate a success message", async () => {
+    const session = fakeSession()
+    await session.scan()
+    session.applyRepair = async () => ({ status: "rejected", reason: "invalid_token" })
+    const bridge = createSessionBridge({
+      session,
+      offlineAnalyzer: {
+        async handle() {
+          const proposal = session.proposeRepair("finding-gateway")
+          return {
+            intent: "propose_repair",
+            status: proposal.status,
+            plan: proposal.plan,
+            message: "Repair prepared.",
+          }
+        },
+      },
+    })
+    await bridge.send("fix 1")
+    bridge.approvalSetFocus("approve")
+    const view = await bridge.approvalConfirm()
+    const repair = view.items.find((item) => item.kind === "repair")
+    expect(repair?.kind).toBe("repair")
+    if (repair?.kind === "repair") expect(repair.status).toBe("failed")
+    expect(view.items.some((item) => item.kind === "error" && item.message.includes("Repair was rejected: invalid_token"))).toBe(true)
+    expect(view.items.some((item) => item.kind === "message" && item.text.includes("Repair applied"))).toBe(false)
   })
 
   test("high-risk approval is refused", async () => {

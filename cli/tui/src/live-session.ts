@@ -4,9 +4,8 @@
  * Live session factory — wires the real ClawFix diagnostic/session core to the
  * OpenTUI session bridge (same wiring as interfaces/plain.js, minus ANSI output).
  *
- * Runs under Bun (cli/tui). No remote analyzer yet: the session starts in
- * local-only AI mode and works fully offline; remote streaming can be attached
- * later by passing a remoteAnalyzer to createSessionBridge.
+ * Runs under Bun (cli/tui). Remote AI is attached but remains consent-gated;
+ * local scan, offline help, and guarded repair execution work without consent.
  */
 import { access, readFile, readdir, stat } from "node:fs/promises"
 import { createHash, randomUUID } from "node:crypto"
@@ -106,6 +105,10 @@ export function createLiveSession(options: LiveSessionOptions): SessionBridge {
     remoteAnalyzer: createRemoteAnalyzer({ session }) as any,
     preferRemote: true,
     remoteBaseUrl: process.env.CLAWFIX_API_URL || "https://clawfix.dev",
+    repairContext: {
+      openclaw: openClawAdapter,
+      wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    },
   })
 
   if (options.autoScan !== false) {

@@ -54,7 +54,12 @@ export interface SessionLike {
     readonly status: string
     readonly plan?: any
   }
-  approveRepair?(planId: string): Promise<unknown> | unknown
+  applyRepair?(input: {
+    readonly planId: string
+    readonly approvalToken: string
+    readonly findingId: string
+    readonly ctx?: unknown
+  }): Promise<any> | any
   cancelRepair?(): unknown
 }
 
@@ -158,6 +163,8 @@ function planFromRaw(raw: any): RepairPlanView | null {
 
   return Object.freeze({
     planId,
+    findingId: typeof raw.findingId === "string" ? raw.findingId : undefined,
+    approvalToken: typeof raw.approvalToken === "string" ? raw.approvalToken : undefined,
     scanFingerprint: String(raw.scanFingerprint || raw.revision || ""),
     repairIds: Object.freeze(repairIds),
     risk: String(raw.risk || "medium"),
@@ -287,6 +294,7 @@ export function createSessionBridge(options: {
   readonly onEvent?: (event: unknown) => void
   readonly remoteBaseUrl?: string
   readonly preferRemote?: boolean
+  readonly repairContext?: unknown
 }) {
   const session = options.session
   if (!session || typeof session.getState !== "function" || typeof session.scan !== "function") {
@@ -679,8 +687,9 @@ export function createSessionBridge(options: {
         return this.getView()
       }
       if (focus === "approve") {
-        // High risk: never approve with a single Enter from default focus (default is cancel).
-        if (String(plan.risk).toLowerCase() === "high") {
+        // High/critical risk: never approve with a single Enter from default focus.
+        const risk = String(plan.risk).toLowerCase()
+        if (risk === "high" || risk === "critical") {
           pushExtra(Object.freeze({
             kind: "warning",
             id: nextId("warn"),
@@ -695,21 +704,51 @@ export function createSessionBridge(options: {
         activityLabel = "Applying repair…"
         publish()
         try {
-          if (typeof session.approveRepair === "function") {
-            await session.approveRepair(plan.planId)
+          if (typeof session.applyRepair !== "function" || !plan.approvalToken || !plan.findingId) {
+            throw new Error("Repair application is unavailable for this plan.")
           }
-          extras = extras.map((item) => {
-            if (item.kind === "repair" && item.plan.planId === plan.planId) {
-              return Object.freeze({ ...item, status: "completed" as const })
-            }
-            return item
+          const outcome = await session.applyRepair({
+            planId: plan.planId,
+            approvalToken: plan.approvalToken,
+            findingId: plan.findingId,
+            ctx: options.repairContext,
           })
-          pushExtra(Object.freeze({
-            kind: "message",
-            id: nextId("msg"),
-            role: "assistant" as const,
-            text: `Repair applied for plan ${plan.planId}. Verification runs against local detectors.`,
-          }))
+          const status = String(outcome?.status || "error")
+          const reason = sanitizeDisplayText(String(outcome?.reason || outcome?.error || ""), 500)
+          if (status === "applied") {
+            extras = extras.map((item) => {
+              if (item.kind === "repair" && item.plan.planId === plan.planId) {
+                return Object.freeze({ ...item, status: "completed" as const })
+              }
+              return item
+            })
+            pushExtra(Object.freeze({
+              kind: "message",
+              id: nextId("msg"),
+              role: "assistant" as const,
+              text: `Repair applied for plan ${plan.planId}. Verification passed against local detectors.`,
+            }))
+          } else {
+            extras = extras.map((item) => {
+              if (item.kind === "repair" && item.plan.planId === plan.planId) {
+                return Object.freeze({ ...item, status: "failed" as const })
+              }
+              return item
+            })
+            const detail = reason ? `: ${reason}` : ""
+            const message = status === "verify_failed"
+              ? `Repair ran but verification failed${detail}`
+              : status === "blocked"
+                ? `Repair was not applied${detail}`
+                : status === "rejected"
+                  ? `Repair was rejected${detail}`
+                  : `Repair failed${detail}`
+            pushExtra(Object.freeze({
+              kind: status === "blocked" ? "warning" : "error",
+              id: nextId(status === "blocked" ? "warn" : "err"),
+              message,
+            }))
+          }
         } catch (error: any) {
           extras = extras.map((item) => {
             if (item.kind === "repair" && item.plan.planId === plan.planId) {

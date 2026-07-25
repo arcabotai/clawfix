@@ -136,13 +136,13 @@ Drive a real session end-to-end: launch → splash → auto-scan → findings in
 ## Verification readout (2026-07-25)
 
 - TypeScript: `cd cli/tui && bunx tsc --noEmit` passed.
-- TUI suite: `bun test` passed, 59 tests / 0 failures.
+- TUI suite: `bun test` passed, 60 tests / 0 failures.
 - Root suite: `npm test` passed, 350 tests / 0 failures.
 - Frame sweep: 40 frames across 140×40, 120×35, 100×30, 80×24, and 60×20 passed; no line overflow, brand/composer/modal actions present at the supported breakpoints.
 - Linux standalone: built, artifact-verified, and smoke-rendered successfully (5,048 bytes, exit 0).
-- Static security scan: 1,544 candidate lines across tracked diff and new files, clean.
-- Independent review: passed with no security concerns or logic errors.
-- Follow-up hardening applied after review: frame output is env-configurable, offline analyzer failures render as transcript errors instead of unhandled rejections, and ultra-narrow status truncation stays within budget.
+- Static security scan: clean.
+- Independent reviews: initial Hermes review passed; Claude Opus review found the approval/apply method mismatch, which was fixed and regression-tested.
+- Follow-up hardening applied after review: frame output is env-configurable, offline analyzer failures render as transcript errors instead of unhandled rejections, ultra-narrow status truncation stays within budget, TUI approval calls `applyRepair` with finding ID + single-use token, rejected/blocked repairs no longer fabricate success, and critical-risk plans match the high-risk hard stop.
 
 ## Done definition
 
