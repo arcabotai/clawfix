@@ -372,6 +372,73 @@ export function createSessionBridge(options: {
     publish()
   }
 
+  /**
+   * Resolve a server-proposed repair ID against the *local* catalog.
+   *
+   * The hosted agent only ever sends `repair.proposed { repairId, rationale }`
+   * (src/routes/agent-v2.js). It never sends a plan, and a server-authored plan must never
+   * reach the approval dialog: the planId, approval token, risk, and preview shown to the
+   * user all have to come from the local repair engine. So we map the id onto a repairable
+   * finding from the current revision and ask the session controller to build the plan.
+   */
+  function resolveRemoteRepairProposal(repairId: string, rationale: string) {
+    const id = String(repairId || "").trim()
+    if (!id) return
+
+    const raw = session.getState().findings
+    const current = (Array.isArray(raw) ? raw : [])
+      .map(asFinding)
+      .filter((f): f is TuiFinding => f !== null)
+    const finding = current.find((f) => f.repairable && f.repairId === id)
+    if (!finding) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `ClawFix suggested the repair "${sanitizeDisplayText(id, 128)}", but no matching repairable finding exists in the current scan. Nothing was prepared. Try "scan" and ask again.`,
+      }))
+      return
+    }
+
+    if (typeof session.proposeRepair !== "function") {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: "Repair proposals are unavailable in this session.",
+      }))
+      return
+    }
+
+    const proposal = session.proposeRepair(finding.id)
+    if (proposal?.status !== "proposed" || !proposal.plan) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `Could not prepare the repair for "${finding.title}" (${sanitizeDisplayText(String(proposal?.status || "unknown"), 64)}).`,
+      }))
+      return
+    }
+
+    const plan = planFromRaw(proposal.plan)
+    if (!plan) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `The local repair plan for "${finding.title}" was malformed and was not offered.`,
+      }))
+      return
+    }
+
+    const why = sanitizeDisplayText(rationale, 800) || plan.summary
+    pushExtra(Object.freeze({
+      kind: "repair",
+      id: nextId("repair"),
+      plan,
+      rationale: why,
+      status: "proposed" as const,
+    }))
+    openApprovalDialog(plan, why)
+  }
+
   function openApprovalDialog(plan: RepairPlanView, rationale: string) {
     dialog = Object.freeze({
       type: "approval",
@@ -465,17 +532,8 @@ export function createSessionBridge(options: {
             }))
             publish()
           } else if (type === "repair.proposed") {
-            const plan = planFromRaw(event.plan || event)
-            if (plan) {
-              pushExtra(Object.freeze({
-                kind: "repair",
-                id: nextId("repair"),
-                plan,
-                rationale: sanitizeDisplayText(String(event.rationale || ""), 800),
-                status: "proposed" as const,
-              }))
-              openApprovalDialog(plan, String(event.rationale || plan.summary))
-            }
+            resolveRemoteRepairProposal(String(event.repairId || ""), String(event.rationale || ""))
+            publish()
           } else if (type === "agent.error") {
             pushExtra(Object.freeze({
               kind: "error",
@@ -494,8 +552,7 @@ export function createSessionBridge(options: {
         if (message) session.appendMessage?.("assistant", sanitizeDisplayText(message))
         for (const event of Array.isArray(result?.events) ? result.events : []) {
           if (event?.type === "repair.proposed") {
-            const plan = planFromRaw(event.plan || event)
-            if (plan) openApprovalDialog(plan, String(event.rationale || plan.summary))
+            resolveRemoteRepairProposal(String(event.repairId || ""), String(event.rationale || ""))
           }
         }
       }

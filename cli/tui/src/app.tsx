@@ -8,7 +8,7 @@ import { DialogBox } from "./components/dialog-box"
 import { Sidebar } from "./components/sidebar"
 import { Splash } from "./components/splash"
 import { buildUnifiedDiff } from "./components/diff-dialog"
-import { helpText } from "./keymap"
+import { helpText, resolveGlobalKeyAction } from "./keymap"
 import { resolveLayout, type TranscriptItem } from "./lib/models"
 import {
   createFakeSession,
@@ -45,6 +45,8 @@ export interface AppProps {
   readonly session?: TuiSessionView
   readonly source?: SessionSource
   readonly simpleComposer?: boolean
+  /** Tear down the renderer and leave the app. Wired to renderer.destroy() in main.tsx. */
+  readonly onQuit?: () => void
 }
 
 const SIDEBAR_WIDTH = 34
@@ -119,14 +121,21 @@ export function App(props: AppProps) {
       return
     }
 
-    if (name === "p" && key.ctrl) {
-      controller?.toggleHelp?.()
-      key.preventDefault?.()
-      return
-    }
-
-    if (name === "c" && key.ctrl) {
-      controller?.cancelScan?.()
+    const state = view()
+    switch (resolveGlobalKeyAction(key, { busy: state.busy, scanning: state.scanning })) {
+      case "toggle-help":
+        controller?.toggleHelp?.()
+        key.preventDefault?.()
+        return
+      case "quit":
+        props.onQuit?.()
+        key.preventDefault?.()
+        return
+      case "cancel":
+        controller?.cancelScan?.()
+        key.preventDefault?.()
+        return
+      default:
     }
   })
 

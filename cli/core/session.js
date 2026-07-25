@@ -157,6 +157,13 @@ export function createSessionController({
       activeScan = null;
       revision = nextRevision;
       scanning = false;
+      // A thrown scan commits the new revision, so the previous revision's results must not
+      // survive alongside it — otherwise stale findings stay repairable under a revision whose
+      // scan never produced them. Mirrors the result.error branch above.
+      diagnostic = null;
+      issues = freezeList();
+      findings = freezeList();
+      summary = null;
       scanError = asError(error);
       emitSession('session.scan.committed', {
         revision,
