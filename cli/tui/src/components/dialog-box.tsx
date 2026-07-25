@@ -6,18 +6,27 @@ function line(text: string, color: string) {
 }
 
 function privacyLines(dialog: Extract<DialogState, { readonly type: "privacy" }>) {
+  // Order matters: visibleDialogLines() truncates from the end of the head, so the lines that
+  // define what consent actually covers come before the ones that merely restate context.
   const lines = [
     line("Privacy approval", theme.heading),
     line("ClawFix can send this message and a redacted diagnostic to:", theme.text),
     line(dialog.disclosure.providerLabel, theme.accent),
-    line(`Destination: ${dialog.disclosure.destination}`, theme.muted),
+    // The destination host is already in the endpoint URL; a separate line only costs a row
+    // that the Included/Not-included disclosure needs on small terminals.
     line(`Endpoint: ${dialog.disclosure.endpointUrl}`, theme.muted),
   ]
-  if (dialog.pendingMessage) {
-    lines.push(line(`Message: ${dialog.pendingMessage.slice(0, 120)}`, theme.muted))
+  if (dialog.disclosure.diagnosticEndpointUrl) {
+    lines.push(line(
+      `Uploads the redacted diagnostic first: ${dialog.disclosure.diagnosticEndpointUrl}`,
+      theme.muted,
+    ))
   }
   lines.push(line(`Included: ${dialog.disclosure.included.join("; ")}`, theme.text))
   lines.push(line(`Not included: ${dialog.disclosure.excluded.join("; ")}`, theme.text))
+  if (dialog.pendingMessage) {
+    lines.push(line(`Message: ${dialog.pendingMessage.slice(0, 120)}`, theme.muted))
+  }
   if (dialog.showPayload) {
     lines.push(line("Exact payload (redacted preview)", theme.heading))
     for (const payloadLine of dialog.payloadJson.split("\n").slice(0, 24)) {

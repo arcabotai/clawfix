@@ -49,6 +49,34 @@ export const COMPOSER_KEY_BINDINGS = Object.freeze([
   { name: "linefeed", action: "newline" as const },
 ])
 
+/**
+ * Footer hint tiers, longest first. resolveModelLine picks the longest that fits.
+ *
+ * A fixed width threshold cannot work here: the line is `${aiLabel} · ${hints}`, and aiLabel
+ * ranges from "Local only" (10) to "Remote (pending consent)" (24), so any single cutoff wraps
+ * for some mode. The previous `width <= 64` check wrapped the footer for every width from 65 to
+ * 91 — the whole 80-column band — and ate a transcript row.
+ */
+export const HINT_TIERS = Object.freeze([
+  "Enter send · Shift+Enter newline · Ctrl+P help · Ctrl+C cancel · Ctrl+D quit",
+  "Enter send · Ctrl+P help · Ctrl+C cancel · Ctrl+D quit",
+  "Enter send · Ctrl+P help · Ctrl+D quit",
+  "Enter send · Ctrl+D quit",
+  "Ctrl+D quit",
+] as const)
+
+/** Build the footer line for `aiLabel` that fits inside a terminal `width` (2 cols of padding). */
+export function resolveModelLine(aiLabel: string, width: number): string {
+  const label = String(aiLabel || "")
+  const budget = Math.max(0, Math.floor(width || 0) - 2)
+  for (const hints of HINT_TIERS) {
+    const line = `${label} · ${hints}`
+    if (line.length <= budget) return line
+  }
+  // Nothing fits: return the label alone, truncated, rather than wrapping the footer.
+  return label.length <= budget ? label : label.slice(0, Math.max(0, budget))
+}
+
 export function helpText(compact = false): string {
   if (compact) {
     return [

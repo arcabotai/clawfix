@@ -8,7 +8,7 @@ import { DialogBox } from "./components/dialog-box"
 import { Sidebar } from "./components/sidebar"
 import { Splash } from "./components/splash"
 import { buildUnifiedDiff } from "./components/diff-dialog"
-import { helpText, resolveGlobalKeyAction } from "./keymap"
+import { helpText, resolveGlobalKeyAction, resolveModelLine } from "./keymap"
 import { resolveLayout, type TranscriptItem } from "./lib/models"
 import {
   createFakeSession,
@@ -170,12 +170,7 @@ export function App(props: AppProps) {
         ? "Remote (pending consent)"
         : "Local only"
 
-  const modelLine = () => {
-    const hints = dims().width <= 64
-      ? "Enter send · Ctrl+P help"
-      : "Enter send · Shift+Enter newline · Ctrl+P help · Ctrl+C cancel"
-    return `${aiLabel()} · ${hints}`
-  }
+  const modelLine = () => resolveModelLine(aiLabel(), dims().width)
 
   const statusLine = () => {
     const state = current()
@@ -236,7 +231,9 @@ export function App(props: AppProps) {
 
       <DialogBox
         dialog={current().dialog}
-        maxHeight={Math.max(8, Math.floor(dims().height * 0.5))}
+        // The consent dialog gets a larger share: at 50% its Included/Not-included lines were
+        // truncated away on an 80x24 terminal, hiding the very disclosure being consented to.
+        maxHeight={Math.max(8, Math.floor(dims().height * (current().dialog.type === "privacy" ? 0.72 : 0.5)))}
         width={dims().width}
       />
 
