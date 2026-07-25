@@ -52,6 +52,19 @@ test('install route is mounted and serves scripts/install.sh with sha256 metadat
   assert.equal(INSTALL_HASH, expectedHash);
 });
 
+test('the committed SCRIPT_HASH matches the diagnostic script actually served', async () => {
+  // /fix/sha256 directs users to compare against blob/main/SCRIPT_HASH, so drift between the
+  // file and the served script silently breaks the documented verification step.
+  // Regenerate with: npm run hash:script
+  const { SCRIPT_HASH } = await import(new URL('../src/routes/script.js', import.meta.url).href);
+  const committed = (await readFile(new URL('../SCRIPT_HASH', import.meta.url), 'utf8')).trim();
+  assert.equal(
+    committed,
+    SCRIPT_HASH,
+    'SCRIPT_HASH is stale — run `npm run hash:script` after changing src/routes/script.js',
+  );
+});
+
 test('installer guidance never pipes curl into a shell on public surfaces', async () => {
   const sources = await Promise.all([
     read('scripts/install.sh'),

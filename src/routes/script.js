@@ -589,5 +589,9 @@ echo -e "\${CYAN}   https://clawfix.dev | https://x.com/arcabotai\${NC}"
 echo ""
 `;
 
-// Compute hash of the script for verification
+// Compute hash of the script for verification.
+// The repo's SCRIPT_HASH file is the out-of-band reference /fix/sha256 points users at, so it
+// must equal this value — `npm run hash:script` regenerates it and a test enforces the match.
 const SCRIPT_HASH = createHash('sha256').update(DIAGNOSTIC_SCRIPT).digest('hex');
+
+export { DIAGNOSTIC_SCRIPT, SCRIPT_HASH };
