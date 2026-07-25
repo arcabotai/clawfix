@@ -32,16 +32,22 @@ describe("OpenTUI package compatibility", () => {
       new URL(`../node_modules/${name}/package.json`, import.meta.url),
       "utf8",
     ).then(JSON.parse)
+    // Only the host's native package is installed, so read that one — hardcoding linux-x64
+    // made this test unrunnable anywhere but Linux. The linux-x64 release pin is still
+    // asserted below, from metadata rather than from disk.
+    const hostNative = `@opentui/core-${process.platform}-${process.arch}`
     const [core, solid, keymap, native] = await Promise.all([
       packageJson("@opentui/core"),
       packageJson("@opentui/solid"),
       packageJson("@opentui/keymap"),
-      packageJson("@opentui/core-linux-x64"),
+      packageJson(hostNative),
     ])
 
     expect(core.version).toBe("0.4.5")
     expect(core.peerDependencies).toEqual({ "web-tree-sitter": "0.25.10" })
-    expect(core.optionalDependencies["@opentui/core-linux-x64"]).toBe(native.version)
+    expect(core.optionalDependencies[hostNative]).toBe(native.version)
+    // The release build targets linux-x64 regardless of the host it is built on.
+    expect(core.optionalDependencies["@opentui/core-linux-x64"]).toBe("0.4.5")
     expect(solid.version).toBe("0.4.5")
     expect(solid.dependencies["@opentui/core"]).toBe(core.version)
     expect(solid.peerDependencies).toEqual({ "solid-js": "1.9.12" })

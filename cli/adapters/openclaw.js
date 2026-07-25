@@ -484,8 +484,59 @@ export function createOpenClawAdapter({
     npmVersion(options = {}) {
       return successfulText('npm', ['--version'], options);
     },
-    gatewayProcesses(options = {}) {
-      return successfulText('pgrep', ['-f', 'openclaw.*gateway'], options);
+    /**
+     * PIDs that plausibly belong to a running gateway *server*.
+     *
+     * The old pattern was `pgrep -f 'openclaw.*gateway'`, which was wrong in both directions on
+     * a real install: a gateway started by `openclaw gateway run` re-execs with the bare argv
+     * `openclaw`, so it never matched, while ClawFix's own `openclaw gateway status` probe —
+     * which runs concurrently with this call — always did. So this reported "running" whenever
+     * ClawFix looked, and never because a gateway was actually up.
+     *
+     * Transient CLI invocations are excluded by verb, and this process is excluded outright.
+     * Treat the result as supporting evidence only: `gatewayListening()` is the real signal.
+     */
+    async gatewayProcesses(options = {}) {
+      const listing = await successfulText('pgrep', ['-af', 'openclaw'], options);
+      const self = String(process.pid);
+      const pids = [];
+      for (const line of String(listing || '').split('\n')) {
+        const match = /^(\d+)\s+(.*)$/.exec(line.trim());
+        if (!match) continue;
+        const [, pid, command] = match;
+        if (pid === self) continue;
+        // Sub-commands ClawFix itself runs, plus anything merely mentioning openclaw.
+        if (/\b(gateway\s+(status|restart|stop|logs|probe|health|diagnostics|stability|call|discover|install)|doctor|config|--version)\b/.test(command)) continue;
+        if (/\b(pgrep|grep|tail|less|cat|sh -c|bash -c|node .*clawfix)\b/.test(command)) continue;
+        pids.push(pid);
+      }
+      return pids.join('\n');
+    },
+
+    /**
+     * Whether something is accepting connections on the gateway port.
+     *
+     * This is what "the gateway is running" means operationally, and it is the same evidence
+     * the diagnostics core already reports as `portListening`.
+     */
+    async gatewayListening(port = 18789, options = {}) {
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
+      const probes = [
+        ['ss', ['-ltn']],
+        ['netstat', ['-ltn']],
+        ['lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN']],
+      ];
+      for (const [executable, argv] of probes) {
+        const text = await successfulText(executable, argv, options);
+        if (!text) continue;
+        if (executable === 'lsof') return text.trim().length > 0;
+        // Match ":<port>" at the end of a local address column only.
+        if (new RegExp(`[\\s:\\[\\]][:.]?${port}\\s`).test(`${text}\n`) || new RegExp(`:${port}\\b`).test(text)) {
+          return true;
+        }
+        return false;
+      }
+      return false;
     },
     serviceManagerState,
     readFileTail,

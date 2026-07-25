@@ -112,7 +112,10 @@ export function createLiveSession(options: LiveSessionOptions): SessionBridge {
   })
 
   if (options.autoScan !== false) {
-    void bridge.scan()
+    // A rejected autoscan must not reach process-level `unhandledRejection`, which main.tsx
+    // treats as fatal and tears the renderer down. The controller has already committed the
+    // scan error into session state, so the UI renders it as a normal scan failure.
+    void bridge.scan().catch(() => {})
   }
   return bridge
 }

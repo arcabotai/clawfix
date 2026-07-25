@@ -1,5 +1,6 @@
-// ClawFix Task 5: normalize local diagnostic issues, native OpenClaw findings, server findings,
-// and future AI repair proposals into one frozen Finding contract with stable, explicit identity.
+// ClawFix Task 5: normalize local diagnostic issues (including native OpenClaw checks, which
+// diagnostics.js folds into localIssues carrying a nativeCheckId), server findings, and future
+// AI repair proposals into one frozen Finding contract with stable, explicit identity.
 //
 // The rule this module exists to enforce: a repair may only be authorized from an *explicit
 // reviewed mapping* keyed by a stable local `knownIssueId` or native `checkId` — never from a

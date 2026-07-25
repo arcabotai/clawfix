@@ -81,6 +81,12 @@ export interface OfflineAnalyzerLike {
 
 /** Optional remote analyzer — never called without consent. */
 export interface RemoteAnalyzerLike {
+  /** Exact description of what send() would transmit, for the consent dialog. */
+  describeOutbound?(message: string): {
+    readonly uploadsDiagnostic?: boolean
+    readonly diagnosticEndpointUrl?: string | null
+    readonly payload?: unknown
+  }
   send(input: {
     readonly message: string
     readonly consentGranted: boolean
@@ -349,7 +355,13 @@ export function createSessionBridge(options: {
   }
 
   function openPrivacyDialog(message: string) {
-    const payload = {
+    // Prefer the analyzer's own description: the dialog must show what will actually be sent,
+    // including the separate /api/diagnose upload that a remote turn performs first.
+    const described = typeof options.remoteAnalyzer?.describeOutbound === "function"
+      ? options.remoteAnalyzer.describeOutbound(message)
+      : null
+
+    const payload = described?.payload ?? {
       conversationId: "pending-session",
       message,
       diagnosticId: null,
@@ -358,7 +370,10 @@ export function createSessionBridge(options: {
         .slice(0, 32)
         .map((f) => ({ id: f.repairId, title: f.title, risk: "medium" })),
     }
-    disclosureCache = buildDisclosureView({ baseUrl: options.remoteBaseUrl })
+    disclosureCache = buildDisclosureView({
+      baseUrl: options.remoteBaseUrl,
+      uploadsDiagnostic: Boolean(described?.uploadsDiagnostic),
+    })
     dialog = Object.freeze({
       type: "privacy",
       disclosure: disclosureCache,
@@ -370,6 +385,73 @@ export function createSessionBridge(options: {
     })
     pendingRemoteMessage = message
     publish()
+  }
+
+  /**
+   * Resolve a server-proposed repair ID against the *local* catalog.
+   *
+   * The hosted agent only ever sends `repair.proposed { repairId, rationale }`
+   * (src/routes/agent-v2.js). It never sends a plan, and a server-authored plan must never
+   * reach the approval dialog: the planId, approval token, risk, and preview shown to the
+   * user all have to come from the local repair engine. So we map the id onto a repairable
+   * finding from the current revision and ask the session controller to build the plan.
+   */
+  function resolveRemoteRepairProposal(repairId: string, rationale: string) {
+    const id = String(repairId || "").trim()
+    if (!id) return
+
+    const raw = session.getState().findings
+    const current = (Array.isArray(raw) ? raw : [])
+      .map(asFinding)
+      .filter((f): f is TuiFinding => f !== null)
+    const finding = current.find((f) => f.repairable && f.repairId === id)
+    if (!finding) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `ClawFix suggested the repair "${sanitizeDisplayText(id, 128)}", but no matching repairable finding exists in the current scan. Nothing was prepared. Try "scan" and ask again.`,
+      }))
+      return
+    }
+
+    if (typeof session.proposeRepair !== "function") {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: "Repair proposals are unavailable in this session.",
+      }))
+      return
+    }
+
+    const proposal = session.proposeRepair(finding.id)
+    if (proposal?.status !== "proposed" || !proposal.plan) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `Could not prepare the repair for "${finding.title}" (${sanitizeDisplayText(String(proposal?.status || "unknown"), 64)}).`,
+      }))
+      return
+    }
+
+    const plan = planFromRaw(proposal.plan)
+    if (!plan) {
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `The local repair plan for "${finding.title}" was malformed and was not offered.`,
+      }))
+      return
+    }
+
+    const why = sanitizeDisplayText(rationale, 800) || plan.summary
+    pushExtra(Object.freeze({
+      kind: "repair",
+      id: nextId("repair"),
+      plan,
+      rationale: why,
+      status: "proposed" as const,
+    }))
+    openApprovalDialog(plan, why)
   }
 
   function openApprovalDialog(plan: RepairPlanView, rationale: string) {
@@ -465,17 +547,8 @@ export function createSessionBridge(options: {
             }))
             publish()
           } else if (type === "repair.proposed") {
-            const plan = planFromRaw(event.plan || event)
-            if (plan) {
-              pushExtra(Object.freeze({
-                kind: "repair",
-                id: nextId("repair"),
-                plan,
-                rationale: sanitizeDisplayText(String(event.rationale || ""), 800),
-                status: "proposed" as const,
-              }))
-              openApprovalDialog(plan, String(event.rationale || plan.summary))
-            }
+            resolveRemoteRepairProposal(String(event.repairId || ""), String(event.rationale || ""))
+            publish()
           } else if (type === "agent.error") {
             pushExtra(Object.freeze({
               kind: "error",
@@ -494,8 +567,7 @@ export function createSessionBridge(options: {
         if (message) session.appendMessage?.("assistant", sanitizeDisplayText(message))
         for (const event of Array.isArray(result?.events) ? result.events : []) {
           if (event?.type === "repair.proposed") {
-            const plan = planFromRaw(event.plan || event)
-            if (plan) openApprovalDialog(plan, String(event.rationale || plan.summary))
+            resolveRemoteRepairProposal(String(event.repairId || ""), String(event.rationale || ""))
           }
         }
       }

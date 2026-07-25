@@ -10,6 +10,8 @@ export interface DisclosureView {
   readonly providerChain: readonly string[]
   readonly included: readonly string[]
   readonly excluded: readonly string[]
+  /** Set when this turn will also upload the redacted diagnostic to /api/diagnose. */
+  readonly diagnosticEndpointUrl: string | null
 }
 
 export interface RepairEffectView {

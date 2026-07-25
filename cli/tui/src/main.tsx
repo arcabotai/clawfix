@@ -121,8 +121,8 @@ export function startTui(input?: TuiSessionView | SessionSource | SessionBridge)
     createRenderer: () => createCliRenderer({ ...rendererConfig }),
     mount: renderer => render(
       () => isSource
-        ? <App source={input as SessionSource} />
-        : <App session={(input as TuiSessionView) ?? createFakeSession()} />,
+        ? <App source={input as SessionSource} onQuit={() => renderer.destroy()} />
+        : <App session={(input as TuiSessionView) ?? createFakeSession()} onQuit={() => renderer.destroy()} />,
       renderer,
     ),
     run: waitForRendererExit,

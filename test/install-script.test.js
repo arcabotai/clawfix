@@ -52,6 +52,19 @@ test('install route is mounted and serves scripts/install.sh with sha256 metadat
   assert.equal(INSTALL_HASH, expectedHash);
 });
 
+test('the committed SCRIPT_HASH matches the diagnostic script actually served', async () => {
+  // /fix/sha256 directs users to compare against blob/main/SCRIPT_HASH, so drift between the
+  // file and the served script silently breaks the documented verification step.
+  // Regenerate with: npm run hash:script
+  const { SCRIPT_HASH } = await import(new URL('../src/routes/script.js', import.meta.url).href);
+  const committed = (await readFile(new URL('../SCRIPT_HASH', import.meta.url), 'utf8')).trim();
+  assert.equal(
+    committed,
+    SCRIPT_HASH,
+    'SCRIPT_HASH is stale — run `npm run hash:script` after changing src/routes/script.js',
+  );
+});
+
 test('installer guidance never pipes curl into a shell on public surfaces', async () => {
   const sources = await Promise.all([
     read('scripts/install.sh'),
@@ -71,7 +84,10 @@ test('install script installs a pinned package into a local prefix without npm i
   // Build a fake npm registry + package tarball using the real published CLI layout.
   const work = await mkdtemp(join(tmpdir(), 'clawfix-install-test-'));
   const registryRoot = join(work, 'registry');
-  const packDir = join(work, 'pack');
+  // Stage the payload under a literal `package/` directory so the tarball can be built with
+  // portable tar flags. GNU's --transform does not exist on the BSD tar shipped with macOS.
+  const packRoot = join(work, 'pack');
+  const packDir = join(packRoot, 'package');
   const prefix = join(work, 'prefix');
   const binDir = join(work, 'bin');
   try {
@@ -94,7 +110,8 @@ test('install script installs a pinned package into a local prefix without npm i
 
     // Create npm-style tarball package/
     const tarball = join(work, 'clawfix-0.10.0.tgz');
-    await run('tar', ['-czf', tarball, '-C', packDir, '--transform=s,^,package/,', '.']);
+    const packed = await run('tar', ['-czf', tarball, '-C', packRoot, 'package']);
+    assert.equal(packed.code, 0, `tar failed: ${packed.stderr}`);
 
     const integrity = await new Promise((resolve, reject) => {
       const child = spawn('bash', ['-lc', `openssl dgst -sha512 -binary ${JSON.stringify(tarball)} | openssl base64 -A`], {

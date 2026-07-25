@@ -30,6 +30,8 @@ export function buildDisclosureView(input: {
   readonly providerChain?: readonly string[]
   readonly included?: readonly string[]
   readonly excluded?: readonly string[]
+  /** True when this turn will also POST the redacted diagnostic to /api/diagnose. */
+  readonly uploadsDiagnostic?: boolean
 } = {}): DisclosureView {
   const raw = (input.baseUrl || "https://clawfix.dev").trim() || "https://clawfix.dev"
   let url: URL
@@ -47,13 +49,23 @@ export function buildDisclosureView(input: {
     ? [`Custom ClawFix server (${hostname})`, ...chain.filter((p) => !/clawfix service/i.test(p))]
     : chain
 
+  // Agreeing to a remote turn also uploads the redacted diagnostic, as a separate request to a
+  // separate endpoint. Say so up front rather than describing it as something that merely might
+  // already be "linked".
+  const included = input.included
+    ? [...input.included]
+    : input.uploadsDiagnostic
+      ? ["Your message", ...DEFAULT_INCLUDED.slice(1).map((line) => line.replace(" (when present on a linked diagnostic)", ""))]
+      : [...DEFAULT_INCLUDED]
+
   return Object.freeze({
     destination: hostname,
     baseUrl: url.origin,
     endpointUrl: `${url.origin}/api/v2/agent/messages`,
+    diagnosticEndpointUrl: input.uploadsDiagnostic ? `${url.origin}/api/diagnose` : null,
     providerLabel: effectiveChain.join(" → "),
     providerChain: Object.freeze(effectiveChain),
-    included: Object.freeze([...(input.included || DEFAULT_INCLUDED)].map(String)),
+    included: Object.freeze(included.map(String)),
     excluded: Object.freeze([...(input.excluded || DEFAULT_EXCLUDED)].map(String)),
   })
 }

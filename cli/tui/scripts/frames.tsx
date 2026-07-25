@@ -9,16 +9,22 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { testRender } from "@opentui/solid"
 
 import { App, createFakeSession } from "../src/app"
+import { buildDisclosureView } from "../src/lib/disclosure"
 import type { TuiSessionView } from "../src/session-bridge"
 import type { TranscriptItem, RepairPlanView, DialogState } from "../src/lib/models"
 
 const OUT = process.env.CLAWFIX_TUI_FRAMES_DIR || "/tmp/clawfix-tui-frames"
 
+// 66/72/88 sample the band the original sweep skipped, where the footer used to wrap for
+// every aiMode with a label longer than "Local only".
 const SIZES = [
   { name: "140x40", width: 140, height: 40 },
   { name: "120x35", width: 120, height: 35 },
   { name: "100x30", width: 100, height: 30 },
+  { name: "88x26", width: 88, height: 26 },
   { name: "80x24", width: 80, height: 24 },
+  { name: "72x22", width: 72, height: 22 },
+  { name: "66x20", width: 66, height: 20 },
   { name: "60x20", width: 60, height: 20 },
 ] as const
 
@@ -98,15 +104,9 @@ const STATES: Array<{ name: string; view: TuiSessionView }> = [
       composerLocked: true,
       dialog: {
         type: "privacy",
-        disclosure: {
-          destination: "clawfix.dev hosted AI",
-          baseUrl: "https://clawfix.dev",
-          endpointUrl: "https://clawfix.dev/api/analyze",
-          providerLabel: "ClawFix hosted AI (deepseek v4 flash)",
-          providerChain: ["clawfix.dev"],
-          included: ["Your message", "Redacted diagnostic summary", "Available repair IDs"],
-          excluded: ["API keys", "Tokens", "File contents", "Env values", "Home directory paths"],
-        },
+        // Built from the shipping builder — a hand-written disclosure here meant the UX gate
+        // was reviewing copy (and an endpoint) that no user ever sees.
+        disclosure: buildDisclosureView({ uploadsDiagnostic: true }),
         payloadJson: "{\n  \"message\": \"why is my gateway not running\"\n}",
         pendingMessage: "why is my gateway not running",
         focus: "stay-local",
@@ -132,6 +132,28 @@ const STATES: Array<{ name: string; view: TuiSessionView }> = [
       items: chatItems,
       revision: "a1b2c3d",
       helpVisible: true,
+    }),
+  },
+  // The footer is `${aiLabel} · ${hints}`, so the longest label is the case that wraps first.
+  // Sweeping only the default "local" mode hid a footer wrap across the entire 65..91 band.
+  {
+    name: "09-consent-pending",
+    view: state({
+      findings,
+      items: chatItems,
+      revision: "a1b2c3d",
+      aiMode: "remote-pending",
+      status: "Consent required before remote AI",
+    }),
+  },
+  {
+    name: "10-remote-consented",
+    view: state({
+      findings,
+      items: chatItems,
+      revision: "a1b2c3d",
+      aiMode: "remote",
+      status: "Remote AI enabled",
     }),
   },
 ]

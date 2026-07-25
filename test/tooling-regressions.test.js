@@ -77,7 +77,10 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.doesNotMatch(landing, /18-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
-  assert.match(landing, /Chat-first TUI is now the default session/);
+  assert.match(landing, /Chat-first TUI is the default session of the standalone binary/);
+  // The npm package ships the portable CLI only — the site must not imply npx gives the TUI.
+  assert.match(landing, /The npm package ships the portable CLI only/);
+  assert.match(landing, /standalone binary on the GitHub release/);
   assert.match(landing, /pull\/20/);
   assert.match(landing, /v0\.11\.2 is the current signed release/);
   assert.match(landing, /Approval defaults to Cancel/);

@@ -24,6 +24,8 @@ import { dirname, join, resolve, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 
+import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin"
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const TUI_ROOT = resolve(__dirname, "..")
 const ENTRY = join(TUI_ROOT, "src", "standalone.ts")
@@ -208,21 +210,41 @@ if not defined OTUI_TREE_SITTER_WORKER_PATH set OTUI_TREE_SITTER_WORKER_PATH=%OT
   writeFileSync(launcherPath, script)
 }
 
-export function buildTarget(spec: TargetSpec, outdir: string): { binary: string; launcher: string; assets: string } {
+/**
+ * Compile the standalone binary **in this process**, with Solid's JSX transform passed to the
+ * bundler explicitly.
+ *
+ * This cannot go back to `bun build --compile` on the CLI. That transform is registered by
+ * bunfig.toml's `preload = ["@opentui/solid/preload"]`, which Bun applies to `bun run` and
+ * `bun test` but not to a spawned bundler process — so the compiled binary was built with the
+ * plain automatic JSX runtime instead. The result still painted a first frame, which is why
+ * every existing check passed, but it had no Solid reactivity and no keyboard input at all:
+ * the shipped binary could not be typed into, answered, or quit.
+ *
+ * Verified by driving both builds through a PTY: with the plugin, typed text is echoed and
+ * Ctrl+D exits; without it, keystrokes produce zero bytes.
+ */
+async function buildStandaloneBinary(spec: TargetSpec, binary: string): Promise<void> {
+  console.log(`$ Bun.build --compile --target=${spec.bunCompileTarget} ${ENTRY} (+ solid transform)`)
+  const result = await Bun.build({
+    entrypoints: [ENTRY],
+    compile: { target: spec.bunCompileTarget, outfile: binary },
+    plugins: [createSolidTransformPlugin()],
+  })
+  if (!result.success) {
+    for (const log of result.logs) console.error(String(log))
+    throw new Error(`bun build failed for ${spec.id}`)
+  }
+}
+
+export async function buildTarget(spec: TargetSpec, outdir: string): Promise<{ binary: string; launcher: string; assets: string }> {
   mkdirSync(outdir, { recursive: true })
   ensureNativePackage(spec)
 
   const binary = join(outdir, spec.outfileName)
   if (existsSync(binary)) rmSync(binary)
 
-  const args = ["build", "--compile", `--outfile=${binary}`, `--target=${spec.bunCompileTarget}`, ENTRY]
-  console.log(`$ bun ${args.join(" ")}`)
-  const r = spawnSync("bun", args, {
-    cwd: TUI_ROOT,
-    stdio: "inherit",
-    env: { ...process.env, NODE_ENV: "production" },
-  })
-  if (r.status !== 0) throw new Error(`bun build failed for ${spec.id}`)
+  await buildStandaloneBinary(spec, binary)
   if (!existsSync(binary)) throw new Error(`Expected artifact missing: ${binary}`)
   chmodSync(binary, 0o755)
 
@@ -249,5 +271,5 @@ export function buildTarget(spec: TargetSpec, outdir: string): { binary: string;
 
 if (import.meta.main) {
   const { target, outdir } = parseArgs(process.argv.slice(2))
-  buildTarget(TARGETS[target], outdir)
+  await buildTarget(TARGETS[target], outdir)
 }

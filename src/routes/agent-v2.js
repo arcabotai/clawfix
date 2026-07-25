@@ -20,7 +20,25 @@ import { createSseWriter, writeSseHeaders } from '../agent/stream.js';
 
 export const agentV2Router = Router();
 
+// Conversation history is in-process and keyed by a client-supplied id, so it needs both an
+// age limit and a hard cap — without them any client can grow server memory indefinitely with
+// fresh conversation ids, rate limits notwithstanding.
 const conversations = new Map();
+const CONVERSATION_TTL_MS = positiveEnvInteger(process.env.AGENT_CONVERSATION_TTL_MS, 30 * 60_000);
+const MAX_CONVERSATIONS = positiveEnvInteger(process.env.AGENT_MAX_CONVERSATIONS, 1000);
+
+export function pruneConversations(now = Date.now(), store = conversations) {
+  for (const [id, conv] of store) {
+    if (now - conv.createdAt > CONVERSATION_TTL_MS) store.delete(id);
+  }
+  // Map iterates in insertion order, so the oldest entries evict first.
+  while (store.size > MAX_CONVERSATIONS) {
+    const oldest = store.keys().next();
+    if (oldest.done) break;
+    store.delete(oldest.value);
+  }
+  return store.size;
+}
 const AI_CONFIG = getAIConfig();
 const agentLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.CHAT_RATE_LIMIT, 30),
@@ -69,6 +87,7 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       release = capacity.release;
     }
 
+    pruneConversations();
     if (!conversations.has(conversationId)) {
       conversations.set(conversationId, {
         messages: [],
@@ -77,6 +96,7 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       });
     }
     const conv = conversations.get(conversationId);
+    conv.lastSeenAt = Date.now();
     // Allow first message to bind diagnostic; later rescans may update intentionally.
     if (diagnosticId && conv.diagnosticId && conv.diagnosticId !== diagnosticId) {
       conv.diagnosticId = diagnosticId;

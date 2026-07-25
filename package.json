@@ -19,6 +19,7 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node scripts/run-node-tests.mjs",
+    "hash:script": "node scripts/update-script-hash.mjs",
     "test:tui": "bun test --cwd cli/tui",
     "prove:remediation": "node scripts/prove-remediation.mjs .",
     "validate:repairs": "node scripts/validate-repairs.mjs",
@@ -30,7 +31,8 @@
     "lab:scenarios": "node scripts/blaxel-scenarios.mjs all",
     "build:tui": "node scripts/build-tui-release.mjs",
     "verify:tui": "node scripts/verify-tui-artifact.mjs",
-    "smoke:tui": "node scripts/smoke-tui-binary.mjs"
+    "smoke:tui": "node scripts/smoke-tui-binary.mjs",
+    "smoke:tui:interactive": "node scripts/smoke-tui-interactive.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

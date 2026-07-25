@@ -177,6 +177,47 @@ test('scan() re-throws a hard failure from runDiagnostics after committing scanE
   assert.equal(committed.error.message, 'boom');
 });
 
+test('a thrown rescan clears the previous revision results instead of re-labelling them', async () => {
+  let attempt = 0;
+  const { controller, events } = baseController({
+    knownRepairIds: ['gateway-not-running'],
+    runDiagnostics: async ({ revision }) => {
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          revision,
+          diagnostic: { revision },
+          issues: [{ severity: 'critical', text: 'Gateway is not running' }],
+          summary: { gateway: { running: false } },
+        };
+      }
+      throw new Error('adapter exploded');
+    },
+  });
+
+  const first = await controller.scan();
+  assert.equal(first.findings.length, 1);
+  assert.equal(first.findings[0].repairable, true);
+
+  await assert.rejects(() => controller.scan(), /adapter exploded/);
+
+  // The new revision is committed, so the old revision's findings must not survive with it —
+  // otherwise stale findings stay repairable under a scan that never produced them.
+  const state = controller.getState();
+  assert.equal(state.revision, 'rev-2');
+  assert.equal(state.scanError.message, 'adapter exploded');
+  assert.deepEqual(state.findings, []);
+  assert.deepEqual(state.issues, []);
+  assert.equal(state.diagnostic, null);
+  assert.equal(state.summary, null);
+
+  const committed = events.filter((event) => event.type === 'session.scan.committed').at(-1);
+  assert.equal(committed.findingsCount, 0);
+
+  // And a repair can no longer be proposed against the cleared finding.
+  assert.equal(controller.proposeRepair('clawfix:gateway-is-not-running').status, 'not_found');
+});
+
 // ============================================================
 // Rescan supersession + staleness rejection
 // ============================================================

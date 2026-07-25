@@ -8,7 +8,7 @@ import { DialogBox } from "./components/dialog-box"
 import { Sidebar } from "./components/sidebar"
 import { Splash } from "./components/splash"
 import { buildUnifiedDiff } from "./components/diff-dialog"
-import { helpText } from "./keymap"
+import { helpText, resolveGlobalKeyAction, resolveModelLine } from "./keymap"
 import { resolveLayout, type TranscriptItem } from "./lib/models"
 import {
   createFakeSession,
@@ -45,6 +45,8 @@ export interface AppProps {
   readonly session?: TuiSessionView
   readonly source?: SessionSource
   readonly simpleComposer?: boolean
+  /** Tear down the renderer and leave the app. Wired to renderer.destroy() in main.tsx. */
+  readonly onQuit?: () => void
 }
 
 const SIDEBAR_WIDTH = 34
@@ -119,14 +121,21 @@ export function App(props: AppProps) {
       return
     }
 
-    if (name === "p" && key.ctrl) {
-      controller?.toggleHelp?.()
-      key.preventDefault?.()
-      return
-    }
-
-    if (name === "c" && key.ctrl) {
-      controller?.cancelScan?.()
+    const state = view()
+    switch (resolveGlobalKeyAction(key, { busy: state.busy, scanning: state.scanning })) {
+      case "toggle-help":
+        controller?.toggleHelp?.()
+        key.preventDefault?.()
+        return
+      case "quit":
+        props.onQuit?.()
+        key.preventDefault?.()
+        return
+      case "cancel":
+        controller?.cancelScan?.()
+        key.preventDefault?.()
+        return
+      default:
     }
   })
 
@@ -161,12 +170,7 @@ export function App(props: AppProps) {
         ? "Remote (pending consent)"
         : "Local only"
 
-  const modelLine = () => {
-    const hints = dims().width <= 64
-      ? "Enter send · Ctrl+P help"
-      : "Enter send · Shift+Enter newline · Ctrl+P help · Ctrl+C cancel"
-    return `${aiLabel()} · ${hints}`
-  }
+  const modelLine = () => resolveModelLine(aiLabel(), dims().width)
 
   const statusLine = () => {
     const state = current()
@@ -176,7 +180,9 @@ export function App(props: AppProps) {
     if (budget <= 0) return ""
     if (full.length <= budget) return full
     if (budget === 1) return "…"
-    return `${full.slice(0, budget - 1)}…`
+    // Slice by code point: the 🦞 in the banner is a surrogate pair, and cutting between its
+    // halves paints a replacement glyph.
+    return `${[...full].slice(0, budget - 1).join("")}…`
   }
 
   const handleSubmit = (text: string) => {
@@ -227,7 +233,9 @@ export function App(props: AppProps) {
 
       <DialogBox
         dialog={current().dialog}
-        maxHeight={Math.max(8, Math.floor(dims().height * 0.5))}
+        // The consent dialog gets a larger share: at 50% its Included/Not-included lines were
+        // truncated away on an 80x24 terminal, hiding the very disclosure being consented to.
+        maxHeight={Math.max(8, Math.floor(dims().height * (current().dialog.type === "privacy" ? 0.72 : 0.5)))}
         width={dims().width}
       />
 

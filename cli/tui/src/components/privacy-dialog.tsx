@@ -16,6 +16,12 @@ export function PrivacyDialog(props: {
     out.push({ text: props.disclosure.providerLabel, color: theme.accent })
     out.push({ text: `Destination: ${props.disclosure.destination}`, color: theme.muted })
     out.push({ text: `Endpoint: ${props.disclosure.endpointUrl}`, color: theme.muted })
+    if (props.disclosure.diagnosticEndpointUrl) {
+      out.push({
+        text: `Also uploads the redacted diagnostic first: ${props.disclosure.diagnosticEndpointUrl}`,
+        color: theme.muted,
+      })
+    }
     if (props.pendingMessage) out.push({ text: `Message: ${String(props.pendingMessage).slice(0, 120)}`, color: theme.muted })
     out.push({ text: "Included", color: theme.heading })
     for (const item of props.disclosure.included) out.push({ text: `• ${item}`, color: theme.text })

@@ -10,7 +10,7 @@
  *        npx clawfix --tui    (force OpenTUI; requires Bun)
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execSync, spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,9 +41,10 @@ function printHelp() {
 Usage: npx clawfix [options]
 
 Modes:
-  (default)            OpenTUI session UI (falls back to plain session without Bun)
+  (default)            Interactive session. This package ships the plain session; the OpenTUI
+                       chat UI is a separate standalone binary (see below)
   --plain              Classic interactive readline session: scan, review, fix, optional chat
-  --tui                Force the OpenTUI session UI (requires Bun)
+  --tui                Force the OpenTUI session UI (source checkout + Bun only)
   --scan               One-shot scan (legacy mode)
   --no-interactive     Same as --scan
 
@@ -79,8 +80,12 @@ Security:
   • ClawFix discloses OpenRouter and asks before the first upload (unless --yes)
   • Source code: https://github.com/arcabotai/clawfix
 
+OpenTUI chat session:
+  Not bundled in this npm package. Download the standalone binary from
+  https://github.com/arcabotai/clawfix/releases/latest
+
 Examples:
-  npx clawfix                  # OpenTUI session (default; plain fallback without Bun)
+  npx clawfix                  # interactive plain session
   npx clawfix --plain          # Classic interactive session
   npx clawfix --scan           # One-shot scan + repair guidance
   npx clawfix --dry-run        # See what data would be collected
@@ -88,9 +93,26 @@ Examples:
 `);
 }
 
+const TUI_RELEASES_URL = 'https://github.com/arcabotai/clawfix/releases/latest';
+
 async function runOpenTuiMode({ quiet = false } = {}) {
   const cliDir = dirname(fileURLToPath(import.meta.url));
   const tuiEntry = join(cliDir, '../tui/src/main.tsx');
+  const tuiDir = join(cliDir, '../tui');
+
+  // The npm package ships the portable CLI only — the OpenTUI session is distributed as a
+  // standalone binary. Detect that here instead of spawning Bun against a missing directory,
+  // which surfaces as `spawn <bun> ENOENT` and wrongly blames a Bun install that is present.
+  if (!existsSync(tuiEntry)) {
+    if (quiet) return false;
+    console.error(c.red('The OpenTUI session is not bundled in the clawfix npm package.'));
+    console.error(c.dim(`Download the standalone binary: ${TUI_RELEASES_URL}`));
+    console.error(c.dim('Or run it from a source checkout: cd cli/tui && bun install && bun run src/main.tsx'));
+    console.error(c.dim('This session works today with: npx clawfix --plain'));
+    process.exitCode = 2;
+    return false;
+  }
+
   let bunPath = '';
   try {
     bunPath = execSync('command -v bun', { encoding: 'utf8' }).trim();
@@ -106,7 +128,7 @@ async function runOpenTuiMode({ quiet = false } = {}) {
     const child = spawn(bunPath, [tuiEntry], {
       stdio: 'inherit',
       env: process.env,
-      cwd: join(cliDir, '../tui'),
+      cwd: tuiDir,
     });
     child.on('error', error => resolve({ error }));
     child.on('exit', code => resolve({ code: code ?? 1 }));
@@ -119,10 +141,9 @@ async function runOpenTuiMode({ quiet = false } = {}) {
     }
     return false;
   }
-  if (result.code !== 0) {
-    if (!quiet) process.exitCode = result.code;
-    return false;
-  }
+  // The TUI ran. A non-zero exit is its own outcome to report — it must not be mistaken for
+  // "never launched", which would drop the user into a second, full plain session.
+  if (result.code !== 0) process.exitCode = result.code;
   return true;
 }
 

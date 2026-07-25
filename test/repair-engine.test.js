@@ -239,3 +239,110 @@ test('the real fix command routes catalog repairs through the repair engine befo
   assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, rl, session\)/);
   assert.match(source, /revision: result\.revision/);
 });
+
+// ============================================================
+// Risk refusal and stage-failure containment
+// ============================================================
+
+test('applyPlan refuses high and critical risk repairs without running them', async () => {
+  for (const risk of ['high', 'critical', 'HIGH']) {
+    const finding = gatewayFinding();
+    const entry = { ...fakeCatalogEntry(), risk };
+    const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+    const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+    const outcome = await engine.applyPlan({
+      planId: plan.planId,
+      approvalToken: plan.approvalToken,
+      revision: 'rev-1',
+      finding,
+      ctx: {},
+    });
+
+    assert.equal(outcome.status, 'blocked', `risk=${risk}`);
+    assert.equal(outcome.reason, 'risk_refused');
+    // Nothing ran — not even preflight.
+    assert.deepEqual(entry.calls, []);
+  }
+});
+
+test('applyPlan still applies low and medium risk repairs', async () => {
+  for (const risk of ['low', 'medium']) {
+    const finding = gatewayFinding();
+    const entry = { ...fakeCatalogEntry(), risk };
+    const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+    const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+    const outcome = await engine.applyPlan({
+      planId: plan.planId,
+      approvalToken: plan.approvalToken,
+      revision: 'rev-1',
+      finding,
+      ctx: {},
+    });
+    assert.equal(outcome.status, 'applied', `risk=${risk}`);
+  }
+});
+
+test('a throwing verify reports verify_failed with the apply result, not a rejected promise', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.verify = async () => { throw new Error('verify exploded'); };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'verify_failed');
+  assert.equal(outcome.verify.ok, false);
+  assert.match(outcome.verify.error, /verify exploded/);
+  // The caller must still learn that the repair already ran.
+  assert.deepEqual(outcome.applyResult, { status: 0 });
+  assert.ok(outcome.rollback);
+});
+
+test('a throwing rollback does not mask the verify failure', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry({ verifyOk: false });
+  entry.rollback = async () => { throw new Error('rollback exploded'); };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'verify_failed');
+  assert.equal(outcome.rollback.rolledBack, false);
+  assert.match(outcome.rollback.note, /rollback failed: rollback exploded/);
+});
+
+test('a throwing preflight reports an error outcome instead of rejecting', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.preflight = async () => { throw new Error('preflight exploded'); };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.error, /preflight failed: preflight exploded/);
+  assert.equal(entry.calls.includes('apply'), false);
+});

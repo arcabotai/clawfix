@@ -53,10 +53,36 @@ async function loadPty() {
   }
 }
 
+/**
+ * UI strings the binary must actually paint. Asserting these is the point of the smoke:
+ * a compiled binary that starts, writes escape codes and exits 0 while rendering nothing
+ * would otherwise pass.
+ */
+const REQUIRED_RENDER_MARKERS = [
+  "ClawFix",
+  "Tell me what is going wrong",
+  "OpenClaw",
+]
+
+function assertRendered(output, context) {
+  const missing = REQUIRED_RENDER_MARKERS.filter((marker) => !output.includes(marker))
+  if (missing.length > 0) {
+    fail(
+      `binary started but never rendered the session UI (${context})\n`
+      + `missing: ${missing.join(", ")}\n`
+      + `--- output tail ---\n${output.slice(-1500)}`,
+    )
+  }
+}
+
 async function smokeWithPty(binary, home, envExtra = {}) {
   const pty = await loadPty()
   if (!pty) {
-    console.log("node-pty not installed; falling back to plain spawn smoke")
+    // Degrading silently is how this gate stayed green while proving almost nothing.
+    if (process.env.CLAWFIX_TUI_REQUIRE_PTY === "1") {
+      fail("node-pty is required for the PTY smoke (CLAWFIX_TUI_REQUIRE_PTY=1) but is not installed")
+    }
+    console.log("node-pty not installed; running the plain spawn smoke instead (no interactive-exit coverage)")
     return smokePlain(binary, home, envExtra)
   }
 
@@ -124,6 +150,8 @@ async function smokeWithPty(binary, home, envExtra = {}) {
     fail(`unclean exit code ${result.code}\n--- output ---\n${result.output.slice(-2000)}`)
   }
 
+  assertRendered(result.output, "pty")
+
   console.log(
     JSON.stringify(
       {
@@ -149,7 +177,9 @@ function smokePlain(binary, home, envExtra = {}) {
         ...process.env,
         ...envExtra,
         HOME: home,
-        TERM: full ? "xterm-256color" : "dumb",
+        // Always a real terminal type: with TERM=dumb the app paints nothing, so there would
+        // be no rendered output to assert.
+        TERM: "xterm-256color",
         CLAWFIX_TUI_SMOKE: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -174,6 +204,7 @@ function smokePlain(binary, home, envExtra = {}) {
       if (code === 127) reject(new Error("binary not executable or missing interpreter"))
       const started = out.length + err.length > 0 || code === 0 || signal === "SIGTERM" || signal === "SIGINT"
       if (!started) reject(new Error(`binary produced no output and exit ${code}`))
+      assertRendered(out, "plain spawn")
       // With OTUI_ASSET_ROOT, require no tree-sitter path crash
       if (err.includes("normalizeLoadedFilePath") || err.includes("loadedPath.startsWith")) {
         reject(new Error(`OpenTUI asset path still broken:\n${err.slice(-800)}`))
@@ -191,6 +222,7 @@ function smokePlain(binary, home, envExtra = {}) {
             signal,
             stdoutBytes: out.length,
             stderrBytes: err.length,
+            renderedMarkers: REQUIRED_RENDER_MARKERS,
             otuiAssetRoot: envExtra.OTUI_ASSET_ROOT || process.env.OTUI_ASSET_ROOT || null,
             stderrTail: err.slice(-500),
           },

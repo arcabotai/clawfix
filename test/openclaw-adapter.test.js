@@ -182,7 +182,7 @@ test('runtime collectors pass hostile values as literal argv and parse Linux ser
     async run(executable, argv, options) {
       calls.push({ executable, argv, options });
       if (executable === 'npm') return Object.freeze({ status: 0, stdout: '10.9.4\n', stderr: '' });
-      if (executable === 'pgrep') return Object.freeze({ status: 0, stdout: '42\n', stderr: '' });
+      if (executable === 'pgrep') return Object.freeze({ status: 0, stdout: '42 /usr/local/bin/openclaw\n', stderr: '' });
       if (executable === 'systemctl') {
         return Object.freeze({
           status: 0,
@@ -214,7 +214,7 @@ test('runtime collectors pass hostile values as literal argv and parse Linux ser
   });
   assert.deepEqual(calls.map(({ executable, argv }) => ({ executable, argv })), [
     { executable: 'npm', argv: ['--version'] },
-    { executable: 'pgrep', argv: ['-f', 'openclaw.*gateway'] },
+    { executable: 'pgrep', argv: ['-af', 'openclaw'] },
     {
       executable: 'systemctl',
       argv: [
@@ -623,4 +623,91 @@ test('invoke rejects a zero timeout synchronously without I/O', () => {
   assert.throws(() => adapter.invoke([], { timeoutMs: 0 }), TypeError);
   assert.equal(fsCalls, 0);
   assert.equal(processCalls, 0);
+});
+
+// ============================================================
+// Gateway liveness evidence
+//
+// The previous detector ran `pgrep -f 'openclaw.*gateway'`. On a real install that matched
+// ClawFix's own concurrent `openclaw gateway status` probe and never matched a running
+// gateway, whose argv is just `openclaw` — so verify() reported success with nothing
+// listening on the port.
+// ============================================================
+
+function pgrepAdapter(stdout) {
+  return {
+    async run(executable, argv) {
+      if (executable === 'pgrep') return Object.freeze({ status: 0, stdout, stderr: '' });
+      return Object.freeze({ status: 1, stdout: '', stderr: '' });
+    },
+  };
+}
+
+function linuxAdapter(processAdapter) {
+  return createOpenClawAdapter({
+    fs: {
+      async access() { throw new Error('not used'); },
+      async stat() { throw new Error('not used'); },
+    },
+    platform: 'linux',
+    processAdapter,
+  });
+}
+
+test('gatewayProcesses ignores ClawFix own gateway sub-commands', async () => {
+  const adapter = linuxAdapter(pgrepAdapter(
+    [
+      '111 /usr/local/bin/node /usr/local/bin/openclaw gateway status',
+      '112 /usr/local/bin/node /usr/local/bin/openclaw gateway restart',
+      '113 /usr/local/bin/node /usr/local/bin/openclaw doctor',
+      '114 openclaw',
+    ].join('\n') + '\n',
+  ));
+  // Only the bare server process survives.
+  assert.equal(await adapter.gatewayProcesses(), '114');
+});
+
+test('gatewayProcesses never reports the current process', async () => {
+  const adapter = linuxAdapter(pgrepAdapter(`${process.pid} openclaw\n`));
+  assert.equal(await adapter.gatewayProcesses(), '');
+});
+
+test('gatewayProcesses ignores shells and greps that merely mention openclaw', async () => {
+  const adapter = linuxAdapter(pgrepAdapter(
+    [
+      '201 sh -c pgrep -af openclaw gateway',
+      '202 grep openclaw gateway',
+      '203 tail -f /tmp/openclaw/openclaw.log',
+    ].join('\n') + '\n',
+  ));
+  assert.equal(await adapter.gatewayProcesses(), '');
+});
+
+test('gatewayListening reports the port, not a process name', async () => {
+  const listening = linuxAdapter({
+    async run(executable) {
+      if (executable === 'ss') {
+        return Object.freeze({ status: 0, stdout: 'LISTEN 0 0 127.0.0.1:18789 0.0.0.0:*\n', stderr: '' });
+      }
+      return Object.freeze({ status: 1, stdout: '', stderr: '' });
+    },
+  });
+  assert.equal(await listening.gatewayListening(18789), true);
+
+  const quiet = linuxAdapter({
+    async run(executable) {
+      if (executable === 'ss') {
+        return Object.freeze({ status: 0, stdout: 'LISTEN 0 0 127.0.0.1:22 0.0.0.0:*\n', stderr: '' });
+      }
+      return Object.freeze({ status: 1, stdout: '', stderr: '' });
+    },
+  });
+  assert.equal(await quiet.gatewayListening(18789), false);
+});
+
+test('gatewayListening refuses an invalid port instead of guessing', async () => {
+  const adapter = linuxAdapter(pgrepAdapter(''));
+  assert.equal(await adapter.gatewayListening(0), false);
+  assert.equal(await adapter.gatewayListening(70000), false);
+  assert.equal(await adapter.gatewayListening('18789'), false);
 });
