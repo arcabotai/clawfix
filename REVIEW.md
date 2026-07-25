@@ -1,5 +1,12 @@
 # ClawFix end-to-end review — v0.11.2 (main @ 6d51d7e)
 
+> **Status: implementation pass complete on branch `review/upgrade-pass` (local only, never pushed).**
+> All 20 planned items are done. Gates: 365 node tests, 87 TUI tests, tsc clean, 80 frames,
+> binary built and smoked. See "Implementation outcome" at the end for what was fixed, what was
+> verified, and the one item that is only partially fixed.
+>
+> **One new blocker was found while verifying B-2 — see B-23. It is not fixed.**
+
 Reviewed: CLI core, TUI, web service, install/release flow, website copy.
 Method: source review + live server, live SSE, published-tarball inspection, frame captures,
 a compiled standalone binary, and targeted repros. Every finding below has reproducible evidence.
@@ -381,3 +388,88 @@ can add in the same commit. Item 14 (the PTY e2e) should follow immediately so B
 **Open decision for you (item 7):** ship `tui/` inside the npm package, or keep the TUI
 binary-only and reword the site? I recommend binary-only — shipping the TUI would add a hard Bun
 dependency to an `npx`-first tool — but it means editing the hero copy, so it's your call.
+
+---
+
+# Implementation outcome
+
+Branch `review/upgrade-pass`, 9 commits, local only — nothing pushed, no Railway, no npm publish.
+
+## Gates (final run)
+
+| Gate | Before | After |
+|---|---|---|
+| `npm test` | 349/350 | **365/365** |
+| `cd cli/tui && bun test` | 59/60 | **87/87** |
+| `bunx tsc --noEmit` | clean | **clean** |
+| Frame sweep | 40 frames, 5 widths | **80 frames, 8 widths**, zero footer wraps |
+| Build + smoke | passed without asserting anything | **passes, asserting rendered UI** |
+
+## Fixed and verified
+
+| # | Finding | Evidence |
+|---|---|---|
+| B-1 | Remote repair proposals dropped | e2e test drives the real flow; confirmed to fail against the pre-fix bridge |
+| H-3 | TUI absent from npm package | `--tui` on a staged published layout now names the standalone binary; test asserts it |
+| H-4 | Stale `SCRIPT_HASH` | regenerated; guard test fails on drift (verified by corrupting it) |
+| H-5 | Consent dialog understated the upload | preview built from the real request; `/api/diagnose` disclosed |
+| H-6 | Stale findings after a thrown scan | test asserts the cleared state and that the repair can no longer be proposed |
+| M-7 | Autoscan rejection killed the TUI | `.catch()` on the autoscan |
+| M-8 | Footer wrapped at widths 65–91 | 303 renders across 3 aiModes × widths 40–140: single-row footer everywhere |
+| M-9 | Frame sweep could not see M-8 | widths 66/72/88 and consent-pending/remote states added; real disclosure rendered |
+| M-10 | Unstable transcript keys | ids assigned in `appendMessage` |
+| M-11 | Smoke gate proved nothing | asserts rendered UI; regression test feeds it a non-rendering binary |
+| M-12 | Unbounded conversation store | TTL + cap with oldest-first eviction, unit tested |
+| M-13 | Dead `nativeChecks` argument | removed; comment corrected |
+| M-14 | Risk refusal only in the TUI | enforced in `applyPlan`; nothing runs, not even preflight |
+| M-15 | Stage exceptions escaped `applyPlan` | each stage returns a structured outcome; `applyResult` preserved |
+| L-16 | Suite unrunnable on macOS | both tests fixed; suite green on macOS |
+| L-17..L-22 | Copy, engines, mode dispatch, truncation, plan retention, disclosure drift | all addressed; parity test added |
+
+## Partially fixed
+
+**B-2 — TUI quit path.** Fixed and verified *from source*: Ctrl+D, and Ctrl+C when idle, exit in
+~0.1s with exit code 0 and the terminal restored (`ICANON`/`ECHO` back on). Ctrl+C still cancels
+while work is in flight. The decision is a pure `resolveGlobalKeyAction()`, unit tested, because
+`bun test` swallows raw Ctrl+C.
+
+It does **not** fix the standalone binary, for the reason below.
+
+## New finding (not fixed)
+
+### B-23 — BLOCKER: the standalone binary receives no keyboard input at all
+
+Discovered while verifying B-2. The `bun --compile` build renders the UI correctly but never
+receives a key. Driving both builds through a PTY with the pty buffer drained, typing `ZZTOP`:
+
+```
+compiled binary : typed text echoed into UI: False   bytes rendered after typing: 0
+from source     : typed text echoed into UI: True    bytes rendered after typing: 132
+```
+
+So in the shipped binary the composer cannot be typed into, no dialog can be answered, no repair
+can be approved, and — the symptom that led here — it cannot be quit. It renders a session that
+cannot be used. Reproduced consistently across rebuilds; unaffected by the B-2 fix, which is why
+that fix lands only for the source path.
+
+Not fixed: the cause is below ClawFix, in how OpenTUI's input layer behaves under `bun --compile`
+(`cli/tui/bunfig.toml` preloads `@opentui/solid/preload`, which a compiled binary cannot resolve
+— the most likely culprit, unconfirmed). Fixing it means changing how the binary is built, which
+is outside the approved plan.
+
+**Suggested next step:** treat this as the top priority. Reproduce with a minimal OpenTUI
+`bun --compile` app to isolate it from ClawFix, then either embed the preload plugin at build
+time or raise it upstream. Until then the GitHub release binaries render but do not work, and
+the site should not present them as a usable way to run ClawFix.
+
+Note this was invisible to every existing gate: `verify-tui-artifact.mjs` checks the file, and the
+smoke script only proved the process started — even after this pass hardened it to assert rendered
+output, rendering is exactly what still works. Only driving real keys through a PTY catches it.
+
+## Methodology note
+
+An earlier round of this investigation reached wrong conclusions — that `renderer.destroy()`
+blocks, that `process.exit()` does not fire — because the PTY harness was not draining the master,
+so writes to fd 1 blocked on a full buffer. Once the harness drained continuously, the source
+build exited cleanly and those conclusions dissolved. The findings above come from the corrected
+harness.
