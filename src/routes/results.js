@@ -222,11 +222,11 @@ function resultsPage(fixId) {
         html += '</div>';
       }
 
-      // Beta notice (no payment during beta)
+      // Free and open source — there is no paid tier.
       if (count > 0) {
         html += '<div class="payment" style="border-color: var(--green);">';
-        html += '<h3>🎉 Free During Beta!</h3>';
-        html += '<p>This diagnosis is on us. Enjoy full AI analysis for free while we\\'re in early access.<br>';
+        html += '<h3>🎉 Free and open source</h3>';
+        html += '<p>ClawFix is MIT licensed and free to use.<br>';
         html += 'Like ClawFix? Star us on <a href="https://github.com/arcabotai/clawfix" style="color:var(--green)">GitHub</a> — it helps a lot.</p>';
         html += '</div>';
       }

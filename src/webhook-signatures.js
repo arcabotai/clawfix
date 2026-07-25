@@ -21,19 +21,6 @@ export function safeEqual(a, b) {
 }
 
 /**
- * Lemon Squeezy: `X-Signature` is hex HMAC-SHA256 of the raw body under the webhook secret.
- * https://docs.lemonsqueezy.com/help/webhooks#signing-requests
- */
-export function verifyLemonSqueezySignature({ secret, rawBody, signature }) {
-  if (!secret) return { ok: false, reason: 'not_configured' };
-  if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) return { ok: false, reason: 'no_raw_body' };
-  if (typeof signature !== 'string' || !signature) return { ok: false, reason: 'missing_signature' };
-
-  const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
-  return safeEqual(signature.trim(), expected) ? { ok: true } : { ok: false, reason: 'bad_signature' };
-}
-
-/**
  * Svix (used by Resend): `svix-signature` is a space-separated list of `v1,<base64>` values,
  * each an HMAC-SHA256 over `${id}.${timestamp}.${rawBody}` keyed by the base64 secret that
  * follows the `whsec_` prefix. https://docs.svix.com/receiving/verifying-payloads/how-manual

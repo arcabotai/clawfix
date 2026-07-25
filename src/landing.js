@@ -767,7 +767,7 @@ gateway-restart repair. Want me to?
             <span class="badge" style="background:var(--green);">Hosted</span>
             <div class="price free-tag">Free</div>
             <h3>MIT source, optional hosting</h3>
-            <p>The CLI and server are MIT licensed. <code>clawfix.dev</code> is currently free to use.</p>
+            <p>The CLI and server are MIT licensed. <code>clawfix.dev</code> is free to use, with no paid tier and no payment path in the product.</p>
             <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">Hosted limits may change. Self-hosting remains available under the MIT license.</p>
           </div>
         </div>

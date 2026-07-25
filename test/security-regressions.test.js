@@ -205,18 +205,18 @@ test('HTML routes reject attacker-controlled fix IDs and do not enable cross-ori
   const { port } = server.address();
   const base = `http://127.0.0.1:${port}`;
 
-  for (const route of ['/results/%22%3Balert(1)%3B%2F%2F', '/pay/%22%3Balert(1)%3B%2F%2F']) {
+  for (const route of ['/results/%22%3Balert(1)%3B%2F%2F']) {
     const response = await fetch(base + route);
     assert.equal(response.status, 400, route);
     assert.equal((await response.text()).includes('alert(1)'), false, route);
   }
 
-  const checkout = await fetch(base + '/api/checkout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fixId: '";alert(1);//' }),
-  });
-  assert.equal(checkout.status, 400);
+  // The payment surface was removed: no checkout, no payment page, no payment webhook.
+  // These must stay gone rather than quietly reappear.
+  for (const route of ['/pay/abcdefghij', '/api/checkout', '/api/webhook/lemonsqueezy']) {
+    const response = await fetch(base + route, { method: route === '/pay/abcdefghij' ? 'GET' : 'POST' });
+    assert.equal(response.status, 404, route);
+  }
 
   const crossOrigin = await fetch(base + '/api/stats', {
     headers: { Origin: 'https://attacker.example' },
