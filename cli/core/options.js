@@ -41,6 +41,7 @@ export function parseCliOptions(argv, env) {
   const showVersion = args.includes('--version') || args.includes('-v') || args.includes('-V');
   const jsonOnly = args.includes('--json');
   const tui = args.includes('--tui');
+  const plain = args.includes('--plain');
   const localOnly = dryRun || noSend || jsonOnly;
   const oneShot = args.includes('--scan') || args.includes('--no-interactive') || showData || localOnly;
 
@@ -56,6 +57,7 @@ export function parseCliOptions(argv, env) {
     showVersion,
     jsonOnly,
     tui,
+    plain,
     localOnly,
     oneShot,
   });

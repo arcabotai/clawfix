@@ -2,7 +2,10 @@ import { createCliRenderer, type CliRenderer, type CliRendererConfig } from "@op
 import { render } from "@opentui/solid"
 
 import { App, createFakeSession, type SessionSource, type TuiSessionView } from "./app"
+import { createLiveSession } from "./live-session"
 import type { SessionBridge } from "./session-bridge"
+
+import cliPackage from "../../package.json"
 
 const EXIT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 
@@ -115,7 +118,7 @@ function waitForRendererExit(renderer: CliRenderer): Promise<LifecycleResult> {
 export function startTui(input?: TuiSessionView | SessionSource | SessionBridge): Promise<LifecycleResult | void> {
   const isSource = Boolean(input && typeof (input as SessionSource).subscribe === "function")
   return ownRendererLifecycle({
-    createRenderer: () => createCliRenderer(rendererConfig),
+    createRenderer: () => createCliRenderer({ ...rendererConfig }),
     mount: renderer => render(
       () => isSource
         ? <App source={input as SessionSource} />
@@ -126,8 +129,12 @@ export function startTui(input?: TuiSessionView | SessionSource | SessionBridge)
   })
 }
 
-if (import.meta.main) {
-  startTui(createFakeSession())
+export function runTuiMain(): void {
+  const useFake = process.argv.includes("--fake-session")
+  const session = useFake
+    ? createFakeSession()
+    : createLiveSession({ version: cliPackage.version, autoScan: true })
+  startTui(session)
     .then(result => {
       if (result?.reason === "signal") {
         process.exitCode = exitCodeForSignal(result.signal)
@@ -137,4 +144,8 @@ if (import.meta.main) {
       process.stderr.write(`ClawFix TUI failed: ${toError(error).message}\n`)
       process.exitCode = 1
     })
+}
+
+if (import.meta.main) {
+  runTuiMain()
 }

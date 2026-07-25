@@ -404,6 +404,13 @@ export function createSessionBridge(options: {
           }
         }
       }
+    } catch (error: any) {
+      const msg = sanitizeDisplayText(error?.message || String(error), 500)
+      pushExtra(Object.freeze({
+        kind: "error",
+        id: nextId("err"),
+        message: `Local analyzer failed: ${msg}`,
+      }))
     } finally {
       activityLabel = null
       busy = false
@@ -563,6 +570,12 @@ export function createSessionBridge(options: {
       queueNote = null
       session.appendMessage?.("user", text)
       publish()
+
+      // Deterministic local commands never leave the machine — no consent needed.
+      if (/^(?:help|\?|issues|scan|rescan|explain\s+\S+|fix\s+\S+|repair\s+\S+|propose\s+\S+)$/i.test(text)) {
+        await runOffline(text)
+        return this.getView()
+      }
 
       if (options.preferRemote && options.remoteAnalyzer && !remoteConsent) {
         openPrivacyDialog(text)

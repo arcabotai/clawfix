@@ -127,6 +127,25 @@ describe("session bridge", () => {
     ])
   })
 
+  test("offline analyzer failure surfaces an error and unblocks the composer", async () => {
+    const bridge = createSessionBridge({
+      session: fakeSession(),
+      offlineAnalyzer: {
+        async handle() {
+          throw new Error("boom")
+        },
+      },
+    })
+
+    const view = await bridge.send("help")
+    const error = view.items.find((item) => item.kind === "error")
+    expect(view.busy).toBe(false)
+    expect(error?.kind).toBe("error")
+    if (error?.kind === "error") {
+      expect(error.message).toContain("Local analyzer failed: boom")
+    }
+  })
+
   test("subscribe receives updates after scan", async () => {
     const session = fakeSession()
     const bridge = createSessionBridge({ session })
@@ -186,13 +205,38 @@ describe("session bridge", () => {
       },
     })
 
-    await bridge.send("help")
+    await bridge.send("why is my gateway down")
     expect(bridge.getView().dialog.type).toBe("privacy")
     // confirm with default stay-local
     await bridge.privacyConfirm()
     const view = bridge.getView()
     expect(view.dialog.type).toBe("none")
     expect(view.remoteConsent).toBe(false)
+    expect(remoteCalls).toBe(0)
+    expect(view.messages.some((m) => m.includes("local:why is my gateway down"))).toBe(true)
+  })
+
+  test("deterministic local commands bypass the privacy dialog", async () => {
+    let remoteCalls = 0
+    const bridge = createSessionBridge({
+      session: fakeSession(),
+      preferRemote: true,
+      offlineAnalyzer: {
+        async handle(input: string) {
+          return { message: `local:${input}` }
+        },
+      },
+      remoteAnalyzer: {
+        async send() {
+          remoteCalls += 1
+          return { message: "remote" }
+        },
+      },
+    })
+
+    await bridge.send("help")
+    const view = bridge.getView()
+    expect(view.dialog.type).toBe("none")
     expect(remoteCalls).toBe(0)
     expect(view.messages.some((m) => m.includes("local:help"))).toBe(true)
   })
