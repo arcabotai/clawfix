@@ -14,8 +14,19 @@
 
 import { randomUUID, createHash } from 'node:crypto';
 
+const REFUSED_RISKS = new Set(['high', 'critical']);
+
 function defaultRandomToken() {
   return randomUUID();
+}
+
+/** Rollback is best-effort cleanup — a throw here must never mask the apply/verify outcome. */
+async function safeRollback(entry, ctx, applyResult) {
+  try {
+    return await entry.rollback(ctx, { applyResult });
+  } catch (error) {
+    return Object.freeze({ rolledBack: false, note: `rollback failed: ${error.message}` });
+  }
 }
 
 function stableFingerprintInput(finding, revision) {
@@ -112,12 +123,28 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
 
     const entry = catalog[plan.repairId];
 
-    const preflight = await entry.preflight(ctx);
+    // High/critical repairs are never executed automatically. This belongs here rather than in
+    // any one UI: the engine is the only layer every caller has to go through.
+    if (REFUSED_RISKS.has(String(entry.risk ?? plan.risk).toLowerCase())) {
+      return Object.freeze({ status: 'blocked', reason: 'risk_refused', plan });
+    }
+
+    let preflight;
+    try {
+      preflight = await entry.preflight(ctx);
+    } catch (error) {
+      return Object.freeze({ status: 'error', error: `preflight failed: ${error.message}`, plan });
+    }
     if (!preflight.ok) {
       return Object.freeze({ status: 'blocked', reason: preflight.reason, plan, preflight });
     }
 
-    const preview = await entry.preview(ctx);
+    let preview = null;
+    try {
+      preview = await entry.preview(ctx);
+    } catch (error) {
+      return Object.freeze({ status: 'error', error: `preview failed: ${error.message}`, plan });
+    }
 
     let applyResult;
     try {
@@ -126,9 +153,26 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
       return Object.freeze({ status: 'error', error: error.message, plan, preview });
     }
 
-    const verify = await entry.verify(ctx);
+    // Past this point the repair has run. Every remaining failure must still be reported as a
+    // structured outcome that carries applyResult — throwing here would lose the one fact the
+    // caller most needs, which is that the system was already changed.
+    let verify;
+    try {
+      verify = await entry.verify(ctx);
+    } catch (error) {
+      const rollback = await safeRollback(entry, ctx, applyResult);
+      return Object.freeze({
+        status: 'verify_failed',
+        plan,
+        preview,
+        applyResult,
+        verify: Object.freeze({ ok: false, error: error.message }),
+        rollback,
+      });
+    }
+
     if (!verify.ok) {
-      const rollback = await entry.rollback(ctx, { applyResult });
+      const rollback = await safeRollback(entry, ctx, applyResult);
       return Object.freeze({ status: 'verify_failed', plan, preview, applyResult, verify, rollback });
     }
 
