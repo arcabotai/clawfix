@@ -81,6 +81,11 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   // The npm package ships the portable CLI only — the site must not imply npx gives the TUI.
   assert.match(landing, /The npm package ships the portable CLI only/);
   assert.match(landing, /standalone binary on the GitHub release/);
+  // Claims that must stay true of what actually ships.
+  assert.match(landing, /glibc and musl \(Alpine\) hosts/);
+  assert.match(landing, /render, accept typed input, and exit cleanly/);
+  // PR #20 is merged and released; the copy must not still describe it as pending.
+  assert.doesNotMatch(landing, /PR #20 is merged on main/);
   assert.match(landing, /pull\/20/);
   assert.match(landing, /v0\.11\.2 is the current signed release/);
   assert.match(landing, /Approval defaults to Cancel/);

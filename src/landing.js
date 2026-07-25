@@ -548,7 +548,7 @@ const LANDING_HTML = `<!DOCTYPE html>
             </div>
             <div class="release-item">
               <h3>OpenTUI standalone</h3>
-              <p>Optional conversation UI ships as verified Bun-compiled binaries on the GitHub release. It is a separate download — the npm package stays a 21-file portable CLI with no Bun dependency.</p>
+              <p>Optional conversation UI ships as verified Bun-compiled binaries on the GitHub release, for glibc and musl (Alpine) hosts alike. It is a separate download — the npm package stays a 21-file portable CLI with no Bun dependency.</p>
             </div>
           </div>
         </div>
@@ -561,14 +561,15 @@ const LANDING_HTML = `<!DOCTYPE html>
           <div class="tui-copy">
             <div class="eyebrow">Latest main update</div>
             <h2>Chat-first TUI is the default session of the standalone binary.</h2>
-            <p>PR #20 is merged on main. The standalone binary opens directly into a conversation, keeps local commands offline, and asks before remote AI or guarded repairs. <strong>The npm package ships the portable CLI only</strong> — <code>npx clawfix</code> runs the plain readline session.</p>
+            <p>The standalone binary opens directly into a conversation, keeps local commands offline, and asks before remote AI or guarded repairs. <strong>The npm package ships the portable CLI only</strong> — <code>npx clawfix</code> runs the plain readline session.</p>
             <ul class="tui-list">
               <li><strong>✓</strong><span>Scrollable transcript, findings sidebar, and responsive terminal layouts.</span></li>
               <li><strong>✓</strong><span>Approval defaults to Cancel and reports success only after verified repairs.</span></li>
               <li><strong>✓</strong><span>Remote AI stays opt-in. Deterministic local commands never upload.</span></li>
+              <li><strong>✓</strong><span>Runs on glibc and musl hosts, so Alpine-based OpenClaw containers are covered.</span></li>
             </ul>
             <p><a class="release-link" href="https://github.com/arcabotai/clawfix/pull/20">Review the merge →</a></p>
-            <p class="tui-note">v0.11.2 is the current signed release. The chat-first TUI ships in the next release, as a standalone binary on the GitHub release — not inside the npm package.</p>
+            <p class="tui-note">v0.11.2 is the current signed release. The chat-first TUI ships in the next release, as a standalone binary on the GitHub release — not inside the npm package. Every release binary is driven through a real terminal before publishing: it has to render, accept typed input, and exit cleanly.</p>
           </div>
           <div class="tui-preview" aria-label="Preview of the chat-first ClawFix terminal interface">
 <pre><span class="muted">assistant</span>

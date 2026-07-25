@@ -67,4 +67,20 @@ describe('tui release scripts', () => {
     assert.notEqual(r.status, 0);
     assert.match(`${r.stdout}${r.stderr}`, /binary not found/);
   });
+  it('ships a musl target that stages its library under the key the runtime asks for', async () => {
+    // @opentui/core resolves its native library by a hardcoded package name and has no musl
+    // detection, so on Alpine it asks for @opentui/core-linux-x64. The musl build stages the
+    // musl library under that key — without it the binary cannot load its renderer at all.
+    const { readFile } = await import('node:fs/promises');
+    const build = await readFile(join(root, 'cli/tui/scripts/build.ts'), 'utf8');
+    assert.match(build, /"linux-x64-musl"/);
+    assert.match(build, /bunCompileTarget: "bun-linux-x64-musl"/);
+    assert.match(build, /nativePackage: "@opentui\/core-linux-x64-musl"/);
+    assert.match(build, /nativeAssetPackage: "@opentui\/core-linux-x64"/);
+    assert.match(build, /spec\.nativeAssetPackage \?\? spec\.nativePackage/);
+
+    const workflow = await readFile(join(root, '.github/workflows/release-tui.yml'), 'utf8');
+    assert.match(workflow, /target: linux-x64-musl/);
+    assert.match(workflow, /@opentui\/core-linux-x64-musl/);
+  });
 });
