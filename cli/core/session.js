@@ -49,6 +49,7 @@ export function createSessionController({
   let scanError = null;
   let transcript = freezeList();
   let activeScan = null;
+  let messageCounter = 0;
 
   function getState() {
     return Object.freeze({
@@ -132,9 +133,10 @@ export function createSessionController({
       } else {
         diagnostic = result?.diagnostic ?? null;
         issues = freezeList(result?.issues);
+        // Native OpenClaw checks arrive folded into localIssues with a nativeCheckId — there is
+        // no separate nativeChecks input, and passing one silently did nothing.
         findings = freezeList(normalizeFindings({
           localIssues: issues,
-          nativeChecks: result?.nativeChecks,
           serverFindings: result?.serverFindings,
           aiFindings: result?.aiFindings,
           knownRepairIds,
@@ -181,7 +183,16 @@ export function createSessionController({
   function appendMessage(role, text) {
     if (!SESSION_ROLES.has(role)) throw new TypeError('role must be user, assistant, or system');
     if (typeof text !== 'string' || text.trim().length === 0) throw new TypeError('text must be non-empty');
-    const message = Object.freeze({ type: 'session.message', role, text, at: Date.now() });
+    // A stable id per message: consumers key rendered rows by it, and without one every
+    // projection minted fresh keys for the whole transcript on each update.
+    messageCounter += 1;
+    const message = Object.freeze({
+      type: 'session.message',
+      id: `msg-${messageCounter}`,
+      role,
+      text,
+      at: Date.now(),
+    });
     transcript = freezeList([...transcript, message]);
     onEvent(message);
     return message;

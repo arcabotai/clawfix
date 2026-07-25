@@ -180,7 +180,9 @@ export function App(props: AppProps) {
     if (budget <= 0) return ""
     if (full.length <= budget) return full
     if (budget === 1) return "…"
-    return `${full.slice(0, budget - 1)}…`
+    // Slice by code point: the 🦞 in the banner is a surrogate pair, and cutting between its
+    // halves paints a replacement glyph.
+    return `${[...full].slice(0, budget - 1).join("")}…`
   }
 
   const handleSubmit = (text: string) => {

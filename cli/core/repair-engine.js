@@ -15,6 +15,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 
 const REFUSED_RISKS = new Set(['high', 'critical']);
+const MAX_RETAINED_PLANS = 256;
 
 function defaultRandomToken() {
   return randomUUID();
@@ -66,6 +67,15 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     const entry = catalog[finding.repairId];
     if (!entry) {
       throw new Error(`no catalog entry for repair "${finding.repairId}"`);
+    }
+
+    // Consumed plans are dead weight; keep only enough history to keep rejecting replays of
+    // recent tokens rather than growing for the life of the process.
+    if (records.size > MAX_RETAINED_PLANS) {
+      for (const [id, record] of records) {
+        if (records.size <= MAX_RETAINED_PLANS) break;
+        if (record.consumed) records.delete(id);
+      }
     }
 
     const planId = randomUUID();
