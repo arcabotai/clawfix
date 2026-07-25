@@ -590,10 +590,69 @@ Verified on a real Alpine 3.21 machine, driving the compiled binary through a PT
 
 Added to the release matrix, so Alpine-based OpenClaw containers get a working binary.
 
-## Still open (not fixed)
+## Resolved in the third pass
 
-**Payments are received but never recorded.** `src/routes/payment.js` handles `order_created`
+**Payments are received but never recorded** — the payment surface was removed entirely. Original finding: `src/routes/payment.js` handles `order_created`
 with `// TODO: Mark fix as paid in database`. With Lemon Squeezy configured a user can be charged
 $2 and nothing in the system records it or unlocks anything. The checkout path is otherwise
 sound. This needs a product decision — record and gate on payment, or remove the paid path until
 it is real — so it is flagged rather than guessed at.
+
+
+---
+
+# Third pass — payment removal and real break-fix scenarios
+
+## Payment surface removed
+
+`/api/checkout` created real Lemon Squeezy sessions while `order_created` was
+`// TODO: Mark fix as paid in database`, so a configured store could charge $2 and record
+nothing. Removed the checkout endpoint, the payment page, the payment webhook and the unused
+Lemon Squeezy verifier. Svix verification stays — the Resend inbound-email webhook uses it.
+`security-regressions` now asserts those routes stay 404.
+
+## Five break-fix scenarios on a real OpenClaw 2026.6.11 install
+
+Each scenario resets the box to a valid config, breaks one real thing, and scans.
+
+| # | Broken | ClawFix reported | Detected |
+|---|---|---|---|
+| 1 | Gateway process killed | `[critical] Gateway is not running` | **yes** |
+| 2 | Port 18789 held by an unrelated process | `[critical] Port conflict detected` + `Gateway port 18789 is occupied by python3 (PID 726), but OpenClaw cannot reach it` | **yes** |
+| 3 | `openclaw.json` corrupted | `[high] JSON5 parse failed: SyntaxError: JSON5: invalid character 'i' at 1:8` | **yes** |
+| 4 | Gateway auth set to `none` on loopback | `[critical] Gateway auth missing on loopback` + `[medium] Gateway HTTP APIs are reachable without auth` | **yes** |
+| 5 | `update.auto.enabled = true` | `[medium] Auto-update enabled (risk of restart loops)` | **yes** |
+
+**Detection: 5/5.** Scenario 2 is notably good — it names the squatting process and PID.
+
+## Repairing: the honest picture
+
+The guarded-repair pipeline ran end to end against the real install: plan built locally,
+`invalid_token` rejected, single-use token enforced (`token_reused`), apply executed the real
+`openclaw gateway restart`, verify re-checked the port, and the outcome was reported as
+`verify_failed` — with a rescan agreeing the gateway was still down.
+
+That is the correct behaviour, and it is the B-24 fix working: before this pass the same run
+would have claimed `applied`.
+
+But it is not a fix, and the reason matters:
+
+**ClawFix ships exactly one executable repair, and it cannot work in a container.**
+`gateway-not-running` invokes `openclaw gateway restart`, which needs systemd or launchd. On
+this Alpine host OpenClaw answered *"Gateway service disabled … systemd user services are
+unavailable"*, so the repair could not succeed no matter how correct the plumbing is. Nothing in
+the catalog can repair scenarios 2–5 either: the four other real problems ClawFix detects have
+no repair at all.
+
+So today ClawFix is a strong **diagnostic** with one repair that only applies on service-managed
+hosts. The site and README should say that plainly, and the catalog is the obvious place to
+invest next — port-conflict and config-invalid are both detected precisely enough to repair.
+
+## Two quality issues seen only in real output
+
+- A finding surfaced as `[critical] timeout` with no other context — a native collector timing
+  out is being presented to the user as a critical OpenClaw problem
+  (`cli/core/diagnostics.js`, `text: finding.title || finding.message`).
+- Raw parser output is used as a user-facing title: `JSON5 parse failed: SyntaxError: JSON5:
+  invalid character 'i' at 1:8`. Accurate, but it is a stack-trace fragment where a sentence
+  belongs.

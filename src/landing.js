@@ -612,7 +612,7 @@ gateway-restart repair. Want me to?
           <div class="step">
             <div class="step-num">3</div>
             <h3>Review & Apply</h3>
-            <p>You get a commented fix script. Read it, understand it, then run it. Nothing happens without your approval.</p>
+            <p>You get a commented fix script. Read it, understand it, then run it. Nothing happens without your approval. One reviewed repair runs automatically today — restarting a stopped gateway on a host with systemd or launchd; everything else is diagnosis and guidance.</p>
           </div>
         </div>
       </div>
@@ -767,7 +767,7 @@ gateway-restart repair. Want me to?
             <span class="badge" style="background:var(--green);">Hosted</span>
             <div class="price free-tag">Free</div>
             <h3>MIT source, optional hosting</h3>
-            <p>The CLI and server are MIT licensed. <code>clawfix.dev</code> is currently free to use.</p>
+            <p>The CLI and server are MIT licensed. <code>clawfix.dev</code> is free to use, with no paid tier and no payment path in the product.</p>
             <p style="margin-top:12px;color:var(--muted);font-size:0.8rem;">Hosted limits may change. Self-hosting remains available under the MIT license.</p>
           </div>
         </div>

@@ -84,6 +84,11 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   // Claims that must stay true of what actually ships.
   assert.match(landing, /glibc and musl \(Alpine\) hosts/);
   assert.match(landing, /render, accept typed input, and exit cleanly/);
+  // Repair scope must stay honest: one executable repair, service-managed hosts only.
+  assert.match(landing, /One reviewed repair runs automatically today/);
+  assert.match(landing, /systemd or launchd/);
+  // The payment surface is gone; the site must not advertise one.
+  assert.doesNotMatch(landing, /Pay with Card|lemonsqueezy|2 USDC/i);
   // PR #20 is merged and released; the copy must not still describe it as pending.
   assert.doesNotMatch(landing, /PR #20 is merged on main/);
   assert.match(landing, /pull\/20/);

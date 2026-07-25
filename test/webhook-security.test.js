@@ -2,55 +2,9 @@ import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import test from 'node:test';
 
-import {
-  safeEqual,
-  verifyLemonSqueezySignature,
-  verifySvixSignature,
-} from '../src/webhook-signatures.js';
+import { safeEqual, verifySvixSignature } from '../src/webhook-signatures.js';
 
 const RAW = Buffer.from('{"meta":{"custom_data":{"fix_id":"abcdefghij"}},"data":{}}', 'utf8');
-
-// ============================================================
-// Lemon Squeezy
-// ============================================================
-
-test('lemonsqueezy: a signature over the raw body is accepted', () => {
-  const secret = 'ls-secret';
-  const signature = createHmac('sha256', secret).update(RAW).digest('hex');
-  assert.deepEqual(verifyLemonSqueezySignature({ secret, rawBody: RAW, signature }), { ok: true });
-});
-
-test('lemonsqueezy: verifying against a re-serialized body fails, which is why raw bytes are kept', () => {
-  const secret = 'ls-secret';
-  // What the route used to hash: JSON.stringify(req.body) after express parsed it.
-  const reserialized = Buffer.from(JSON.stringify(JSON.parse(RAW.toString())).replace('{"meta"', '{ "meta"'), 'utf8');
-  const providerSignature = createHmac('sha256', secret).update(RAW).digest('hex');
-  const wouldHaveMatched = createHmac('sha256', secret).update(reserialized).digest('hex');
-
-  assert.notEqual(providerSignature, wouldHaveMatched);
-  assert.equal(
-    verifyLemonSqueezySignature({ secret, rawBody: reserialized, signature: providerSignature }).ok,
-    false,
-  );
-});
-
-test('lemonsqueezy: an unset secret fails closed instead of skipping verification', () => {
-  const result = verifyLemonSqueezySignature({ secret: '', rawBody: RAW, signature: 'anything' });
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'not_configured');
-});
-
-test('lemonsqueezy: a missing raw body is refused rather than assumed valid', () => {
-  const result = verifyLemonSqueezySignature({ secret: 's', rawBody: undefined, signature: 'x' });
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'no_raw_body');
-});
-
-test('lemonsqueezy: a forged signature is rejected', () => {
-  const result = verifyLemonSqueezySignature({ secret: 's', rawBody: RAW, signature: 'f'.repeat(64) });
-  assert.equal(result.ok, false);
-  assert.equal(result.reason, 'bad_signature');
-});
 
 // ============================================================
 // Svix (Resend)

@@ -6,7 +6,6 @@ import { healthRouter } from './routes/health.js';
 import { scriptRouter } from './routes/script.js';
 import { installRouter } from './routes/install.js';
 import { resultsRouter } from './routes/results.js';
-import { paymentRouter } from './routes/payment.js';
 import { webhooksRouter } from './routes/webhooks.js';
 import { chatRouter } from './routes/chat.js';
 import { agentV2Router } from './routes/agent-v2.js';
@@ -59,8 +58,6 @@ app.use('/api', diagnoseRouter);
 app.use('/api', healthRouter);
 app.use('/api', chatRouter);     // POST /api/chat — interactive TUI chat
 app.use('/api', agentV2Router);  // POST /api/v2/agent/messages — constrained agent protocol
-app.use('/api', paymentRouter);  // POST /api/checkout, /api/webhook/lemonsqueezy
-app.use('/', paymentRouter);    // GET /pay/:fixId — payment page
 app.use('/', webhooksRouter);   // POST /webhooks/resend — inbound email
 app.use('/', scriptRouter);     // GET /fix — diagnostic script
 app.use('/', installRouter);    // GET /install — bash installer

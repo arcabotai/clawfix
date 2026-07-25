@@ -53,15 +53,17 @@ await check('unknown Codex findings cannot inherit unrelated repairs', async () 
   }]), []);
 });
 
-await check('results and payment routes validate fix IDs', async () => {
-  const [results, payment] = await Promise.all([
-    text('src/routes/results.js'),
-    text('src/routes/payment.js'),
-  ]);
+await check('results route validates fix IDs and the payment surface stays removed', async () => {
+  const results = await text('src/routes/results.js');
   assert.match(results, /validateFixId\(req\.params\.fixId\)/);
   assert.match(results, /escapeHtml\(data\.analysis/);
-  assert.match(payment, /validateFixId\(req\.params\.fixId\)/);
-  assert.match(payment, /validateFixId\(req\.body\?\.fixId\)/);
+
+  // Payments were removed: checkout created real Lemon Squeezy sessions while the
+  // order_created handler was a TODO, so a store could charge and record nothing.
+  const { existsSync } = await import('node:fs');
+  assert.equal(existsSync(new URL('../src/routes/payment.js', import.meta.url)), false);
+  const server = await text('src/server.js');
+  assert.doesNotMatch(server, /paymentRouter/);
 });
 
 await check('CLI requires consent and recursively redacts every upload', async () => {
