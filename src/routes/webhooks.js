@@ -1,5 +1,7 @@
 import { Router } from 'express';
 
+import { verifySvixSignature } from '../webhook-signatures.js';
+
 export const webhooksRouter = Router();
 
 /**
@@ -24,16 +26,20 @@ const RESEND_CONFIG = {
 
 // Resend webhook: email.received
 webhooksRouter.post('/webhooks/resend', async (req, res) => {
-  // Verify signature if secret is configured
-  if (RESEND_CONFIG.webhookSecret) {
-    const svixId = req.headers['svix-id'];
-    const svixTimestamp = req.headers['svix-timestamp'];
-    const svixSignature = req.headers['svix-signature'];
-
-    if (!svixId || !svixTimestamp || !svixSignature) {
-      console.warn('Missing Resend webhook signature headers');
-      return res.status(401).json({ error: 'Missing signature' });
-    }
+  // This endpoint sends mail from a real domain to a real inbox, so it has to be certain the
+  // caller is Resend. Checking only that the svix-* headers are *present* let anyone forge an
+  // email.received event and use the route as an unauthenticated relay; an unset secret did
+  // the same. The signature is now verified over the raw body, and both cases fail closed.
+  const verified = verifySvixSignature({
+    secret: RESEND_CONFIG.webhookSecret,
+    rawBody: req.rawBody,
+    id: req.headers['svix-id'],
+    timestamp: req.headers['svix-timestamp'],
+    signature: req.headers['svix-signature'],
+  });
+  if (!verified.ok) {
+    console.warn(`Rejected Resend webhook: ${verified.reason}`);
+    return res.status(401).json({ error: 'Invalid signature' });
   }
 
   const event = req.body;
@@ -68,8 +74,14 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
  * Note: /emails/receiving/:id (NOT /emails/:id which is for sent emails only)
  */
 async function fetchEmailContent(emailId) {
+  // The id comes from the webhook body and is interpolated into a path on an API called with
+  // the full-access key, so anything but an opaque id is refused rather than encoded away.
+  if (typeof emailId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(emailId)) {
+    console.warn('Refusing to fetch email content for a malformed id');
+    return { text: '', html: '' };
+  }
   try {
-    const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
+    const res = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}`, {
       headers: { 'Authorization': `Bearer ${RESEND_CONFIG.apiKeyFull}` },
     });
     if (!res.ok) {
@@ -82,6 +94,16 @@ async function fetchEmailContent(emailId) {
     console.warn(`Error fetching email content: ${e.message}`);
     return { text: '', html: '' };
   }
+}
+
+/** Inbound values are attacker-controlled; escape before interpolating into forwarded HTML. */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -106,7 +128,7 @@ async function forwardEmail(emailData) {
   const forwardSubject = `[Fwd: ${subject}] from ${from}`;
   const forwardText = `--- Forwarded email ---\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${emailData.created_at || 'unknown'}\n\n${body || '(body unavailable)'}`;
   const forwardHtml = htmlBody 
-    ? `<div style="border-left:3px solid #ccc;padding-left:12px;margin-bottom:16px;color:#666"><strong>From:</strong> ${from}<br><strong>To:</strong> ${to}<br><strong>Subject:</strong> ${subject}<br><strong>Date:</strong> ${emailData.created_at || 'unknown'}</div>${htmlBody}`
+    ? `<div style="border-left:3px solid #ccc;padding-left:12px;margin-bottom:16px;color:#666"><strong>From:</strong> ${escapeHtml(from)}<br><strong>To:</strong> ${escapeHtml(to)}<br><strong>Subject:</strong> ${escapeHtml(subject)}<br><strong>Date:</strong> ${escapeHtml(emailData.created_at || 'unknown')}</div>${htmlBody}`
     : undefined;
 
   const response = await fetch('https://api.resend.com/emails', {
