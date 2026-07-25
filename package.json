@@ -31,7 +31,8 @@
     "lab:scenarios": "node scripts/blaxel-scenarios.mjs all",
     "build:tui": "node scripts/build-tui-release.mjs",
     "verify:tui": "node scripts/verify-tui-artifact.mjs",
-    "smoke:tui": "node scripts/smoke-tui-binary.mjs"
+    "smoke:tui": "node scripts/smoke-tui-binary.mjs",
+    "smoke:tui:interactive": "node scripts/smoke-tui-interactive.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

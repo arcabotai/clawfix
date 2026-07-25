@@ -105,6 +105,10 @@ jobs:
           test -x "$launcher"
           # Proves compile + OTUI_ASSET_ROOT launcher; no wasm path crash.
           node scripts/smoke-tui-binary.mjs "$launcher"
+          # Proves the binary is actually usable: renders, accepts typed input, quits on Ctrl+D.
+          # A compile without the Solid JSX transform passes every check above and still ships
+          # a session nobody can type into.
+          CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$launcher"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
