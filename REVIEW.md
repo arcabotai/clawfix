@@ -5,7 +5,9 @@
 > binary built and smoked. See "Implementation outcome" at the end for what was fixed, what was
 > verified, and the one item that is only partially fixed.
 >
-> **One new blocker was found while verifying B-2 — see B-23. It is not fixed.**
+> **Two further blockers were found and fixed after the first pass: B-23 (the standalone
+> binary accepted no keyboard input) and B-24 (the guarded repair reported success without
+> the gateway running), the latter found only by running against a real OpenClaw install.**
 
 Reviewed: CLI core, TUI, web service, install/release flow, website copy.
 Method: source review + live server, live SSE, published-tarball inspection, frame captures,
@@ -473,3 +475,68 @@ blocks, that `process.exit()` does not fire — because the PTY harness was not 
 so writes to fd 1 blocked on a full buffer. Once the harness drained continuously, the source
 build exited cleanly and those conclusions dissolved. The findings above come from the corrected
 harness.
+
+
+---
+
+# Real-machine review (Blaxel sandbox, OpenClaw 2026.6.11)
+
+Everything below ran on a provisioned Linux sandbox with a real OpenClaw install, not a fixture.
+
+| Check | Result |
+|---|---|
+| Node suite on Linux | **378 tests, 376 pass, 0 fail** (2 platform-skipped) |
+| `clawfix --json` against real OpenClaw | found the binary, version, config, and **7 real issues** including native `openclaw doctor` and security-audit findings |
+| Hostname privacy | `hostHash` 8 chars; real hostname, home path and `/root` absent from the diagnostic |
+| Redaction of a real secret | a real 48-char `gateway.auth.token` appears **0 times**; the section renders as `"auth": "***REDACTED***"` |
+| Guarded repair, full flow | plan built locally, wrong token → `invalid_token`, replay → `token_reused`, outcome truthful against a rescan |
+| TUI on Alpine/musl | **cannot run** — see the limitation below |
+
+## B-24 — BLOCKER (fixed): the guarded repair reported success without a running gateway
+
+`checkGatewayRunning()` decided liveness from `pgrep -f 'openclaw.*gateway'`. On a real install
+that pattern is wrong in both directions:
+
+- a gateway started by `openclaw gateway run` re-execs with the bare argv `openclaw`, so it
+  **never matched a real gateway**;
+- ClawFix's own `openclaw gateway status` probe — launched concurrently with the pgrep in the
+  same `Promise.all` — **always matched**.
+
+Reproduced with nothing listening on 18789:
+
+```
+verify() -> {"ok":true,"evidence":{"running":true,"pid":"6911\n6926"}}
+$ ss -ltn | grep 18789   # nothing listening
+```
+
+`verify.ok === true` makes `applyPlan` return `applied`, and the UI then prints "Repair applied
+… Verification passed against local detectors." A repair that changed nothing would be reported
+as a success. The mirror image also held: `preflight` returned `gateway_already_running` while
+the gateway was down, so the only repair ClawFix ships could never be applied.
+
+Fixed by making the listening port the verdict — the same evidence the diagnostics core already
+reports as `portListening`. Status prose and PIDs remain evidence, never the verdict, and the PID
+probe now excludes ClawFix's own sub-commands and the current process.
+
+Verified against a real gateway, both states:
+
+```
+gateway down -> verify {"ok":false,"listening":false,"pid":""}   preflight {"ok":true}
+gateway up   -> verify {"ok":true,"listening":true,"pid":"8855"} preflight {"ok":false,"reason":"gateway_already_running"}
+```
+
+A full repair run with the service unavailable now reports `verify_failed`, and a rescan agrees
+with the reported outcome.
+
+## Limitation found (not fixed): the TUI cannot run on Alpine/musl
+
+`@opentui/core` resolves its native library as `@opentui/core-linux-x64` with no musl detection.
+On Alpine the glibc `libopentui.so` fails to load (`ld-linux-x86-64.so.2` missing), `gcompat` does
+not help, and installing `@opentui/core-linux-x64-musl` does not either — the loader asks for the
+glibc package by name and fails with `Cannot find module '@opentui/core-linux-x64'`. All 23 TUI
+render tests fail there for this one reason.
+
+The CLI core is unaffected: the full node suite and the plain interface work on musl, which is
+what `npx clawfix` uses. But an operator running OpenClaw in an Alpine container cannot use the
+TUI from source or from the release binary. Worth deciding whether to ship a musl target or to
+state the requirement on the site; it is an upstream OpenTUI limitation either way.
