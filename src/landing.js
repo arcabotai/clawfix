@@ -612,7 +612,7 @@ gateway-restart repair. Want me to?
           <div class="step">
             <div class="step-num">3</div>
             <h3>Review & Apply</h3>
-            <p>You get a commented fix script. Read it, understand it, then run it. Nothing happens without your approval.</p>
+            <p>You get a commented fix script. Read it, understand it, then run it. Nothing happens without your approval. One reviewed repair runs automatically today — restarting a stopped gateway on a host with systemd or launchd; everything else is diagnosis and guidance.</p>
           </div>
         </div>
       </div>
