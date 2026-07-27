@@ -184,11 +184,23 @@ function configToggleRepair({ id, key, target, title, description, blockedReason
 
     async rollback(ctx) {
       const result = await ctx.openclaw.configSet(key, previousText, { timeoutMs: 30_000 });
+      if (result.status !== 0) {
+        return Object.freeze({
+          rolledBack: false,
+          note: `Could not restore ${key}; check \`openclaw config get ${key}\`.`,
+        });
+      }
+      const read = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      const current = configValue(read);
+      const restored = configFlag(current) === !target;
       return Object.freeze({
-        rolledBack: result.status === 0,
-        note: result.status === 0
+        rolledBack: restored,
+        note: restored
           ? `Restored ${key} to ${previousText}.`
-          : `Could not restore ${key}; check \`openclaw config get ${key}\`.`,
+          : read?.ok === true
+            ? `Rollback command completed but ${key} was not restored to ${previousText}.`
+            : `Rollback command completed but ${key} could not be read back: `
+              + `${read?.errorSummary ?? 'unknown read failure'}.`,
       });
     },
   });
@@ -231,8 +243,9 @@ const gatewayLoopbackNoAuth = Object.freeze({
   id: 'gateway-loopback-no-auth',
   title: 'Require a token on the gateway',
   description:
-    'The gateway accepts unauthenticated connections. This switches auth to token mode and has '
-    + 'OpenClaw generate one. Clients will need that token to connect afterwards.',
+    'The gateway accepts unauthenticated connections. This switches auth to token mode, reuses '
+    + 'an existing token or has OpenClaw generate one when missing, and verifies token presence '
+    + 'without recording the token. Clients will need that token to connect afterwards.',
   // Medium, not low: existing clients stop working until they carry the new token.
   risk: 'medium',
 
@@ -259,17 +272,31 @@ const gatewayLoopbackNoAuth = Object.freeze({
   async preview() {
     return Object.freeze({
       steps: Object.freeze([
+        'Check whether gateway.auth.token is present without recording its value.',
         'Set gateway.auth.mode to token through the OpenClaw CLI (argv, no shell).',
-        'Run `openclaw doctor --fix --generate-gateway-token` so OpenClaw generates the token.',
-        'Read gateway.auth.mode back to confirm token auth is active.',
+        'If no token exists, run `openclaw doctor --fix --generate-gateway-token` so OpenClaw generates one.',
+        'Read gateway.auth.mode and token presence back to confirm token auth is usable.',
         'Restart the gateway yourself for it to take effect; existing clients need the new token.',
       ]),
-      summary: 'openclaw config set gateway.auth.mode token + doctor --generate-gateway-token',
+      summary: 'verify/generate gateway token + openclaw config set gateway.auth.mode token',
     });
   },
 
   async apply(ctx) {
     const changes = [];
+    const tokenBefore = await ctx.openclaw.configHasValue(
+      'gateway.auth.token',
+      { timeoutMs: 10_000 },
+    );
+    if (!tokenBefore.ok) {
+      return Object.freeze({
+        status: tokenBefore.status,
+        stage: 'read-token-state',
+        changed: false,
+        changes: Object.freeze(changes),
+        errorSummary: tokenBefore.errorSummary || 'could not determine gateway token presence',
+      });
+    }
     const set = await ctx.openclaw.configSet('gateway.auth.mode', 'token', { timeoutMs: 30_000 });
     if (set.status !== 0) {
       return Object.freeze({
@@ -277,6 +304,8 @@ const gatewayLoopbackNoAuth = Object.freeze({
         stage: 'set-mode',
         changed: 'unknown',
         changes: Object.freeze(changes),
+        tokenPreviouslyPresent: tokenBefore.present,
+        tokenMayHaveChanged: false,
         errorSummary: set.errorSummary,
       });
     }
@@ -286,6 +315,17 @@ const gatewayLoopbackNoAuth = Object.freeze({
       before: 'none',
       after: 'token',
     }));
+    if (tokenBefore.present) {
+      return Object.freeze({
+        status: 0,
+        stage: 'set-mode',
+        changed: true,
+        changes: Object.freeze(changes),
+        tokenPreviouslyPresent: true,
+        tokenMayHaveChanged: false,
+        errorSummary: null,
+      });
+    }
     let generated;
     try {
       generated = await ctx.openclaw.invoke(
@@ -298,6 +338,8 @@ const gatewayLoopbackNoAuth = Object.freeze({
         stage: 'generate-token',
         changed: true,
         changes: Object.freeze(changes),
+        tokenPreviouslyPresent: false,
+        tokenMayHaveChanged: true,
         errorSummary: error.message,
       });
     }
@@ -306,18 +348,32 @@ const gatewayLoopbackNoAuth = Object.freeze({
       stage: 'generate-token',
       changed: true,
       changes: Object.freeze(changes),
+      tokenPreviouslyPresent: false,
+      tokenMayHaveChanged: true,
       timedOut: generated.timedOut,
       errorSummary: generated.errorSummary,
     });
   },
 
+  // Presence is the strongest safe local assertion: a client authentication round trip would
+  // require handling token material, so end-to-end token usability remains an external OpenClaw
+  // semantic rather than evidence retained by ClawFix.
   async verify(ctx) {
-    // Evidence is the mode only — never read the token itself into a repair record.
-    const read = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
-    const mode = String(configValue(read) ?? '').trim();
+    const [modeRead, tokenState] = await Promise.all([
+      ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 }),
+      ctx.openclaw.configHasValue('gateway.auth.token', { timeoutMs: 10_000 }),
+    ]);
+    const mode = String(configValue(modeRead) ?? '').trim();
     return Object.freeze({
-      ok: read?.ok === true && mode.toLowerCase() === 'token',
-      evidence: { mode, errorSummary: read?.errorSummary ?? null },
+      ok: modeRead?.ok === true
+        && mode.toLowerCase() === 'token'
+        && tokenState.ok === true
+        && tokenState.present === true,
+      evidence: {
+        mode,
+        tokenPresent: tokenState.ok === true ? tokenState.present : null,
+        errorSummary: modeRead?.errorSummary ?? tokenState.errorSummary ?? null,
+      },
     });
   },
 
@@ -325,12 +381,63 @@ const gatewayLoopbackNoAuth = Object.freeze({
     if (!applyResult?.changed) {
       return Object.freeze({ rolledBack: false, note: 'Auth mode was never changed.' });
     }
-    const result = await ctx.openclaw.configSet('gateway.auth.mode', 'none', { timeoutMs: 30_000 });
+    const setMode = await ctx.openclaw.configSet(
+      'gateway.auth.mode',
+      'none',
+      { timeoutMs: 30_000 },
+    );
+    if (setMode.status !== 0) {
+      return Object.freeze({
+        rolledBack: false,
+        note: 'Could not restore gateway.auth.mode; inspect it before restarting the gateway.',
+      });
+    }
+    const modeRead = await ctx.openclaw.configGet(
+      'gateway.auth.mode',
+      { timeoutMs: 10_000 },
+    );
+    const mode = String(configValue(modeRead) ?? '').trim().toLowerCase();
+    if (modeRead?.ok !== true || mode !== 'none') {
+      return Object.freeze({
+        rolledBack: false,
+        note: modeRead?.ok === true
+          ? `Rollback command completed but gateway.auth.mode is ${mode || '(empty)'}, not none.`
+          : 'Rollback command completed but gateway.auth.mode could not be read back: '
+            + `${modeRead?.errorSummary ?? 'unknown read failure'}.`,
+      });
+    }
+
+    if (applyResult.tokenPreviouslyPresent === false && applyResult.tokenMayHaveChanged) {
+      const unset = await ctx.openclaw.configUnset(
+        'gateway.auth.token',
+        { timeoutMs: 30_000 },
+      );
+      if (unset.status !== 0) {
+        return Object.freeze({
+          rolledBack: false,
+          note: 'Restored gateway.auth.mode to none, but could not remove the token this repair may have generated.',
+        });
+      }
+      const tokenState = await ctx.openclaw.configHasValue(
+        'gateway.auth.token',
+        { timeoutMs: 10_000 },
+      );
+      if (!tokenState.ok || tokenState.present) {
+        return Object.freeze({
+          rolledBack: false,
+          note: tokenState.ok
+            ? 'Restored gateway.auth.mode to none, but the generated token is still present.'
+            : 'Restored gateway.auth.mode to none, but token absence could not be verified: '
+              + `${tokenState.errorSummary ?? 'unknown read failure'}.`,
+        });
+      }
+    }
+
     return Object.freeze({
-      rolledBack: result.status === 0,
-      note: result.status === 0
-        ? 'Restored gateway.auth.mode to its previous value, none.'
-        : 'Could not restore gateway.auth.mode; inspect it before restarting the gateway.',
+      rolledBack: true,
+      note: applyResult.tokenPreviouslyPresent === false && applyResult.tokenMayHaveChanged
+        ? 'Restored gateway.auth.mode to none and verified the generated token was removed.'
+        : 'Restored gateway.auth.mode to its previous value, none.',
     });
   },
 });

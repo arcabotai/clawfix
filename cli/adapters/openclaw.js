@@ -522,12 +522,34 @@ export function createOpenClawAdapter({
       });
     },
 
+    /**
+     * Check whether a config key has a non-empty value without returning that value to callers.
+     * This is the only repair-facing primitive allowed for secret-bearing config keys.
+     */
+    async configHasValue(key, options = {}) {
+      const read = await this.configGet(key, options);
+      return Object.freeze({
+        ok: read.ok,
+        present: read.ok ? read.value.trim().length > 0 : false,
+        status: read.status,
+        errorSummary: read.errorSummary,
+      });
+    },
+
     /** Set one config key. Values are passed as literal argv, never through a shell. */
     async configSet(key, value, options = {}) {
       if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {
         return Object.freeze({ status: 1, errorSummary: 'invalid config key' });
       }
       return invoke(['config', 'set', key, String(value)], options);
+    },
+
+    /** Remove one config key through OpenClaw itself. */
+    async configUnset(key, options = {}) {
+      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {
+        return Object.freeze({ status: 1, errorSummary: 'invalid config key' });
+      }
+      return invoke(['config', 'unset', key], options);
     },
     /**
      * PIDs that plausibly belong to a running gateway *server*.

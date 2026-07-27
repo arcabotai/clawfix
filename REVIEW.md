@@ -670,7 +670,7 @@ OpenClaw's own supported commands and both verified against a real OpenClaw 2026
 | Repair | Does | Verified by | Risk |
 |---|---|---|---|
 | `auto-update-enabled-warning` | `openclaw config set update.auto.enabled false` | reads the key back through `config get` | low |
-| `gateway-loopback-no-auth` | sets `gateway.auth.mode` to `token`, then `doctor --fix --generate-gateway-token` | reads the mode back; never reads the token itself | medium |
+| `gateway-loopback-no-auth` | reuses or generates a token, then sets token mode | verifies mode and token presence without recording token material; client usability remains an external OpenClaw semantic | medium |
 
 Repairable findings went from 1 to 3. On a real install, broken deliberately:
 
