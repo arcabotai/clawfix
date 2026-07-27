@@ -79,6 +79,10 @@ test('CI and TUI release gates run source tests, fail closed, smoke Alpine, and 
   assert.match(releaseTui, /node:24-alpine/);
   assert.match(releaseTui, /smoke-tui-interactive\.mjs/);
   assert.match(releaseTui, /actions\/attest-build-provenance@v3/);
+  assert.match(releaseTui, /Verify release identity/);
+  assert.match(releaseTui, /\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$/);
+  assert.match(releaseTui, /test "\$GITHUB_REF_NAME" = "v\$root_version"/);
+  assert.match(releaseTui, /git rev-list -n 1/);
   assert.match(releaseTui, /Wait for CLI workflow to create the GitHub Release/);
   assert.match(releaseTui, /gh release view/);
   assert.doesNotMatch(releaseTui, /description: Comma-separated TUI targets/);
