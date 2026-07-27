@@ -14,9 +14,13 @@
  */
 import { randomUUID } from "node:crypto"
 
-import { projectLocalIssuesForUpload, redactOutbound } from "../../bin/security.js"
+import { projectLocalIssuesForUpload, redactOutbound, redactText } from "../../bin/security.js"
 
 const MAX_REPAIRS = 32
+const DEFAULT_TIMEOUT_MS = 90_000
+const MAX_SSE_BYTES = 1_000_000
+const MAX_SSE_BUFFER_BYTES = 256_000
+const MAX_ASSISTANT_CHARS = 64_000
 const CONV_RE = /^[A-Za-z0-9_-]{8,128}$/
 
 export interface RemoteAnalyzerOptions {
@@ -29,10 +33,11 @@ export interface RemoteAnalyzerOptions {
   }
   readonly baseUrl?: string
   readonly fetchImpl?: typeof fetch
+  readonly timeoutMs?: number
 }
 
 function normalizeBaseUrl(raw?: string): string {
-  const value = (raw || process.env.CLAWFIX_API_URL || "https://clawfix.dev").trim()
+  const value = (raw || process.env.CLAWFIX_API || "https://clawfix.dev").trim()
   try {
     return new URL(value).origin
   } catch {
@@ -40,17 +45,34 @@ function normalizeBaseUrl(raw?: string): string {
   }
 }
 
+function combineSignals(signal: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs)
+  if (!signal) return timeout
+  return AbortSignal.any([signal, timeout])
+}
+
+function safeMessage(value: unknown): string {
+  return redactText(String(value || "")).slice(0, 4000)
+}
+
 /** Parse `event: X\ndata: {...}\n\n` frames from an SSE byte stream. */
 async function* readSseEvents(body: ReadableStream<Uint8Array>, signal?: AbortSignal) {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ""
+  let totalBytes = 0
+  let assistantChars = 0
   try {
     for (;;) {
       if (signal?.aborted) return
       const { done, value } = await reader.read()
       if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > MAX_SSE_BYTES) throw new Error("ClawFix SSE response exceeded the byte limit")
       buffer += decoder.decode(value, { stream: true })
+      if (buffer.length > MAX_SSE_BUFFER_BYTES) {
+        throw new Error("ClawFix SSE frame exceeded the buffer limit")
+      }
       let idx: number
       while ((idx = buffer.indexOf("\n\n")) !== -1) {
         const frame = buffer.slice(0, idx)
@@ -63,8 +85,16 @@ async function* readSseEvents(body: ReadableStream<Uint8Array>, signal?: AbortSi
         }
         if (!data) continue
         try {
-          yield { type: event, ...JSON.parse(data) }
-        } catch {
+          const parsed = JSON.parse(data)
+          if (event === "assistant.delta") {
+            assistantChars += String(parsed?.text || parsed?.delta || "").length
+            if (assistantChars > MAX_ASSISTANT_CHARS) {
+              throw new Error("ClawFix assistant response exceeded the character limit")
+            }
+          }
+          yield { type: event, ...parsed }
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("ClawFix ")) throw error
           // ignore malformed frames
         }
       }
@@ -77,8 +107,17 @@ async function* readSseEvents(body: ReadableStream<Uint8Array>, signal?: AbortSi
 export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
   const baseUrl = normalizeBaseUrl(options.baseUrl)
   const fetchImpl = options.fetchImpl ?? fetch
+  const requestedTimeout = Number(options.timeoutMs)
+  const timeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+    ? requestedTimeout
+    : DEFAULT_TIMEOUT_MS
   const conversationId = randomUUID()
-  const headers = Object.freeze({ "Content-Type": "application/json" })
+  const headers = Object.freeze({
+    "Content-Type": "application/json",
+    ...(process.env.CLAWFIX_API_TOKEN
+      ? { Authorization: `Bearer ${process.env.CLAWFIX_API_TOKEN}` }
+      : {}),
+  })
   let diagnosticId: string | null = null
 
   async function ensureDiagnosticId(signal?: AbortSignal): Promise<string | null> {
@@ -101,7 +140,8 @@ export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
       const id = typeof data?.fixId === "string" && CONV_RE.test(data.fixId) ? data.fixId : null
       diagnosticId = id
       return id
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error
       return null
     }
   }
@@ -145,14 +185,22 @@ export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
             ? { ">> first, POST /api/diagnose": "the redacted diagnostic below is uploaded and returns the diagnosticId used here" }
             : {}),
           conversationId,
-          message: String(message || "").slice(0, 4000),
+          message: safeMessage(message),
           ...(diagnosticId ? { diagnosticId } : {}),
           availableRepairs: availableRepairs(),
         },
       })
     },
     async *send(input: { readonly message: string; readonly consentGranted: boolean; readonly signal?: AbortSignal }) {
-      const signal = input.signal
+      if (input.consentGranted !== true) {
+        yield {
+          type: "agent.error",
+          error: "Remote analysis requires explicit consent.",
+          fatal: true,
+        }
+        return
+      }
+      const signal = combineSignals(input.signal, timeoutMs)
       let diagId: string | null = null
       try {
         diagId = await ensureDiagnosticId(signal)
@@ -161,7 +209,7 @@ export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
           headers,
           body: JSON.stringify({
             conversationId,
-            message: input.message.slice(0, 4000),
+            message: safeMessage(input.message),
             ...(diagId ? { diagnosticId: diagId } : {}),
             availableRepairs: availableRepairs(),
           }),
@@ -175,10 +223,13 @@ export function createRemoteAnalyzer(options: RemoteAnalyzerOptions) {
           yield event
         }
       } catch (error: any) {
-        if (signal?.aborted) return
+        if (input.signal?.aborted) return
+        const detail = signal.aborted
+          ? "request timed out"
+          : String(error?.message || error).slice(0, 200)
         yield {
           type: "agent.error",
-          error: `ClawFix service unreachable (${String(error?.message || error).slice(0, 200)})`,
+          error: `ClawFix service unreachable (${detail})`,
           fatal: true,
         }
       }

@@ -9,6 +9,7 @@ import {
   FIX_ID_PATTERN,
   projectLocalIssuesForUpload,
   redactOutbound,
+  redactText,
   safeJsonForHtml,
   validateFixId,
 } from '../cli/bin/security.js';
@@ -57,6 +58,26 @@ test('recursive outbound redaction covers credentials, private keys, env assignm
   ))) {
     assert.equal(value, '***REDACTED***');
   }
+});
+
+test('text redaction covers generic bearer, complete cookie headers, and Slack tokens', () => {
+  const slackToken = ['xo', 'xb-', '1234567890-', 'abcdefghijklmnop'].join('');
+  const input = [
+    'Bearer opaque-secret-without-authorization',
+    'Cookie: sid=opaque-secret-one; preference=opaque-secret-two',
+    'Set-Cookie: session=opaque-secret-three; HttpOnly; Secure',
+    `slack token ${slackToken}`,
+  ].join('\n');
+  const redacted = redactText(input, { home: '' });
+
+  assert.equal(redacted.includes('opaque-secret-without-authorization'), false);
+  assert.equal(redacted.includes('opaque-secret-one'), false);
+  assert.equal(redacted.includes('opaque-secret-two'), false);
+  assert.equal(redacted.includes('opaque-secret-three'), false);
+  assert.equal(redacted.includes(slackToken), false);
+  assert.match(redacted, /Bearer \*\*\*REDACTED\*\*\*/);
+  assert.match(redacted, /Cookie: \*\*\*REDACTED\*\*\*/);
+  assert.match(redacted, /Set-Cookie: \*\*\*REDACTED\*\*\*/);
 });
 
 test('local issue upload projection preserves only validated matcher IDs', () => {

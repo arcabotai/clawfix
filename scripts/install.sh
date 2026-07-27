@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-VERSION="${CLAWFIX_VERSION:-0.11.2}"
+VERSION="${CLAWFIX_VERSION:-0.12.0}"
 PREFIX="${CLAWFIX_PREFIX:-${HOME}/.clawfix}"
 BIN_DIR="${CLAWFIX_BIN_DIR:-${HOME}/.local/bin}"
 REGISTRY="${CLAWFIX_REGISTRY:-https://registry.npmjs.org}"

@@ -65,14 +65,36 @@ test('release uses npm trusted publishing and runs every pre-publish gate', asyn
   assert.doesNotMatch(release, /NPM_TOKEN|NODE_AUTH_TOKEN|--provenance/);
 });
 
-test('landing page presents truthful evidence for the published 0.11.2 twenty-one-file package', async () => {
+test('CI and TUI release gates run source tests, fail closed, smoke Alpine, and attest tarballs', async () => {
+  const [ci, releaseTui] = await Promise.all([
+    read('.github/workflows/ci.yml'),
+    read('.github/workflows/release-tui.yml'),
+  ]);
+  assert.match(ci, /name: TUI tests and typecheck/);
+  assert.match(ci, /working-directory: cli\/tui[\s\S]*run: bun test/);
+  assert.match(ci, /working-directory: cli\/tui[\s\S]*run: bunx tsc --noEmit/);
+  assert.match(releaseTui, /needs: test-tui/);
+  assert.match(releaseTui, /bun add --optional --no-save/);
+  assert.doesNotMatch(releaseTui, /bun add[^\n]*\|\| true/);
+  assert.match(releaseTui, /node:24-alpine/);
+  assert.match(releaseTui, /smoke-tui-interactive\.mjs/);
+  assert.match(releaseTui, /actions\/attest-build-provenance@v3/);
+  assert.match(releaseTui, /Wait for CLI workflow to create the GitHub Release/);
+  assert.match(releaseTui, /gh release view/);
+  assert.doesNotMatch(releaseTui, /description: Comma-separated TUI targets/);
+});
+
+test('landing page presents truthful evidence for the published 0.12.0 twenty-one-file package', async () => {
   const landing = await read('src/landing.js');
-  assert.match(landing, /npx clawfix@0\.11\.2/);
+  assert.match(landing, /npx clawfix@0\.12\.0/);
   assert.match(landing, /clawfix\.dev\/install/);
   assert.match(landing, /install\/sha256/);
   assert.match(landing, /No global npm/);
   assert.match(landing, /GitHub OIDC publish/);
   assert.match(landing, /npm attestation verified/);
+  assert.match(landing, /npm package is registry-signed and provenance-attested/);
+  assert.match(landing, /TUI tarballs carry SHA-256 checksums and GitHub build attestations/);
+  assert.doesNotMatch(landing, /reproducible from public source/);
   assert.match(landing, /21-file allowlisted package/);
   assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.doesNotMatch(landing, /18-file allowlisted package/);
@@ -84,20 +106,22 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   // Claims that must stay true of what actually ships.
   assert.match(landing, /glibc and musl \(Alpine\) hosts/);
   assert.match(landing, /render, accept typed input, and exit cleanly/);
-  // Repair scope must stay honest: one executable repair, service-managed hosts only.
-  assert.match(landing, /One reviewed repair runs automatically today/);
-  assert.match(landing, /systemd or launchd/);
+  // Repair scope must stay honest: five reviewed catalog repairs, applied one at a time.
+  assert.match(landing, /Five reviewed catalog repairs/);
+  assert.match(landing, /require explicit approval/);
   // The payment surface is gone; the site must not advertise one.
   assert.doesNotMatch(landing, /Pay with Card|lemonsqueezy|2 USDC/i);
   // PR #20 is merged and released; the copy must not still describe it as pending.
   assert.doesNotMatch(landing, /PR #20 is merged on main/);
   assert.match(landing, /pull\/20/);
-  assert.match(landing, /v0\.11\.2 is the current signed release/);
+  assert.match(landing, /v0\.12\.0 is the current npm-signed release/);
   assert.match(landing, /Approval defaults to Cancel/);
   assert.match(landing, /Deterministic local commands never upload/);
-  assert.match(landing, /releases\/tag\/v0\.11\.2/);
+  assert.match(landing, /releases\/tag\/v0\.12\.0/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
+  // Tense must not contradict itself: the TUI ships in THIS release, not "the next release".
+  assert.doesNotMatch(landing, /ships in the next release/);
 });
 
 test('script download guidance requires HTTPS and review before execution', async () => {
@@ -147,6 +171,12 @@ test('public surfaces avoid remote shell pipes and privacy absolutes', async () 
   assert.match(landing, /top-level config env block/i);
 });
 
+test('results page escapes error text before inserting it into HTML', async () => {
+  const results = await read('src/routes/results.js');
+  assert.match(results, /escapeHtml\(msg\)/);
+  assert.doesNotMatch(results, /<br>'\s*\+\s*msg\s*\+\s*'<\/div>/);
+});
+
 test('privacy docs disclose upload overrides and actual log limits', async () => {
   const [readme, scriptRoute, landing] = await Promise.all([
     read('README.md'),
@@ -162,6 +192,12 @@ test('privacy docs disclose upload overrides and actual log limits', async () =>
   assert.match(readme, /--show-data/);
   assert.match(readme, /200 recent `gateway\.err\.log` lines/);
   assert.match(scriptRoute, /up to 30 matching gateway log lines and up to 50 recent stderr lines/i);
+  assert.match(landing, /explicitly consent to remote TUI chat/i);
+  assert.match(landing, /up to 12 recent ClawFix conversation messages/i);
+  assert.match(landing, /automatic deletion is not currently promised/i);
+  assert.match(landing, /linked redacted diagnostic may upload first/i);
+  assert.match(landing, /Unrelated OpenClaw chat history and messages/i);
+  assert.doesNotMatch(landing, />Chat history or messages</i);
   assert.match(landing, /<code>--yes<\/code>, <code>-y<\/code>, or set <code>CLAWFIX_AUTO=1<\/code>/);
 });
 

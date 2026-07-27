@@ -163,6 +163,23 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
       return Object.freeze({ status: 'error', error: error.message, plan, preview });
     }
 
+    // An adapter-level failure is never evidence of a successful repair, even when a partial
+    // write makes the later state check look like the target state. This matters for multi-stage
+    // repairs such as gateway auth: setting auth.mode can succeed while token generation fails.
+    if (applyResult?.timedOut === true || (
+      Number.isInteger(applyResult?.status) && applyResult.status !== 0
+    )) {
+      const rollback = await safeRollback(entry, ctx, applyResult);
+      return Object.freeze({
+        status: 'verify_failed',
+        plan,
+        preview,
+        applyResult,
+        verify: Object.freeze({ ok: false, error: 'repair apply step failed' }),
+        rollback,
+      });
+    }
+
     // Past this point the repair has run. Every remaining failure must still be reported as a
     // structured outcome that carries applyResult — throwing here would lose the one fact the
     // caller most needs, which is that the system was already changed.

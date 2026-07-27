@@ -54,6 +54,21 @@ export function getAIConfig(env = process.env) {
   };
 }
 
+function combineWithTimeout(signal, timeoutMs) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeoutSignal;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, timeoutSignal]);
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal.aborted || timeoutSignal.aborted) abort();
+  else {
+    signal.addEventListener('abort', abort, { once: true });
+    timeoutSignal.addEventListener('abort', abort, { once: true });
+  }
+  return controller.signal;
+}
+
 export async function requestAI({
   messages,
   stream = false,
@@ -62,6 +77,7 @@ export async function requestAI({
   toolChoice,
   config = getAIConfig(),
   fetchImpl = fetch,
+  signal,
 }) {
   if (!config.apiKey) {
     throw new Error('AI is not configured');
@@ -100,7 +116,7 @@ export async function requestAI({
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(config.timeoutMs),
+    signal: combineWithTimeout(signal, config.timeoutMs),
   });
 
   if (!response.ok) {

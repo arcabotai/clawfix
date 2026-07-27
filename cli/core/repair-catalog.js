@@ -240,6 +240,8 @@ const gatewayLoopbackNoAuth = Object.freeze({
   },
 
   async apply(ctx) {
+    const previousModeRaw = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
+    const previousMode = String(previousModeRaw || '').trim() || 'none';
     const set = await ctx.openclaw.configSet('gateway.auth.mode', 'token', { timeoutMs: 30_000 });
     if (set.status !== 0) {
       return Object.freeze({ status: set.status, stage: 'set-mode', errorSummary: set.errorSummary });
@@ -248,11 +250,25 @@ const gatewayLoopbackNoAuth = Object.freeze({
       ['doctor', '--fix', '--generate-gateway-token'],
       { timeoutMs: 120_000 },
     );
+    let restoredMode = null;
+    if (generated.status !== 0 || generated.timedOut) {
+      const restored = await ctx.openclaw.configSet(
+        'gateway.auth.mode',
+        previousMode,
+        { timeoutMs: 30_000 },
+      );
+      restoredMode = Object.freeze({
+        attempted: true,
+        status: restored.status,
+        mode: previousMode,
+      });
+    }
     return Object.freeze({
       status: generated.status,
       stage: 'generate-token',
       timedOut: generated.timedOut,
       errorSummary: generated.errorSummary,
+      restoredMode,
     });
   },
 

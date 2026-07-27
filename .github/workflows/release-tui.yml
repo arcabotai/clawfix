@@ -5,11 +5,6 @@ name: Release TUI binaries
 
 on:
   workflow_dispatch:
-    inputs:
-      targets:
-        description: Comma-separated TUI targets
-        required: false
-        default: linux-x64,linux-x64-baseline
   push:
     tags:
       - "v*"
@@ -24,8 +19,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test-tui:
+    name: TUI tests and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+
+      - name: Install TUI dependencies
+        working-directory: cli/tui
+        run: bun install --frozen-lockfile
+
+      - name: Test TUI
+        working-directory: cli/tui
+        run: bun test
+
+      - name: Typecheck TUI
+        working-directory: cli/tui
+        run: bunx tsc --noEmit
+
   build-tui:
     name: tui-${{ matrix.target }}
+    needs: test-tui
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -80,7 +100,7 @@ jobs:
             windows-x64) pkg="@opentui/core-windows-x64" ;;
             *) echo "unknown target"; exit 1 ;;
           esac
-          bun add --optional "${pkg}@0.4.5" || true
+          bun add --optional --no-save "${pkg}@0.4.5"
 
       - name: Build standalone binary
         env:
@@ -116,6 +136,15 @@ jobs:
           # A compile without the Solid JSX transform passes every check above and still ships
           # a session nobody can type into.
           CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$launcher"
+
+      - name: Smoke musl binary on Alpine
+        if: matrix.target == 'linux-x64-musl'
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            node:24-alpine \
+            sh -lc 'apk add --no-cache python3 >/dev/null && launcher=/work/dist/tui/clawfix-tui-linux-x64-musl && test -x "$launcher" && node scripts/smoke-tui-binary.mjs "$launcher" && CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$launcher"'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -173,6 +202,24 @@ jobs:
             ls -lah
             test -s TUI-SHA256SUMS
           )
+
+      - name: Attest TUI release tarballs
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-dist/*.tar.gz
+
+      - name: Wait for CLI workflow to create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error ::CLI release was not created within 10 minutes"
+          exit 1
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

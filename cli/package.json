@@ -1,7 +1,7 @@
 {
   "name": "clawfix",
-  "version": "0.11.2",
-  "description": "AI-powered diagnostic and repair for OpenClaw installations",
+  "version": "0.12.0",
+  "description": "Deterministic-first OpenClaw diagnostics and guarded repairs with optional AI analysis",
   "bin": {
     "clawfix": "bin/clawfix.js"
   },

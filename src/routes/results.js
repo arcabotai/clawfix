@@ -129,7 +129,7 @@ function resultsPage(fixId) {
         const res = await fetch(API_BASE + '/api/fix/' + fixId);
         if (!res.ok) {
           if (res.status === 404) {
-            showError('Fix not found or expired. Results are stored temporarily — try running the diagnostic again.');
+            showError('Fix not found. Run the diagnostic again to create a new result.');
             return;
           }
           throw new Error('API error: ' + res.status);
@@ -143,8 +143,8 @@ function resultsPage(fixId) {
 
     function showError(msg) {
       document.getElementById('content').innerHTML = 
-        '<div class="error-box"><strong>❌ Error</strong><br>' + msg + '</div>' +
-        '<p style="color:var(--muted)">Run the diagnostic again: <code>npx clawfix@0.11.2</code></p>';
+        '<div class="error-box"><strong>❌ Error</strong><br>' + escapeHtml(msg) + '</div>' +
+        '<p style="color:var(--muted)">Run the diagnostic again: <code>npx clawfix@0.12.0</code></p>';
     }
 
     function renderResults(data) {

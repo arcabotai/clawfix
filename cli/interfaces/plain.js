@@ -419,9 +419,12 @@ async function applyCatalogRepair(issue, rl, session) {
   });
 
   if (result.status === 'applied') {
-    console.log(`  ${c.green('✅')} Gateway restarted and verified.`);
+    console.log(`  ${c.green('✅')} Repair applied and verified.`);
   } else if (result.status === 'verify_failed') {
-    console.log(`  ${c.yellow('⚠️')} Restart ran, but the gateway is still unavailable.`);
+    const rollback = result.rollback?.rolledBack
+      ? ' The partial change was rolled back.'
+      : '';
+    console.log(`  ${c.yellow('⚠️')} Repair ran, but runtime verification failed.${rollback}`);
   } else if (result.status === 'blocked') {
     console.log(`  ${c.dim('ℹ️')} Repair no longer needed: ${result.reason}`);
   } else if (result.status === 'rejected') {
@@ -459,10 +462,10 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
   console.log('');
 
   const answer = await new Promise(resolve => {
-    rl.question(`  ${c.yellow('Apply?')} [Y/n] `, resolve);
+    rl.question(`  ${c.yellow('Apply?')} [y/N] `, resolve);
   });
 
-  if (answer.trim() && !/^y(es)?$/i.test(answer.trim())) {
+  if (!/^y(es)?$/i.test(answer.trim())) {
     console.log(c.dim('  Cancelled.'));
     console.log('');
     return { cancelled: true };
@@ -530,102 +533,6 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
     console.log('');
     return { error: err.message };
   }
-}
-
-/**
- * Apply all fixable issues at once with single backup and single restart
- */
-async function applyAllFixes(issues, serverIssues, rl, scanFn) {
-  const allIssues = mergeIssues(issues, serverIssues);
-  const fixable = allIssues.filter(i => BUILTIN_FIXES[i.repairId] && !BUILTIN_FIXES[i.repairId].informational);
-
-  if (fixable.length === 0) {
-    console.log(c.dim('  No auto-fixable issues found.'));
-    return null;
-  }
-
-  console.log('');
-  console.log(c.bold(`  Fix plan (${fixable.length} issues):`));
-  for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.repairId];
-    const risk = fix.risk === 'low' ? c.green('low') : c.yellow(fix.risk);
-    console.log(`    ${c.blue('🔧')} [${risk}] ${issue.title || issue.text}`);
-    console.log(`       ${c.dim(fix.description)}`);
-  }
-
-  const skipped = allIssues.filter(i => BUILTIN_FIXES[i.repairId]?.informational);
-  if (skipped.length) {
-    console.log('');
-    for (const issue of skipped) {
-      console.log(`    ${c.dim(`ℹ️  [SKIP] ${issue.title || issue.text} — informational`)}`);
-    }
-  }
-
-  const noFix = allIssues.filter(i => !BUILTIN_FIXES[i.repairId] && !i.fix);
-  if (noFix.length) {
-    console.log('');
-    for (const issue of noFix) {
-      console.log(`    ${c.dim(`❓ [MANUAL] ${issue.title || issue.text} — ask AI for help`)}`);
-    }
-  }
-
-  console.log('');
-  const answer = await new Promise(resolve => {
-    rl.question(`  ${c.yellow(`Apply ${fixable.length} fix(es)?`)} [Y/n] `, resolve);
-  });
-
-  if (answer.trim() && !/^y(es)?$/i.test(answer.trim())) {
-    console.log(c.dim('  Cancelled.'));
-    console.log('');
-    return null;
-  }
-
-  // Single backup
-  const backupPath = await backupConfig();
-  console.log(`  ${c.green('✅')} Config backed up → ${c.dim(backupPath.split('/').pop())}`);
-
-  // Read config once
-  let config = await readConfig();
-  let needsRestart = false;
-  let applied = 0;
-
-  for (const issue of fixable) {
-    const fix = BUILTIN_FIXES[issue.repairId];
-    try {
-      const result = await fix.apply(config);
-      for (const change of result.changes) {
-        console.log(`  ${c.green('✅')} ${change}`);
-      }
-      if (fix.needsRestart) needsRestart = true;
-      applied++;
-    } catch (err) {
-      console.log(`  ${c.red('❌')} ${issue.title || issue.text}: ${err.message}`);
-    }
-  }
-
-  // Write config once
-  await safeWriteConfig(config);
-  console.log(`  ${c.green('✅')} Config saved`);
-
-  // Restart once
-  if (needsRestart) {
-    process.stdout.write(`  ${c.blue('🔄')} Restarting gateway...`);
-    const ok = tryGatewayRestart();
-    console.log(ok ? ` ${c.green('✅')}` : ` ${c.yellow('⚠️  may need manual restart')}`);
-  }
-
-  // Re-scan
-  if (scanFn) {
-    process.stdout.write(`  ${c.blue('🔍')} Re-scanning...`);
-    await scanFn();
-    console.log(` ${c.green('done')}`);
-  }
-
-  console.log('');
-  console.log(c.green(`  ✅ ${applied}/${fixable.length} fix(es) applied.`));
-  if (backupPath) console.log(c.dim(`  Rollback: cp ${backupPath} ${CONFIG_PATH}`));
-  console.log('');
-  return { applied, total: fixable.length };
 }
 
 // ============================================================
@@ -960,7 +867,7 @@ async function runInteractiveMode() {
     },
     repairEngine,
     normalizeFindings,
-    knownRepairIds: Object.keys(BUILTIN_FIXES),
+    knownRepairIds: [...new Set([...Object.keys(BUILTIN_FIXES), ...Object.keys(repairCatalog)])],
     makeRevisionId: randomUUID,
     onEvent: event => {
       if (!sessionQuiet && event.type.startsWith('scan.')) {
@@ -1113,22 +1020,10 @@ async function runInteractiveMode() {
       return;
     }
 
-    // fix-all — apply all auto-fixable issues at once
+    // Batch repairs deliberately stay disabled: each repair needs its own current-state plan,
+    // explicit approval, verification, and rollback outcome.
     if (/^fix[\s-]?all$/i.test(input)) {
-      const scanFn = async () => {
-        const result = await scanSession({ quiet: true });
-        if (!result.error) {
-          syncSessionState(result);
-          // Preserve the startup consent decision for post-fix rescans.
-          if (sendConsent) {
-            try { await uploadDiagnostic(); } catch {}
-          }
-          return { issues, serverIssues };
-        }
-        return null;
-      };
-
-      await applyAllFixes(issues, serverIssues, rl, scanFn);
+      console.log(c.yellow('  Batch repair is disabled. Apply one numbered repair at a time with fix <#>.'));
       rl.prompt();
       return;
     }
@@ -1290,7 +1185,7 @@ function renderStatus(summary, issues, serverIssues) {
   renderIssues(issues, serverIssues);
 
   console.log(c.cyan('━'.repeat(48)));
-  console.log(c.dim('  fix <#> | fix-all | scan | help | exit — or just type to chat'));
+  console.log(c.dim('  fix <#> | scan | help | exit — or just type to chat'));
   console.log('');
 }
 
@@ -1322,8 +1217,7 @@ function renderIssues(issues, serverIssues) {
 function renderHelp() {
   console.log('');
   console.log(c.bold('Commands:'));
-  console.log(`  ${c.cyan('fix <#>')}        Fix issue # (shows plan → confirm → apply → verify)`);
-  console.log(`  ${c.cyan('fix-all')}        Fix all auto-fixable issues at once`);
+  console.log(`  ${c.cyan('fix <#>')}        Fix one issue (shows plan → confirm → apply → verify)`);
   console.log(`  ${c.cyan('scan')}            Re-run diagnostics`);
   console.log(`  ${c.cyan('issues')}          Show detected issues`);
   console.log(`  ${c.cyan('status')}          Show system status`);
@@ -1344,7 +1238,7 @@ function mergeIssues(localIssues, serverIssues) {
   return dedupeFindingsForDisplay(normalizeFindings({
     localIssues,
     serverFindings: serverIssues,
-    knownRepairIds: Object.keys(BUILTIN_FIXES),
+    knownRepairIds: [...new Set([...Object.keys(BUILTIN_FIXES), ...Object.keys(repairCatalog)])],
   }));
 }
 

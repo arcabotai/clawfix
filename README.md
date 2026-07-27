@@ -30,8 +30,8 @@ clawfix
 ### Alternative: npx
 
 ```bash
-npx clawfix@0.11.2
-npx clawfix@0.11.2 --dry-run
+npx clawfix@0.12.0
+npx clawfix@0.12.0 --dry-run
 ```
 
 ### Legacy diagnostic script
@@ -63,7 +63,7 @@ Maintenance records are public in the [changelog](CHANGELOG.md), [releases](http
 
 1. **Run one command** — The diagnostic script scans your OpenClaw config, logs, plugins, ports, and listener ownership
 2. **Evidence is correlated** — Native config validation, status, Doctor, security audit, and 49 deterministic patterns run first. Optional AI analysis can explain unmatched problems when available
-3. **Review & apply** — You get a commented fix script. Nothing runs without your approval
+3. **Review & apply** — Catalog repairs show a reviewed plan, require explicit approval, then report verification and rollback. Legacy hosted findings provide reviewable script guidance
 
 Failures and warnings are counted as issues. Performance and quality tuning is shown separately as optional optimization advice.
 
@@ -139,13 +139,12 @@ curl --fail --show-error --silent https://clawfix.dev/fix/sha256
 ### Design Decisions
 
 - **Consent by default**: The CLI asks before upload unless you explicitly use `--yes`, `-y`, or `CLAWFIX_AUTO=1`
-- **Fix scripts are not auto-executed**: They're saved to `/tmp` for your review
-- **No model-authored shell**: AI output is advisory only; executable repairs come from reviewed deterministic snippets
-- **Repair validation**: Combined deterministic scripts must pass `bash -n`; hosted builds also run ShellCheck and fail closed on validator errors
+- **Explicit repair approval**: Catalog repairs show a reviewed plan and default to no; legacy hosted scripts stay reviewable and do not auto-run
+- **No model-authored shell**: AI output is advisory only; executable repairs come from reviewed deterministic code
+- **Repair validation**: Catalog repairs verify the postcondition and report rollback; hosted scripts must pass `bash -n`, and hosted builds also run ShellCheck
 - **Feedback is opt-in**: Repair scripts only report outcomes when run with `CLAWFIX_SEND_FEEDBACK=1`
-- **Auto-backup**: Every fix script backs up `openclaw.json` before modifying
+- **Bounded rollback**: Config-changing catalog repairs capture prior values and attempt rollback; legacy fix scripts back up `openclaw.json` before modifying it
 - **Open source**: [The CLI, server, and diagnostic script](https://github.com/arcabotai/clawfix) are public under the MIT license
-- **npx over curl**: We recommend `npx clawfix` as the primary method because the source is auditable on [npm](https://www.npmjs.com/package/clawfix) and GitHub
 
 ### CLI Options
 
@@ -225,8 +224,12 @@ The scenario suite restores changed configuration and processes in a `finally` b
 |----------|--------|-------------|
 | `/` | GET | Landing page |
 | `/fix` | GET | Diagnostic bash script |
-| `/fix/sha256` | GET | Script hash for verification |
-| `/api/diagnose` | POST | Submit diagnostic data |
+| `/fix/sha256` | GET | Diagnostic script hash for verification |
+| `/install` | GET | Pinned download-and-verify installer |
+| `/install/sha256` | GET | Installer hash for verification |
+| `/api/diagnose` | POST | Submit consented diagnostic data |
+| `/api/chat` | POST | Legacy consented remote chat stream |
+| `/api/v2/agent/messages` | POST | Bounded agent-v2 SSE conversation |
 | `/api/fix/:fixId` | GET | Retrieve fix results |
 | `/api/stats` | GET | Service statistics |
 | `/api/feedback/:fixId` | POST | Report if fix worked |

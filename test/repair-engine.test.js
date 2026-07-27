@@ -101,6 +101,29 @@ test('applyPlan rolls back and reports verify_failed when runtime verification f
   assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'verify', 'rollback']);
 });
 
+test('applyPlan never reports applied when the adapter apply step returns a failure status', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    return { status: 1, stage: 'generate-token' };
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const result = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(result.status, 'verify_failed');
+  assert.equal(result.verify.ok, false);
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
+});
+
 test('applyPlan is blocked without ever calling apply when preflight evidence says it is unnecessary', async () => {
   const finding = gatewayFinding();
   const entry = fakeCatalogEntry({ preflightOk: false });
@@ -236,8 +259,15 @@ test('two plans for the same finding get different tokens, and each others token
 test('the real fix command routes catalog repairs through the repair engine before legacy fixes', async () => {
   const source = await readFile(new URL('../cli/interfaces/plain.js', import.meta.url), 'utf8');
   assert.match(source, /const catalogRepair = repairCatalog\[issue\.repairId\]/);
+  assert.match(source, /knownRepairIds: \[\.\.\.new Set\(\[\.\.\.Object\.keys\(BUILTIN_FIXES\), \.\.\.Object\.keys\(repairCatalog\)\]\)\]/);
   assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, rl, session\)/);
+  assert.match(source, /Repair applied and verified\./);
+  assert.match(source, /Repair ran, but runtime verification failed\./);
+  assert.doesNotMatch(source, /Gateway restarted and verified\./);
   assert.match(source, /revision: result\.revision/);
+  assert.match(source, /Batch repair is disabled/);
+  assert.match(source, /Apply\?'.*\[y\/N\]/);
+  assert.doesNotMatch(source, /function applyAllFixes|\[Y\/n\]/);
 });
 
 // ============================================================

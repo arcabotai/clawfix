@@ -11,6 +11,8 @@ import {
 } from "./lib/models"
 import { sanitizeDisplayText } from "./lib/paste"
 
+const MAX_REMOTE_ASSISTANT_CHARS = 64_000
+
 export interface TuiFinding {
   readonly id: string
   readonly title: string
@@ -535,6 +537,10 @@ export function createSessionBridge(options: {
           const type = event?.type || event?.event
           if (type === "assistant.delta") {
             const delta = sanitizeDisplayText(String(event.text || event.delta || ""), 4000)
+            if (assistant.length + delta.length > MAX_REMOTE_ASSISTANT_CHARS) {
+              abortActive?.abort()
+              throw new Error("Remote assistant response exceeded the display limit")
+            }
             assistant += delta
             // Replace streaming card
             extras = extras.filter((i) => i.id !== assistantId)

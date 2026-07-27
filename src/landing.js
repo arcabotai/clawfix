@@ -8,9 +8,9 @@ landingRouter.get('/', (req, res) => {
     return res.json({
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
-      version: '0.11.2',
+      version: '0.12.0',
       install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install.sh && bash install.sh',
-      fix: 'npx clawfix@0.11.2',
+      fix: 'npx clawfix@0.12.0',
     });
   }
 
@@ -23,15 +23,15 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClawFix 0.11.2 — OpenClaw Diagnostics & Repair</title>
-  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.11.2 is signed on npm, and the chat-first TUI is now merged on main.">
-  <meta property="og:title" content="ClawFix 0.11.2 — Evidence Before Repair">
-  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, guarded repairs, and a chat-first TUI now merged on main.">
+  <title>ClawFix 0.12.0 — OpenClaw Diagnostics & Repair</title>
+  <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.12.0 is signed on npm, and ships the chat-first TUI as a standalone binary.">
+  <meta property="og:title" content="ClawFix 0.12.0 — Evidence Before Repair">
+  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, five guarded repairs, and a chat-first TUI standalone binary.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ClawFix 0.11.2 — Evidence Before Repair">
-  <meta name="twitter:description" content="Local OpenClaw diagnostics and guarded repairs. Chat-first TUI now merged on main.">
+  <meta name="twitter:title" content="ClawFix 0.12.0 — Evidence Before Repair">
+  <meta name="twitter:description" content="Local OpenClaw diagnostics and guarded repairs. Chat-first TUI ships as a standalone binary.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦞</text></svg>">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -477,8 +477,8 @@ const LANDING_HTML = `<!DOCTYPE html>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
       <nav class="nav-links">
-        <a href="#tui">New TUI</a>
-        <a href="#release">v0.11.2</a>
+        <a href="#tui">Chat TUI</a>
+        <a href="#release">v0.12.0</a>
         <a href="#how" class="nav-optional">How It Works</a>
         <a href="#security">Security</a>
         <a href="#pricing" class="nav-optional">Hosted Service</a>
@@ -491,19 +491,19 @@ const LANDING_HTML = `<!DOCTYPE html>
     <section class="hero">
       <div class="container">
         <span class="hero-emoji" aria-hidden="true">🦞</span>
-        <h1>Fix your OpenClaw<br>in <span class="highlight">one command</span></h1>
+        <h1>Diagnose OpenClaw.<br>Apply <span class="highlight">reviewed fixes</span>.</h1>
         <p class="subtitle">
           Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
         </p>
 
         <div class="status-row" aria-label="Release status">
-          <a class="status-pill" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">
+          <a class="status-pill" href="https://github.com/arcabotai/clawfix/releases/tag/v0.12.0">
             <strong>Current release</strong>
-            <span>v0.11.2 · installer + agent v2</span>
+            <span>v0.12.0 · chat-first TUI + 5 repairs</span>
           </a>
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/pull/20">
-            <strong>New on main</strong>
-            <span>Chat-first OpenTUI merged</span>
+            <strong>Standalone binary</strong>
+            <span>Chat-first OpenTUI, glibc + musl</span>
           </a>
         </div>
 
@@ -516,7 +516,7 @@ const LANDING_HTML = `<!DOCTYPE html>
           <strong style="color:var(--green)">Recommended</strong> Verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run <code>bash install.sh</code>. No global npm.
         </p>
         <p class="command-hint" style="margin-bottom: 18px;">
-          Prefer npm? <code id="cmd-npx">npx clawfix@0.11.2</code> · Dry run: <code>npx clawfix@0.11.2 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
+          Prefer npm? <code id="cmd-npx">npx clawfix@0.12.0</code> · Dry run: <code>npx clawfix@0.12.0 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
         </p>
         <div class="proof-row" aria-label="Release verification">
           <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
@@ -531,11 +531,11 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="release-panel">
           <div class="release-panel-head">
             <div>
-              <div class="eyebrow">Release 0.11.2</div>
+              <div class="eyebrow">Release 0.12.0</div>
               <h2>Evidence before repair.</h2>
-              <p>One end-to-end release: bash installer, 21-file CLI with plain interface and remote analyzer, constrained agent v2 on the host, and OpenTUI standalone binaries. Signed, attested, and reproducible from public source.</p>
+              <p>One end-to-end release: bash installer, 21-file CLI with plain interface and remote analyzer, constrained agent v2 on the host, a chat-first OpenTUI standalone binary (glibc + musl), and five reviewed guarded repairs. The npm package is registry-signed and provenance-attested; TUI tarballs carry SHA-256 checksums and GitHub build attestations.</p>
             </div>
-            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.11.2">Release notes →</a>
+            <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.12.0">Release notes →</a>
           </div>
           <div class="release-grid">
             <div class="release-item">
@@ -569,7 +569,7 @@ const LANDING_HTML = `<!DOCTYPE html>
               <li><strong>✓</strong><span>Runs on glibc and musl hosts, so Alpine-based OpenClaw containers are covered.</span></li>
             </ul>
             <p><a class="release-link" href="https://github.com/arcabotai/clawfix/pull/20">Review the merge →</a></p>
-            <p class="tui-note">v0.11.2 is the current signed release. The chat-first TUI ships in the next release, as a standalone binary on the GitHub release — not inside the npm package. Every release binary is driven through a real terminal before publishing: it has to render, accept typed input, and exit cleanly.</p>
+            <p class="tui-note">v0.12.0 is the current npm-signed release, and the chat-first TUI ships in it as a standalone binary on the GitHub release — not inside the npm package. Every release binary is driven through a real terminal before publishing: it has to render, accept typed input, and exit cleanly.</p>
           </div>
           <div class="tui-preview" aria-label="Preview of the chat-first ClawFix terminal interface">
 <pre><span class="muted">assistant</span>
@@ -578,12 +578,12 @@ currently stopped. The common cause is a
 missing Node PATH after reboot.
 
 I can restart it with the reviewed
-gateway-restart repair. Want me to?
+gateway-not-running repair. Want me to?
 
 <span class="accent">│ Repair proposal · proposed</span>
-<span class="accent">│</span> Restart the OpenClaw gateway service
+<span class="accent">│</span> Restart the OpenClaw gateway
 <span class="accent">│</span> Why: Gateway is down; port 18789 closed.
-<span class="accent">│</span> Risk: medium · gateway-restart
+<span class="accent">│</span> Risk: low · gateway-not-running
 
 ┌──────────────────────────────────────┐
 │ Tell me what is going wrong...       │
@@ -602,7 +602,7 @@ gateway-restart repair. Want me to?
           <div class="step">
             <div class="step-num">1</div>
             <h3>Run One Command</h3>
-            <p>The diagnostic script scans your OpenClaw installation. Config, logs, plugins, ports — everything checked in seconds.</p>
+            <p>The diagnostic script checks selected OpenClaw config, status, logs, plugins, ports, and listener ownership.</p>
           </div>
           <div class="step">
             <div class="step-num">2</div>
@@ -612,7 +612,7 @@ gateway-restart repair. Want me to?
           <div class="step">
             <div class="step-num">3</div>
             <h3>Review & Apply</h3>
-            <p>You get a commented fix script. Read it, understand it, then run it. Nothing happens without your approval. One reviewed repair runs automatically today — restarting a stopped gateway on a host with systemd or launchd; everything else is diagnosis and guidance.</p>
+            <p>Five reviewed catalog repairs show a plan, require explicit approval, apply locally, verify the result, and report rollback. Legacy hosted findings provide reviewable script guidance. Everything else ClawFix detects remains diagnosis and guidance.</p>
           </div>
         </div>
       </div>
@@ -819,8 +819,8 @@ gateway-restart repair. Want me to?
           <div class="trust-item">
             <span class="trust-icon">💾</span>
             <div>
-              <h3>Fix Scripts = Your Review</h3>
-              <p>Fix scripts are saved to <code>/tmp</code> for you to read first. Every fix backs up your config. Nothing auto-executes.</p>
+              <h3>Reviewed Repair Paths</h3>
+              <p>Catalog repairs show a plan and require explicit approval before local apply and verification. Legacy hosted scripts stay reviewable and do not auto-run.</p>
             </div>
           </div>
         </div>
@@ -838,6 +838,8 @@ gateway-restart repair. Want me to?
                 <li>• Plugin names + enabled status</li>
                 <li>• Gateway status</li>
                 <li>• Hostname hash (8 chars of SHA-256)</li>
+                <li>• Submitted diagnostic results may remain in the service database; automatic deletion is not currently promised</li>
+                <li>• When you explicitly consent to remote TUI chat: a linked redacted diagnostic may upload first, then your redacted message and up to 12 recent ClawFix conversation messages; chat context is held in process memory for up to 30 minutes by default</li>
               </ul>
             </div>
             <div>
@@ -845,7 +847,7 @@ gateway-restart repair. Want me to?
               <ul style="color:var(--muted);font-size:0.85rem;list-style:none;padding:0;">
                 <li>• Top-level config env block</li>
                 <li>• Workspace document contents (SOUL.md, memory, etc.)</li>
-                <li>• Chat history or messages</li>
+                <li>• Unrelated OpenClaw chat history and messages</li>
                 <li>• Real hostname (an 8-character hash is sent)</li>
                 <li>• Source IP is used transiently for abuse throttling and is not stored in diagnostic records</li>
               </ul>

@@ -21,7 +21,7 @@ clawfix
 Or with npx:
 
 ```bash
-npx clawfix@0.11.2
+npx clawfix@0.12.0
 ```
 
 ## What it does

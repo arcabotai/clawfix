@@ -276,6 +276,23 @@ test('gateway auth repair carries medium risk and says clients need the new toke
   assert.match(preview.steps.join(' '), /existing clients need the new token/i);
 });
 
+test('gateway auth apply reverts the mode when token generation fails, so verify never reports a false success', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx({ 'gateway.auth.mode': 'none' }, { invokeStatus: 1 });
+
+  const applied = await entry.apply(ctx);
+  assert.notEqual(applied.status, 0);
+  assert.equal(applied.stage, 'generate-token');
+  assert.equal(
+    store['gateway.auth.mode'],
+    'none',
+    'mode must be reverted to its previous value, not left at token with no token generated',
+  );
+
+  const verify = await entry.verify(ctx);
+  assert.equal(verify.ok, false, 'verify must not report success when token generation failed');
+});
+
 test('the catalog exposes exactly the repairs the findings map can authorize', async () => {
   const { default: fs } = await import('node:fs/promises');
   const findings = await fs.readFile(new URL('../cli/core/findings.js', import.meta.url), 'utf8');
