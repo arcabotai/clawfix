@@ -32,9 +32,14 @@ export function Sidebar(props: SidebarProps) {
     }
     return [...bySeverity.entries()].sort((a, b) => severityRank(a[0]) - severityRank(b[0]))
   }
+  // Carry each finding's real position before sorting. `fix <#>` and `explain <#>` index the
+  // unsorted findings list, so a sidebar that renumbered its own severity-sorted view sent
+  // users to the wrong finding — reading "3. Auto-update enabled" and typing `fix 3` hit an
+  // advisory finding and answered "this finding has no reviewed automatic repair".
   const top = () =>
-    [...(props.findings || [])]
-      .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+    (props.findings || [])
+      .map((finding, index) => ({ finding, position: index + 1 }))
+      .sort((a, b) => severityRank(a.finding.severity) - severityRank(b.finding.severity))
       .slice(0, 4)
   const aiLabel = () =>
     props.aiMode === "remote" ? "Remote" : props.aiMode === "remote-pending" ? "Remote (pending)" : "Local only"
@@ -69,8 +74,8 @@ export function Sidebar(props: SidebarProps) {
       <Spacer />
 
       {top().length > 0 && <text fg={theme.brand}>Top issues</text>}
-      {top().map((f, i) => (
-        <text fg={severityColor(f.severity)}>{`${i + 1}. ${f.title}`}</text>
+      {top().map((entry) => (
+        <text fg={severityColor(entry.finding.severity)}>{`${entry.position}. ${entry.finding.title}`}</text>
       ))}
       {top().length > 0 && <Spacer />}
 

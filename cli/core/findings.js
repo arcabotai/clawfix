@@ -31,6 +31,7 @@ const LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP = new Map([]);
 // Explicit native checkId -> repairId map (exact checkId equality only).
 const NATIVE_CHECK_ID_REPAIR_MAP = new Map([
   ['runtime/gateway-port-conflict', 'port-conflict'],
+  ['gateway.loopback_no_auth', 'gateway-loopback-no-auth'],
 ]);
 
 function slug(value) {

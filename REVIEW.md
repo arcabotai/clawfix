@@ -656,3 +656,60 @@ invest next — port-conflict and config-invalid are both detected precisely eno
 - Raw parser output is used as a user-facing title: `JSON5 parse failed: SyntaxError: JSON5:
   invalid character 'i' at 1:8`. Accurate, but it is a stack-trace fragment where a sentence
   belongs.
+
+
+---
+
+# Fourth pass — the repair catalog, and driving the real UI
+
+## Two repairs added: ClawFix now fixes what it finds
+
+The catalog held one repair that needed a service manager. Two more were added, both using
+OpenClaw's own supported commands and both verified against a real OpenClaw 2026.6.11 install:
+
+| Repair | Does | Verified by | Risk |
+|---|---|---|---|
+| `auto-update-enabled-warning` | `openclaw config set update.auto.enabled false` | reads the key back through `config get` | low |
+| `gateway-loopback-no-auth` | sets `gateway.auth.mode` to `token`, then `doctor --fix --generate-gateway-token` | reads the mode back; never reads the token itself | medium |
+
+Repairable findings went from 1 to 3. On a real install, broken deliberately:
+
+```
+auto-update:  before "true"  → applied, verify {"ok":true,"current":"false"} → finding gone
+gateway auth: before "none"  → applied, verify {"ok":true,"mode":"token"}    → finding gone
+```
+
+`gateway-loopback-no-auth` is deliberately medium risk, not low: existing clients stop working
+until they carry the new token, and the preview says so.
+
+Verification reads one config key through OpenClaw rather than parsing `openclaw.json`, so repair
+evidence stays narrow — and the auth repair never pulls the token into a repair record.
+
+## Driving the real UI found two defects
+
+The compiled musl binary was driven through a PTY with a terminal emulator attached, on a real
+broken install. Both of these were invisible to unit tests and frame captures.
+
+**The sidebar's numbers did not match the numbers `fix <#>` accepts.** The sidebar sorted findings
+by severity and renumbered its own view 1–4, while `fix <#>` and `explain <#>` index the unsorted
+findings list. Reading *"3. Auto-update enabled"* and typing `fix 3` reached an advisory finding
+and answered "This finding has no reviewed automatic repair." The sidebar now carries each
+finding's real position — criticals still lead, but the numbers are the ones the commands take.
+
+**The status line printed the revision twice**, which pushed the finding count off the end:
+
+```
+before: 🦞 ClawFix v0.11.2 · revision f3e9479b-… · Revision f3e9479b-…
+after:  🦞 ClawFix v0.11.2 · Revision f3e9479b-b52c-456e-8d0f-f5f25ba3b2e4 · 6 findings · AI consent required
+```
+
+The bridge's status already begins with the revision; the extra prefix was redundant.
+
+## End to end through the UI, on a real machine
+
+Sidebar listed *"4. Gateway auth missing on loopback"* → typed `fix 4` → approval dialog showed
+`Risk: medium · gateway-loopback-no-auth` with the composer locked and focus defaulting to
+Cancel → approved → `openclaw config get gateway.auth.mode` returned **token**.
+
+That is the whole chain — detect, propose, review, approve, apply, verify — fixing a real problem
+on a real OpenClaw install through the shipped interface.

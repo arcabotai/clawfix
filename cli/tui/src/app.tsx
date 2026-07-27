@@ -174,8 +174,9 @@ export function App(props: AppProps) {
 
   const statusLine = () => {
     const state = current()
-    const rev = state.revision ? ` · revision ${state.revision}` : ""
-    const full = `🦞 ClawFix v${cliPackage.version}${rev} · ${state.status}`
+    // The bridge's status already begins with "Revision <id> · N findings", so adding the
+    // revision here printed it twice and pushed the finding count off the end of the line.
+    const full = `🦞 ClawFix v${cliPackage.version} · ${state.status}`
     const budget = dims().width - 4
     if (budget <= 0) return ""
     if (full.length <= budget) return full
