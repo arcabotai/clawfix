@@ -108,60 +108,105 @@ function configFlag(value) {
   return null;
 }
 
-const autoUpdateEnabled = Object.freeze({
+/**
+ * A repair that flips one boolean OpenClaw config key to `target`.
+ *
+ * Every step goes through the OpenClaw CLI as argv — read the current value, set it, read it
+ * back. Verification is the read-back, so a `config set` that reported success but changed
+ * nothing still fails. A key OpenClaw cannot report is refused rather than assumed: unreadable
+ * is not the same as false.
+ */
+function configToggleRepair({ id, key, target, title, description, blockedReason, risk = 'low' }) {
+  const targetText = String(target);
+  const previousText = String(!target);
+
+  return Object.freeze({
+    id,
+    key,
+    title,
+    description,
+    risk,
+
+    async preflight(ctx) {
+      const current = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      const flag = configFlag(current);
+      if (flag === null) {
+        return Object.freeze({ ok: false, reason: 'config_state_unknown', evidence: { key, current } });
+      }
+      if (flag === target) {
+        return Object.freeze({ ok: false, reason: blockedReason, evidence: { key, current } });
+      }
+      return Object.freeze({ ok: true, evidence: { key, current } });
+    },
+
+    async preview() {
+      return Object.freeze({
+        steps: Object.freeze([
+          `Read ${key} through the OpenClaw CLI (argv, no shell).`,
+          `Set ${key} to ${targetText}.`,
+          'Read it back to confirm the change actually landed.',
+        ]),
+        summary: `openclaw config set ${key} ${targetText}`,
+      });
+    },
+
+    async apply(ctx) {
+      const result = await ctx.openclaw.configSet(key, targetText, { timeoutMs: 30_000 });
+      return Object.freeze({
+        status: result.status,
+        timedOut: result.timedOut,
+        errorSummary: result.errorSummary,
+      });
+    },
+
+    async verify(ctx) {
+      const current = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      return Object.freeze({ ok: configFlag(current) === target, evidence: { key, current } });
+    },
+
+    async rollback(ctx) {
+      const result = await ctx.openclaw.configSet(key, previousText, { timeoutMs: 30_000 });
+      return Object.freeze({
+        rolledBack: result.status === 0,
+        note: result.status === 0
+          ? `Restored ${key} to ${previousText}.`
+          : `Could not restore ${key}; check \`openclaw config get ${key}\`.`,
+      });
+    },
+  });
+}
+
+const autoUpdateEnabled = configToggleRepair({
   id: 'auto-update-enabled-warning',
+  key: 'update.auto.enabled',
+  target: false,
   title: 'Disable OpenClaw auto-update',
   description:
     'Auto-update restarts the gateway on its own schedule, which is the documented cause of '
     + 'restart loops. This turns it off; updates then happen when you run them.',
-  risk: 'low',
+  blockedReason: 'auto_update_already_disabled',
+});
 
-  async preflight(ctx) {
-    const current = await ctx.openclaw.configGet('update.auto.enabled', { timeoutMs: 10_000 });
-    const enabled = configFlag(current);
-    if (enabled === null) {
-      return Object.freeze({ ok: false, reason: 'auto_update_state_unknown', evidence: { current } });
-    }
-    if (enabled === false) {
-      return Object.freeze({ ok: false, reason: 'auto_update_already_disabled', evidence: { current } });
-    }
-    return Object.freeze({ ok: true, evidence: { current } });
-  },
+const hybridSearchDisabled = configToggleRepair({
+  id: 'no-hybrid-search',
+  key: 'agents.defaults.memorySearch.query.hybrid.enabled',
+  target: true,
+  title: 'Enable hybrid memory search',
+  description:
+    'Hybrid search combines keyword and semantic matching when the agent searches memory. '
+    + 'OpenClaw recommends it; without it recall is keyword-only.',
+  blockedReason: 'hybrid_search_already_enabled',
+});
 
-  async preview() {
-    return Object.freeze({
-      steps: Object.freeze([
-        'Read update.auto.enabled through the OpenClaw CLI (argv, no shell).',
-        'Set update.auto.enabled to false.',
-        'Read it back to confirm it is off.',
-      ]),
-      summary: 'openclaw config set update.auto.enabled false',
-    });
-  },
-
-  async apply(ctx) {
-    const result = await ctx.openclaw.configSet('update.auto.enabled', 'false', { timeoutMs: 30_000 });
-    return Object.freeze({
-      status: result.status,
-      timedOut: result.timedOut,
-      errorSummary: result.errorSummary,
-    });
-  },
-
-  async verify(ctx) {
-    const current = await ctx.openclaw.configGet('update.auto.enabled', { timeoutMs: 10_000 });
-    return Object.freeze({ ok: configFlag(current) === false, evidence: { current } });
-  },
-
-  async rollback(ctx) {
-    const result = await ctx.openclaw.configSet('update.auto.enabled', 'true', { timeoutMs: 30_000 });
-    return Object.freeze({
-      rolledBack: result.status === 0,
-      note: result.status === 0
-        ? 'Restored update.auto.enabled to true.'
-        : 'Could not restore update.auto.enabled; check `openclaw config get update.auto.enabled`.',
-    });
-  },
+const memoryFlushDisabled = configToggleRepair({
+  id: 'no-memory-flush',
+  key: 'agents.defaults.compaction.memoryFlush.enabled',
+  target: true,
+  title: 'Enable memory flush on compaction',
+  description:
+    'Without a memory flush, anything the agent has not written down is lost when the context '
+    + 'is compacted. This makes compaction persist memory first.',
+  blockedReason: 'memory_flush_already_enabled',
 });
 
 const gatewayLoopbackNoAuth = Object.freeze({
@@ -234,4 +279,6 @@ export const repairCatalog = Object.freeze({
   'gateway-not-running': gatewayNotRunning,
   'auto-update-enabled-warning': autoUpdateEnabled,
   'gateway-loopback-no-auth': gatewayLoopbackNoAuth,
+  'no-hybrid-search': hybridSearchDisabled,
+  'no-memory-flush': memoryFlushDisabled,
 });

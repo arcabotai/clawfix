@@ -713,3 +713,53 @@ Cancel → approved → `openclaw config get gateway.auth.mode` returned **token
 
 That is the whole chain — detect, propose, review, approve, apply, verify — fixing a real problem
 on a real OpenClaw install through the shipped interface.
+
+
+---
+
+# Fifth pass — more repairs, and honest finding titles
+
+## Repair catalog: 1 → 5
+
+Three more config repairs, all built on `openclaw config set` with the read-back as verification,
+all sharing one `configToggleRepair` contract so the guard rails cannot drift apart:
+
+| Repair | Key | Verified on a real install |
+|---|---|---|
+| `auto-update-enabled-warning` | `update.auto.enabled` → false | applied, finding gone |
+| `gateway-loopback-no-auth` | `gateway.auth.mode` → token | applied, finding gone |
+| `no-hybrid-search` | `agents.defaults.memorySearch.query.hybrid.enabled` → true | applied, `current:"true"`, finding gone |
+| `no-memory-flush` | `agents.defaults.compaction.memoryFlush.enabled` → true | applied, `current:"true"`, finding gone |
+
+Four of the five now work without a service manager, so a containerised OpenClaw is no longer a
+host where ClawFix can only look and shrug. `gateway-not-running` still needs systemd or launchd —
+that is OpenClaw's restart path, not something ClawFix can route around.
+
+Each toggle refuses an unreadable key (`config_state_unknown`) rather than treating "cannot read"
+as "false", and rollback restores the previous value.
+
+## Port conflict: deliberately still not repaired
+
+The obvious next repair is the port conflict — ClawFix already knows the squatting PID. It was not
+added, because every version of it ends in killing a process ClawFix does not own. A repair that
+terminates an unrelated service is not a guarded repair, whatever the preview says. If this is
+wanted later, the safe shape is: refuse unless the listener is itself a stale OpenClaw process,
+and even then prefer OpenClaw's own `--force` restart over a kill.
+
+## Two findings were shouting machine text at the user
+
+`[critical] timeout` came from `nativeStatus.gateway.error` being used directly as an issue title.
+A probe that gave up was presented as a critical OpenClaw fault named "timeout". The same pattern
+turned a validator message into the title `JSON5 parse failed: SyntaxError: JSON5: invalid
+character 'i' at 1:8`.
+
+Both now carry an actionable headline with the upstream text as detail:
+
+```
+[high] OpenClaw config schema validation failed
+       detail: JSON5 parse failed: SyntaxError: JSON5: invalid character 'i' at 1:8
+```
+
+Fixing the title broke the doctor-findings dedup, which had been matching on the raw message — so
+the same problem briefly appeared twice, once well-titled and once raw. Caught on the real
+machine, not in tests: the dedup now compares the detail as well as the headline.

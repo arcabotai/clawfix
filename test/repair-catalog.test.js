@@ -214,7 +214,7 @@ test('auto-update repair refuses to act on an unreadable flag rather than guessi
   const { ctx } = configCtx({});
   const pre = await entry.preflight(ctx);
   assert.equal(pre.ok, false);
-  assert.equal(pre.reason, 'auto_update_state_unknown');
+  assert.equal(pre.reason, 'config_state_unknown');
 });
 
 test('auto-update verify fails when the value did not actually change', async () => {
@@ -283,3 +283,62 @@ test('the catalog exposes exactly the repairs the findings map can authorize', a
     assert.match(findings, new RegExp(`'${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`), `${id} is unmapped`);
   }
 });
+
+// ============================================================
+// Config toggle repairs share one contract
+// ============================================================
+
+const TOGGLES = [
+  { id: 'auto-update-enabled-warning', key: 'update.auto.enabled', from: 'true', to: 'false' },
+  { id: 'no-hybrid-search', key: 'agents.defaults.memorySearch.query.hybrid.enabled', from: 'false', to: 'true' },
+  { id: 'no-memory-flush', key: 'agents.defaults.compaction.memoryFlush.enabled', from: 'false', to: 'true' },
+];
+
+for (const toggle of TOGGLES) {
+  test(`${toggle.id}: flips ${toggle.key} and verifies by reading it back`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx, store } = configCtx({ [toggle.key]: toggle.from });
+
+    assert.equal((await entry.preflight(ctx)).ok, true);
+    assert.equal((await entry.apply(ctx)).status, 0);
+    assert.equal(store[toggle.key], toggle.to);
+    assert.equal((await entry.verify(ctx)).ok, true);
+  });
+
+  test(`${toggle.id}: is blocked when the key is already correct`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx } = configCtx({ [toggle.key]: toggle.to });
+    assert.equal((await entry.preflight(ctx)).ok, false);
+  });
+
+  test(`${toggle.id}: refuses an unreadable key instead of treating it as false`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx } = configCtx({});
+    const pre = await entry.preflight(ctx);
+    assert.equal(pre.ok, false);
+    assert.equal(pre.reason, 'config_state_unknown');
+  });
+
+  test(`${toggle.id}: verify fails when the set did not land`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx } = configCtx({ [toggle.key]: toggle.from }, { setStatus: 1 });
+    await entry.apply(ctx);
+    assert.equal((await entry.verify(ctx)).ok, false);
+  });
+
+  test(`${toggle.id}: rollback restores the original value`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx, store } = configCtx({ [toggle.key]: toggle.from });
+    await entry.apply(ctx);
+    assert.equal((await entry.rollback(ctx)).rolledBack, true);
+    assert.equal(store[toggle.key], toggle.from);
+  });
+
+  test(`${toggle.id}: preview names the exact command and has no side effects`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx, calls } = configCtx({ [toggle.key]: toggle.from });
+    const preview = await entry.preview(ctx);
+    assert.match(preview.summary, new RegExp(`openclaw config set ${toggle.key.replace(/\./g, '\\.')} ${toggle.to}`));
+    assert.equal(calls.some(([verb]) => verb === 'set'), false);
+  });
+}

@@ -371,9 +371,14 @@ export function deriveIssues(collected) {
   }
 
   if (nativeConfig.available && nativeConfig.valid === false) {
+    // The headline stays a sentence the operator can act on; the validator's own text is
+    // detail, not the title. Surfacing it raw produced findings titled
+    // "JSON5 parse failed: SyntaxError: JSON5: invalid character 'i' at 1:8".
+    const configDetail = nativeConfig.errors[0]?.message || '';
     issues.push({
       severity: 'high',
-      text: nativeConfig.errors[0]?.message || 'OpenClaw config schema validation failed',
+      text: 'OpenClaw config schema validation failed',
+      description: configDetail || 'OpenClaw reported the config as invalid without detail.',
       source: 'openclaw-config',
       nativeCheckId: 'config/schema-invalid',
       path: nativeConfig.errors[0]?.path || null,
@@ -385,9 +390,16 @@ export function deriveIssues(collected) {
     && nativeStatus.gateway.reachable === false
     && !issues.some((issue) => /gateway.*not running|gateway.*unreachable/i.test(issue.text))
   ) {
+    // Same rule as the config case above. `gateway.error` is a machine string — when the probe
+    // timed out it was literally "timeout", which reached the user as a critical finding titled
+    // "timeout" and read like an OpenClaw fault rather than a probe that gave up.
+    const probeDetail = String(nativeStatus.gateway.error || '').trim();
     issues.push({
       severity: 'critical',
-      text: nativeStatus.gateway.error || 'OpenClaw gateway is unreachable',
+      text: 'OpenClaw gateway is unreachable',
+      description: probeDetail
+        ? `Gateway probe failed: ${probeDetail}`
+        : 'The gateway did not answer a status probe.',
       source: 'openclaw-status',
       nativeCheckId: 'status/gateway-unreachable',
     });
@@ -423,9 +435,14 @@ export function deriveIssues(collected) {
   }
 
   for (const finding of nativeDoctor.findings) {
+    // Match on the detail too, not just the headline. Findings that carry an upstream message as
+    // their detail (config/schema-invalid holds the validator's text) would otherwise be
+    // reported twice — once with an actionable title, once as the raw parser output.
+    const message = String(finding.message || '').toLowerCase();
     const duplicate = issues.some((issue) => (
       issue.nativeCheckId === finding.checkId
-      || issue.text.toLowerCase() === finding.message.toLowerCase()
+      || String(issue.text || '').toLowerCase() === message
+      || String(issue.description || '').toLowerCase() === message
     ));
     if (duplicate) continue;
     issues.push({
