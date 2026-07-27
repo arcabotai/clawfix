@@ -100,6 +100,138 @@ const gatewayNotRunning = Object.freeze({
   },
 });
 
+/** Normalized truthiness of an `openclaw config get` result. '' means unset or unreadable. */
+function configFlag(value) {
+  const text = String(value ?? '').trim().toLowerCase();
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  return null;
+}
+
+const autoUpdateEnabled = Object.freeze({
+  id: 'auto-update-enabled-warning',
+  title: 'Disable OpenClaw auto-update',
+  description:
+    'Auto-update restarts the gateway on its own schedule, which is the documented cause of '
+    + 'restart loops. This turns it off; updates then happen when you run them.',
+  risk: 'low',
+
+  async preflight(ctx) {
+    const current = await ctx.openclaw.configGet('update.auto.enabled', { timeoutMs: 10_000 });
+    const enabled = configFlag(current);
+    if (enabled === null) {
+      return Object.freeze({ ok: false, reason: 'auto_update_state_unknown', evidence: { current } });
+    }
+    if (enabled === false) {
+      return Object.freeze({ ok: false, reason: 'auto_update_already_disabled', evidence: { current } });
+    }
+    return Object.freeze({ ok: true, evidence: { current } });
+  },
+
+  async preview() {
+    return Object.freeze({
+      steps: Object.freeze([
+        'Read update.auto.enabled through the OpenClaw CLI (argv, no shell).',
+        'Set update.auto.enabled to false.',
+        'Read it back to confirm it is off.',
+      ]),
+      summary: 'openclaw config set update.auto.enabled false',
+    });
+  },
+
+  async apply(ctx) {
+    const result = await ctx.openclaw.configSet('update.auto.enabled', 'false', { timeoutMs: 30_000 });
+    return Object.freeze({
+      status: result.status,
+      timedOut: result.timedOut,
+      errorSummary: result.errorSummary,
+    });
+  },
+
+  async verify(ctx) {
+    const current = await ctx.openclaw.configGet('update.auto.enabled', { timeoutMs: 10_000 });
+    return Object.freeze({ ok: configFlag(current) === false, evidence: { current } });
+  },
+
+  async rollback(ctx) {
+    const result = await ctx.openclaw.configSet('update.auto.enabled', 'true', { timeoutMs: 30_000 });
+    return Object.freeze({
+      rolledBack: result.status === 0,
+      note: result.status === 0
+        ? 'Restored update.auto.enabled to true.'
+        : 'Could not restore update.auto.enabled; check `openclaw config get update.auto.enabled`.',
+    });
+  },
+});
+
+const gatewayLoopbackNoAuth = Object.freeze({
+  id: 'gateway-loopback-no-auth',
+  title: 'Require a token on the gateway',
+  description:
+    'The gateway accepts unauthenticated connections. This switches auth to token mode and has '
+    + 'OpenClaw generate one. Clients will need that token to connect afterwards.',
+  // Medium, not low: existing clients stop working until they carry the new token.
+  risk: 'medium',
+
+  async preflight(ctx) {
+    const mode = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
+    const current = String(mode || '').trim().toLowerCase();
+    if (current === 'token' || current === 'password' || current === 'trusted-proxy') {
+      return Object.freeze({ ok: false, reason: 'gateway_auth_already_enabled', evidence: { mode: current } });
+    }
+    return Object.freeze({ ok: true, evidence: { mode: current || '(unset)' } });
+  },
+
+  async preview() {
+    return Object.freeze({
+      steps: Object.freeze([
+        'Set gateway.auth.mode to token through the OpenClaw CLI (argv, no shell).',
+        'Run `openclaw doctor --fix --generate-gateway-token` so OpenClaw generates the token.',
+        'Read gateway.auth.mode back to confirm token auth is active.',
+        'Restart the gateway yourself for it to take effect; existing clients need the new token.',
+      ]),
+      summary: 'openclaw config set gateway.auth.mode token + doctor --generate-gateway-token',
+    });
+  },
+
+  async apply(ctx) {
+    const set = await ctx.openclaw.configSet('gateway.auth.mode', 'token', { timeoutMs: 30_000 });
+    if (set.status !== 0) {
+      return Object.freeze({ status: set.status, stage: 'set-mode', errorSummary: set.errorSummary });
+    }
+    const generated = await ctx.openclaw.invoke(
+      ['doctor', '--fix', '--generate-gateway-token'],
+      { timeoutMs: 120_000 },
+    );
+    return Object.freeze({
+      status: generated.status,
+      stage: 'generate-token',
+      timedOut: generated.timedOut,
+      errorSummary: generated.errorSummary,
+    });
+  },
+
+  async verify(ctx) {
+    // Evidence is the mode only — never read the token itself into a repair record.
+    const mode = String(await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 })).trim();
+    return Object.freeze({ ok: mode.toLowerCase() === 'token', evidence: { mode } });
+  },
+
+  async rollback(ctx, { applyResult } = {}) {
+    if (applyResult?.stage === 'set-mode') {
+      return Object.freeze({ rolledBack: false, note: 'Auth mode was never changed.' });
+    }
+    return Object.freeze({
+      rolledBack: false,
+      note: 'Gateway auth was switched to token mode. To undo it deliberately, run '
+        + '`openclaw config set gateway.auth.mode none` — that returns the gateway to accepting '
+        + 'unauthenticated connections.',
+    });
+  },
+});
+
 export const repairCatalog = Object.freeze({
   'gateway-not-running': gatewayNotRunning,
+  'auto-update-enabled-warning': autoUpdateEnabled,
+  'gateway-loopback-no-auth': gatewayLoopbackNoAuth,
 });
