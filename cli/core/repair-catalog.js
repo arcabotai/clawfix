@@ -108,6 +108,11 @@ function configFlag(value) {
   return null;
 }
 
+function configValue(read) {
+  if (!read || read.ok !== true || typeof read.value !== 'string') return null;
+  return read.value;
+}
+
 /**
  * A repair that flips one boolean OpenClaw config key to `target`.
  *
@@ -128,10 +133,15 @@ function configToggleRepair({ id, key, target, title, description, blockedReason
     risk,
 
     async preflight(ctx) {
-      const current = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      const read = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      const current = configValue(read);
       const flag = configFlag(current);
       if (flag === null) {
-        return Object.freeze({ ok: false, reason: 'config_state_unknown', evidence: { key, current } });
+        return Object.freeze({
+          ok: false,
+          reason: 'config_state_unknown',
+          evidence: { key, current: current ?? '', errorSummary: read?.errorSummary ?? null },
+        });
       }
       if (flag === target) {
         return Object.freeze({ ok: false, reason: blockedReason, evidence: { key, current } });
@@ -153,6 +163,10 @@ function configToggleRepair({ id, key, target, title, description, blockedReason
     async apply(ctx) {
       const result = await ctx.openclaw.configSet(key, targetText, { timeoutMs: 30_000 });
       return Object.freeze({
+        changed: result.status === 0 ? true : 'unknown',
+        changes: result.status === 0
+          ? Object.freeze([Object.freeze({ type: 'config', key, before: previousText, after: targetText })])
+          : Object.freeze([]),
         status: result.status,
         timedOut: result.timedOut,
         errorSummary: result.errorSummary,
@@ -160,8 +174,12 @@ function configToggleRepair({ id, key, target, title, description, blockedReason
     },
 
     async verify(ctx) {
-      const current = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
-      return Object.freeze({ ok: configFlag(current) === target, evidence: { key, current } });
+      const read = await ctx.openclaw.configGet(key, { timeoutMs: 10_000 });
+      const current = configValue(read);
+      return Object.freeze({
+        ok: configFlag(current) === target,
+        evidence: { key, current: current ?? '', errorSummary: read?.errorSummary ?? null },
+      });
     },
 
     async rollback(ctx) {
@@ -219,12 +237,23 @@ const gatewayLoopbackNoAuth = Object.freeze({
   risk: 'medium',
 
   async preflight(ctx) {
-    const mode = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
-    const current = String(mode || '').trim().toLowerCase();
+    const read = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
+    const mode = configValue(read);
+    const current = String(mode ?? '').trim().toLowerCase();
+    if (mode === null || current === '') {
+      return Object.freeze({
+        ok: false,
+        reason: 'config_state_unknown',
+        evidence: { mode: current, errorSummary: read?.errorSummary ?? null },
+      });
+    }
     if (current === 'token' || current === 'password' || current === 'trusted-proxy') {
       return Object.freeze({ ok: false, reason: 'gateway_auth_already_enabled', evidence: { mode: current } });
     }
-    return Object.freeze({ ok: true, evidence: { mode: current || '(unset)' } });
+    if (current !== 'none') {
+      return Object.freeze({ ok: false, reason: 'config_state_unknown', evidence: { mode: current } });
+    }
+    return Object.freeze({ ok: true, evidence: { mode: current } });
   },
 
   async preview() {
@@ -240,17 +269,43 @@ const gatewayLoopbackNoAuth = Object.freeze({
   },
 
   async apply(ctx) {
+    const changes = [];
     const set = await ctx.openclaw.configSet('gateway.auth.mode', 'token', { timeoutMs: 30_000 });
     if (set.status !== 0) {
-      return Object.freeze({ status: set.status, stage: 'set-mode', errorSummary: set.errorSummary });
+      return Object.freeze({
+        status: set.status,
+        stage: 'set-mode',
+        changed: 'unknown',
+        changes: Object.freeze(changes),
+        errorSummary: set.errorSummary,
+      });
     }
-    const generated = await ctx.openclaw.invoke(
-      ['doctor', '--fix', '--generate-gateway-token'],
-      { timeoutMs: 120_000 },
-    );
+    changes.push(Object.freeze({
+      type: 'config',
+      key: 'gateway.auth.mode',
+      before: 'none',
+      after: 'token',
+    }));
+    let generated;
+    try {
+      generated = await ctx.openclaw.invoke(
+        ['doctor', '--fix', '--generate-gateway-token'],
+        { timeoutMs: 120_000 },
+      );
+    } catch (error) {
+      return Object.freeze({
+        status: null,
+        stage: 'generate-token',
+        changed: true,
+        changes: Object.freeze(changes),
+        errorSummary: error.message,
+      });
+    }
     return Object.freeze({
       status: generated.status,
       stage: 'generate-token',
+      changed: true,
+      changes: Object.freeze(changes),
       timedOut: generated.timedOut,
       errorSummary: generated.errorSummary,
     });
@@ -258,19 +313,24 @@ const gatewayLoopbackNoAuth = Object.freeze({
 
   async verify(ctx) {
     // Evidence is the mode only — never read the token itself into a repair record.
-    const mode = String(await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 })).trim();
-    return Object.freeze({ ok: mode.toLowerCase() === 'token', evidence: { mode } });
+    const read = await ctx.openclaw.configGet('gateway.auth.mode', { timeoutMs: 10_000 });
+    const mode = String(configValue(read) ?? '').trim();
+    return Object.freeze({
+      ok: read?.ok === true && mode.toLowerCase() === 'token',
+      evidence: { mode, errorSummary: read?.errorSummary ?? null },
+    });
   },
 
   async rollback(ctx, { applyResult } = {}) {
-    if (applyResult?.stage === 'set-mode') {
+    if (!applyResult?.changed) {
       return Object.freeze({ rolledBack: false, note: 'Auth mode was never changed.' });
     }
+    const result = await ctx.openclaw.configSet('gateway.auth.mode', 'none', { timeoutMs: 30_000 });
     return Object.freeze({
-      rolledBack: false,
-      note: 'Gateway auth was switched to token mode. To undo it deliberately, run '
-        + '`openclaw config set gateway.auth.mode none` — that returns the gateway to accepting '
-        + 'unauthenticated connections.',
+      rolledBack: result.status === 0,
+      note: result.status === 0
+        ? 'Restored gateway.auth.mode to its previous value, none.'
+        : 'Could not restore gateway.auth.mode; inspect it before restarting the gateway.',
     });
   },
 });

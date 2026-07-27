@@ -490,11 +490,36 @@ export function createOpenClawAdapter({
      *
      * Repairs verify against this rather than parsing openclaw.json: it is the value OpenClaw
      * resolves, and it keeps repair evidence to a single key instead of a whole config blob.
-     * Returns '' when the key is unset or the call fails — callers must not read that as false.
+     * An empty value can be a successful "unset" result. Callers must use `ok` to distinguish
+     * that from an invocation failure.
      */
     async configGet(key, options = {}) {
-      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) return '';
-      return processText(await invoke(['config', 'get', key], options));
+      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {
+        return Object.freeze({
+          ok: false,
+          value: '',
+          status: null,
+          errorSummary: 'invalid config key',
+        });
+      }
+      const result = await invoke(['config', 'get', key], options);
+      const ok = result.status === 0
+        && result.errorCode == null
+        && result.errorSummary == null
+        && result.signal == null
+        && !result.timedOut
+        && !result.aborted
+        && !result.outputLimitExceeded
+        && !result.stdoutTruncated
+        && !result.stderrTruncated;
+      return Object.freeze({
+        ok,
+        value: ok ? String(result.stdout || '').trim() : '',
+        status: result.status,
+        errorSummary: ok
+          ? null
+          : result.errorSummary || `openclaw config get exited with status ${result.status}`,
+      });
     },
 
     /** Set one config key. Values are passed as literal argv, never through a shell. */

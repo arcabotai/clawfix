@@ -176,6 +176,51 @@ test('version and gatewayStatus construct immutable argv and bounded process opt
   assert.equal(calls[1].options.maxStderrBytes, 256 * 1024);
 });
 
+test('configGet distinguishes an empty value from a failed invocation', async () => {
+  const results = [
+    Object.freeze({ status: 0, stdout: '', stderr: '' }),
+    Object.freeze({ status: 1, stdout: '', stderr: 'cannot read config' }),
+  ];
+  const processAdapter = {
+    async run() {
+      return results.shift();
+    },
+  };
+  const fs = {
+    async access() {},
+    async stat() { return { isFile: () => true }; },
+  };
+  const adapter = createOpenClawAdapter({
+    env: { PATH: '/tools' },
+    fs,
+    platform: 'linux',
+    processAdapter,
+  });
+
+  assert.deepEqual(await adapter.configGet('gateway.auth.mode'), {
+    ok: true,
+    value: '',
+    status: 0,
+    errorSummary: null,
+  });
+  const failed = await adapter.configGet('gateway.auth.mode');
+  assert.equal(failed.ok, false);
+  assert.equal(failed.value, '');
+  assert.equal(failed.status, 1);
+  assert.match(failed.errorSummary, /status 1/);
+  assert.equal(Object.isFrozen(failed), true);
+});
+
+test('configGet rejects invalid keys without invoking OpenClaw', async () => {
+  const adapter = createOpenClawAdapter();
+  assert.deepEqual(await adapter.configGet('bad key'), {
+    ok: false,
+    value: '',
+    status: null,
+    errorSummary: 'invalid config key',
+  });
+});
+
 test('runtime collectors pass hostile values as literal argv and parse Linux service evidence', async () => {
   const calls = [];
   const processAdapter = {

@@ -22,9 +22,9 @@ function defaultRandomToken() {
 }
 
 /** Rollback is best-effort cleanup — a throw here must never mask the apply/verify outcome. */
-async function safeRollback(entry, ctx, applyResult) {
+async function safeRollback(entry, ctx, applyResult, preflight) {
   try {
-    return await entry.rollback(ctx, { applyResult });
+    return await entry.rollback(ctx, { applyResult, preflight });
   } catch (error) {
     return Object.freeze({ rolledBack: false, note: `rollback failed: ${error.message}` });
   }
@@ -160,7 +160,35 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     try {
       applyResult = await entry.apply(ctx);
     } catch (error) {
-      return Object.freeze({ status: 'error', error: error.message, plan, preview });
+      applyResult = Object.freeze({
+        status: null,
+        changed: 'unknown',
+        changes: Object.freeze([]),
+        errorSummary: error.message,
+      });
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
+      return Object.freeze({
+        status: 'error',
+        error: `apply failed: ${error.message}`,
+        plan,
+        preview,
+        applyResult,
+        rollback,
+      });
+    }
+
+    if (!applyResult || applyResult.status !== 0) {
+      const rollback = applyResult?.changed
+        ? await safeRollback(entry, ctx, applyResult, preflight)
+        : null;
+      return Object.freeze({
+        status: 'error',
+        error: `apply failed: ${applyResult?.errorSummary || `status ${applyResult?.status}`}`,
+        plan,
+        preview,
+        applyResult,
+        rollback,
+      });
     }
 
     // Past this point the repair has run. Every remaining failure must still be reported as a
@@ -170,7 +198,7 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     try {
       verify = await entry.verify(ctx);
     } catch (error) {
-      const rollback = await safeRollback(entry, ctx, applyResult);
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
       return Object.freeze({
         status: 'verify_failed',
         plan,
@@ -182,7 +210,7 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     }
 
     if (!verify.ok) {
-      const rollback = await safeRollback(entry, ctx, applyResult);
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
       return Object.freeze({ status: 'verify_failed', plan, preview, applyResult, verify, rollback });
     }
 

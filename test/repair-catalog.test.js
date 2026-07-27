@@ -166,7 +166,12 @@ test('without a port probe the filtered PID evidence is used', async () => {
 // auto-update-enabled-warning
 // ============================================================
 
-function configCtx(values, { setStatus = 0, invokeStatus = 0 } = {}) {
+function configCtx(values, {
+  setStatus = 0,
+  invokeStatus = 0,
+  invokeThrows = false,
+  unreadableKeys = [],
+} = {}) {
   const store = { ...values };
   const calls = [];
   return {
@@ -174,13 +179,23 @@ function configCtx(values, { setStatus = 0, invokeStatus = 0 } = {}) {
     store,
     ctx: {
       openclaw: {
-        async configGet(key) { calls.push(['get', key]); return store[key] ?? ''; },
+        async configGet(key) {
+          calls.push(['get', key]);
+          if (unreadableKeys.includes(key)) {
+            return { ok: false, value: '', status: 1, errorSummary: 'read failed' };
+          }
+          return { ok: true, value: store[key] ?? '', status: 0, errorSummary: null };
+        },
         async configSet(key, value) {
           calls.push(['set', key, value]);
           if (setStatus === 0) store[key] = String(value);
           return { status: setStatus };
         },
-        async invoke(argv) { calls.push(['invoke', argv.join(' ')]); return { status: invokeStatus }; },
+        async invoke(argv) {
+          calls.push(['invoke', argv.join(' ')]);
+          if (invokeThrows) throw new Error('token generation crashed');
+          return { status: invokeStatus, errorSummary: invokeStatus === 0 ? null : 'token generation failed' };
+        },
         async gatewayStatusText() { return ''; },
         async gatewayProcesses() { return ''; },
         async gatewayListening() { return false; },
@@ -267,6 +282,42 @@ test('gateway auth repair is blocked when auth is already required', async () =>
     assert.equal(pre.ok, false, mode);
     assert.equal(pre.reason, 'gateway_auth_already_enabled');
   }
+});
+
+test('gateway auth repair blocks when the current mode cannot be read', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, calls } = configCtx({}, { unreadableKeys: ['gateway.auth.mode'] });
+  const preflight = await entry.preflight(ctx);
+
+  assert.equal(preflight.ok, false);
+  assert.equal(preflight.reason, 'config_state_unknown');
+  assert.match(preflight.evidence.errorSummary, /read failed/);
+  assert.equal(calls.some(([verb]) => verb === 'set'), false);
+});
+
+test('gateway auth repair reports and rolls back a partial change when token generation fails', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx(
+    { 'gateway.auth.mode': 'none' },
+    { invokeStatus: 1 },
+  );
+  const preflight = await entry.preflight(ctx);
+  const applied = await entry.apply(ctx);
+
+  assert.equal(applied.status, 1);
+  assert.equal(applied.changed, true);
+  assert.equal(applied.stage, 'generate-token');
+  assert.deepEqual(applied.changes, [{
+    type: 'config',
+    key: 'gateway.auth.mode',
+    before: 'none',
+    after: 'token',
+  }]);
+  assert.equal(store['gateway.auth.mode'], 'token');
+
+  const rollback = await entry.rollback(ctx, { applyResult: applied, preflight });
+  assert.equal(rollback.rolledBack, true);
+  assert.equal(store['gateway.auth.mode'], 'none');
 });
 
 test('gateway auth repair carries medium risk and says clients need the new token', async () => {
