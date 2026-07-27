@@ -77,7 +77,9 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.doesNotMatch(landing, /18-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
-  assert.match(landing, /Chat-first TUI is the default session of the standalone binary/);
+  assert.match(landing, /Diagnose OpenClaw in one command/);
+  assert.match(landing, /Review supported repairs/);
+  assert.match(landing, /Chat-first TUI ships after v0\.11\.2/);
   // The npm package ships the portable CLI only — the site must not imply npx gives the TUI.
   assert.match(landing, /The npm package ships the portable CLI only/);
   assert.match(landing, /standalone binary on the GitHub release/);
@@ -98,6 +100,36 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.match(landing, /releases\/tag\/v0\.11\.2/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
+});
+
+test('landing install flow is safe, truthful, accessible, and mobile navigable', async () => {
+  const landing = await read('src/landing.js');
+
+  assert.match(landing, /Recommended: verify, then install/);
+  assert.match(landing, /id="cmd-install"/);
+  assert.match(landing, /id="cmd-verify"/);
+  assert.match(landing, /id="cmd-run"/);
+  assert.match(landing, /Quick one-command alternative/);
+  assert.match(landing, /not in v0\.11\.2/);
+  assert.match(landing, /class="privacy-summary"/);
+  assert.match(landing, /See exactly what may be sent/);
+  assert.doesNotMatch(landing, /Fix your OpenClaw<br>in/);
+
+  assert.match(landing, /class="skip-link" href="#main-content"/);
+  assert.match(landing, /<main id="main-content" tabindex="-1">/);
+  assert.match(landing, /class="nav-toggle" aria-expanded="false" aria-controls="site-nav"/);
+  assert.match(landing, /id="site-nav" aria-label="Primary navigation"/);
+  assert.match(landing, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(landing, /color-scheme: dark/);
+  assert.match(landing, /meta name="theme-color"/);
+  assert.match(landing, /min-height: 44px/);
+  assert.match(landing, /data-copy-command="install"/);
+  assert.match(landing, /addEventListener\('click'/);
+  assert.doesNotMatch(landing, /onclick=/);
+  assert.match(landing, /\.install-step \.command-box code \{ white-space: normal; overflow-wrap: anywhere; \}/);
+  assert.match(landing, /\.install-step \.copy-btn \{ min-width: 44px; padding-inline: 8px; \}/);
+  assert.doesNotMatch(landing, /transition:\s*all/);
+  assert.doesNotMatch(landing, /\.nav-optional \{ display: none; \}/);
 });
 
 test('script download guidance requires HTTPS and review before execution', async () => {
