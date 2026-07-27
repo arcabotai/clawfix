@@ -9,7 +9,7 @@
 
 ClawFix scans locally, redacts recognized secrets, and matches failures against deterministic rules. Optional AI analysis can explain unmatched problems when it is configured on the selected server. Model output never becomes executable shell.
 
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Security](#security--transparency) · [Self-hosting](#self-hosting) · [Contributing](#contributing)
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Security](#security--transparency) · [Versioned capability contract](docs/capabilities/v0.11.2.md) · [Self-hosting](#self-hosting) · [Contributing](#contributing)
 
 ## Quick Start
 

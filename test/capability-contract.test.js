@@ -69,3 +69,14 @@ test('checked-in capability artifacts exactly match the generator', async () => 
   assert.equal(json, serializeCapabilityContract(contract));
   assert.equal(markdown, renderCapabilityMarkdown(contract));
 });
+
+test('root README links to the generated current-version capability contract', async () => {
+  const contract = await buildCapabilityContract();
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const expectedLink = [
+    '[Versioned capability contract]',
+    `(docs/capabilities/v${contract.release.version}.md)`,
+  ].join('');
+
+  assert.ok(readme.includes(expectedLink), `README must link to ${expectedLink}`);
+});
