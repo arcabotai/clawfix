@@ -1844,7 +1844,9 @@ test('deriveIssues golden: comprehensive representative facts produce the exact 
     },
     {
       severity: 'high',
-      text: 'Gateway port must be an integer',
+      // The validator's own message is detail; the headline stays actionable.
+      text: 'OpenClaw config schema validation failed',
+      description: 'Gateway port must be an integer',
       source: 'openclaw-config',
       nativeCheckId: 'config/schema-invalid',
       path: 'gateway.port',
@@ -2717,4 +2719,63 @@ test('non-Error external abort reasons use DiagnosticsAbortError', async () => {
     DiagnosticsAbortError,
   );
   assert.equal(fake.clearCalls.length, 1);
+});
+
+// ============================================================
+// Raw upstream error strings must not become finding titles
+// ============================================================
+
+test('a gateway probe timeout is reported as unreachable, not as a finding titled "timeout"', () => {
+  // A competing port owner suppresses the generic not-running issue, so the unreachable
+  // branch is the one under test here.
+  const issues = deriveIssues(fakeCollected({
+    gateway: { gatewayStatus: 'not running', gatewayPort: 4321, gatewayPid: '' },
+    portsGateway: {
+      valid: true, available: true, listening: true, process: 'some-other-process', pid: 777, collector: 'lsof',
+    },
+    nativeStatus: { available: true, gateway: { reachable: false, error: 'timeout' } },
+  }));
+
+  const unreachable = issues.find(issue => issue.nativeCheckId === 'status/gateway-unreachable');
+  assert.ok(unreachable, 'expected an unreachable finding');
+  assert.equal(unreachable.text, 'OpenClaw gateway is unreachable');
+  assert.match(unreachable.description, /Gateway probe failed: timeout/);
+  // The bare machine string must never be the headline.
+  assert.equal(issues.some(issue => issue.text === 'timeout'), false);
+});
+
+test('an invalid config keeps the parser message as detail, not as the title', () => {
+  const issues = deriveIssues(fakeCollected({
+    nativeConfig: {
+      available: true,
+      valid: false,
+      errors: [{ message: "JSON5 parse failed: SyntaxError: JSON5: invalid character 'i' at 1:8", path: 'gateway' }],
+    },
+  }));
+
+  const invalid = issues.find(issue => issue.nativeCheckId === 'config/schema-invalid');
+  assert.ok(invalid, 'expected a config finding');
+  assert.equal(invalid.text, 'OpenClaw config schema validation failed');
+  assert.match(invalid.description, /JSON5 parse failed/);
+  assert.equal(issues.some(issue => /^JSON5 parse failed/.test(issue.text)), false);
+});
+
+test('a doctor finding that repeats an already-reported detail is not listed twice', () => {
+  const parserMessage = "JSON5 parse failed: SyntaxError: JSON5: invalid character 'i' at 1:8";
+  const issues = deriveIssues(fakeCollected({
+    nativeConfig: {
+      available: true,
+      valid: false,
+      errors: [{ message: parserMessage, path: 'gateway' }],
+    },
+    nativeDoctor: {
+      available: true,
+      findings: [{ checkId: 'core/doctor/config', severity: 'error', message: parserMessage, path: 'gateway' }],
+    },
+  }));
+
+  const mentions = issues.filter(issue =>
+    issue.text === parserMessage || issue.description === parserMessage);
+  assert.equal(mentions.length, 1, 'the parser message must appear once');
+  assert.equal(mentions[0].text, 'OpenClaw config schema validation failed');
 });
