@@ -23,6 +23,7 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
   <title>ClawFix 0.11.2 — OpenClaw Diagnostics & Repair</title>
   <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.11.2 is signed on npm, and the chat-first TUI is now merged on main.">
   <meta property="og:title" content="ClawFix 0.11.2 — Evidence Before Repair">
@@ -49,18 +50,44 @@ const LANDING_HTML = `<!DOCTYPE html>
       --blue: #3b82f6;
     }
 
+    html {
+      color-scheme: dark;
+      scroll-behavior: smooth;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
       line-height: 1.6;
       min-height: 100vh;
+      overflow-x: hidden;
     }
 
     .container {
       max-width: 920px;
       margin: 0 auto;
       padding: 0 24px;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 100;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: var(--text);
+      color: var(--bg);
+      font-weight: 700;
+      text-decoration: none;
+      transform: translateY(-160%);
+      transition: transform 0.2s;
+    }
+    .skip-link:focus-visible { transform: translateY(0); }
+    :focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
     }
 
     /* Header */
@@ -79,8 +106,22 @@ const LANDING_HTML = `<!DOCTYPE html>
       text-decoration: none;
       color: var(--text);
     }
+    .logo,
+    .nav-links a,
+    .nav-toggle {
+      min-height: 44px;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: rgba(239, 68, 68, 0.28);
+    }
+    .logo { display: inline-flex; align-items: center; }
     .logo span { color: var(--accent); }
+    .nav-links {
+      display: flex;
+      align-items: center;
+    }
     .nav-links a {
+      display: inline-flex;
+      align-items: center;
       color: var(--muted);
       text-decoration: none;
       font-size: 0.9rem;
@@ -88,6 +129,24 @@ const LANDING_HTML = `<!DOCTYPE html>
       transition: color 0.2s;
     }
     .nav-links a:hover { color: var(--text); }
+    .nav-toggle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 8px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #main-content:focus {
+      outline: 3px solid var(--blue);
+      outline-offset: -3px;
+    }
+    section[id] { scroll-margin-top: 24px; }
 
     /* Hero */
     .hero {
@@ -106,6 +165,7 @@ const LANDING_HTML = `<!DOCTYPE html>
       line-height: 1.1;
       margin-bottom: 16px;
     }
+    h1, h2, h3 { text-wrap: balance; }
     h1 .highlight {
       background: linear-gradient(135deg, var(--accent), #f97316);
       -webkit-background-clip: text;
@@ -131,7 +191,6 @@ const LANDING_HTML = `<!DOCTYPE html>
       grid-template-columns: 20px minmax(0, 1fr) auto;
       align-items: center;
       gap: 12px;
-      cursor: pointer;
       transition: border-color 0.2s, box-shadow 0.2s;
       position: relative;
       text-align: left;
@@ -159,11 +218,12 @@ const LANDING_HTML = `<!DOCTYPE html>
       border: none;
       color: var(--muted);
       padding: 8px 14px;
-      min-height: 40px;
+      min-height: 44px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 0.85rem;
-      transition: all 0.2s;
+      touch-action: manipulation;
+      transition: background-color 0.2s, color 0.2s;
     }
     .copy-btn:hover {
       background: var(--accent);
@@ -219,6 +279,87 @@ const LANDING_HTML = `<!DOCTYPE html>
     }
     .command-hint a { color: var(--muted); }
     .command-hint a:hover { color: var(--text); }
+
+    .install-panel {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.035), rgba(20,20,20,0.76));
+      text-align: left;
+    }
+    .install-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+    .install-heading h2 { font-size: 1.25rem; line-height: 1.3; }
+    .install-heading p { color: var(--muted); font-size: 0.9rem; max-width: 520px; }
+    .install-steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .install-step {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(10,10,10,0.55);
+    }
+    .install-step-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 0.82rem;
+      font-weight: 700;
+    }
+    .install-step-label span {
+      display: inline-flex;
+      width: 24px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: var(--accent-glow);
+      color: var(--accent);
+    }
+    .install-step .command-box,
+    .quick-command .command-box {
+      grid-template-columns: minmax(0, 1fr) auto;
+      padding: 10px;
+      margin: 0;
+    }
+    .install-step .command-box code,
+    .quick-command .command-box code { font-size: 0.78rem; }
+    .install-step .command-box code { white-space: normal; overflow-wrap: anywhere; }
+    .install-step .command-box code span { white-space: nowrap; }
+    .install-step .copy-btn { min-width: 44px; padding-inline: 8px; }
+    .install-step-note { margin-top: 8px; color: var(--muted); font-size: 0.75rem; }
+    .install-step-note a { color: var(--text); }
+    .quick-command { margin-top: 12px; }
+    .quick-command h3 { margin-bottom: 6px; font-size: 0.9rem; }
+    .quick-command > p { margin-bottom: 8px; color: var(--muted); font-size: 0.8rem; }
+    .privacy-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .privacy-summary p {
+      padding: 10px 12px;
+      border-left: 2px solid var(--green);
+      background: rgba(34,197,94,0.055);
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .privacy-summary strong { color: var(--text); }
+    .privacy-summary a { color: var(--text); }
 
     .proof-row {
       display: flex;
@@ -449,15 +590,39 @@ const LANDING_HTML = `<!DOCTYPE html>
       margin-bottom: 12px;
     }
 
-    @media (max-width: 640px) {
+    @media (max-width: 720px) {
       h1 { font-size: 2rem; }
       .hero { padding: 40px 0 36px; }
-      .nav-optional { display: none; }
-      .nav-links a { margin-left: 16px; }
+      header .container { flex-wrap: wrap; }
+      .nav-toggle { display: inline-flex; }
+      .nav-links {
+        display: none;
+        width: 100%;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        padding-top: 12px;
+      }
+      .nav-links.is-open { display: grid; }
+      .nav-links a {
+        justify-content: center;
+        margin-left: 0;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
       .status-row { gap: 8px; margin-bottom: 24px; }
       .status-pill { width: 100%; justify-content: center; }
-      .command-box { grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; padding: 14px; }
-      .command-box code { font-size: 0.78rem; white-space: normal; overflow-wrap: normal; }
+      .install-panel { padding: 18px; }
+      .install-heading { display: block; }
+      .install-heading p { margin-top: 6px; }
+      .install-steps,
+      .privacy-summary { grid-template-columns: 1fr; }
+      .install-step .command-box,
+      .quick-command .command-box { grid-template-columns: minmax(0, 1fr) auto; }
+      .command-box { gap: 8px; }
+      .install-step .command-box code,
+      .quick-command .command-box code { font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
       .command-box code span { white-space: nowrap; }
       .proof-row { align-items: stretch; flex-direction: column; }
       .proof-pill { border-radius: 8px; }
@@ -470,30 +635,40 @@ const LANDING_HTML = `<!DOCTYPE html>
       .issues-grid { grid-template-columns: 1fr; }
       .sent-grid { grid-template-columns: 1fr !important; }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
-      <nav class="nav-links">
-        <a href="#tui">New TUI</a>
+      <button type="button" class="nav-toggle" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      <nav class="nav-links" id="site-nav" aria-label="Primary navigation">
+        <a href="#tui">Next TUI</a>
         <a href="#release">v0.11.2</a>
-        <a href="#how" class="nav-optional">How It Works</a>
+        <a href="#how">How It Works</a>
         <a href="#security">Security</a>
-        <a href="#pricing" class="nav-optional">Hosted Service</a>
-        <a href="https://github.com/arcabotai/clawfix" class="nav-optional">GitHub</a>
+        <a href="#pricing">Hosted Service</a>
+        <a href="https://github.com/arcabotai/clawfix">GitHub</a>
       </nav>
     </div>
   </header>
 
-  <main>
+  <main id="main-content" tabindex="-1">
     <section class="hero">
       <div class="container">
         <span class="hero-emoji" aria-hidden="true">🦞</span>
-        <h1>Fix your OpenClaw<br>in <span class="highlight">one command</span></h1>
+        <h1>Diagnose OpenClaw in one command. <br><span class="highlight">Review supported repairs.</span></h1>
         <p class="subtitle">
-          Deterministic diagnostics and guarded repairs. Optional AI analysis is used only when configured. Model output never becomes executable shell.
+          Run deterministic checks first. Optional AI can explain unmatched problems, while executable changes stay limited to reviewed repair definitions.
         </p>
 
         <div class="status-row" aria-label="Release status">
@@ -502,26 +677,65 @@ const LANDING_HTML = `<!DOCTYPE html>
             <span>v0.11.2 · installer + agent v2</span>
           </a>
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/pull/20">
-            <strong>New on main</strong>
-            <span>Chat-first OpenTUI merged</span>
+            <strong>Next release</strong>
+            <span>Chat-first TUI · not in v0.11.2</span>
           </a>
         </div>
 
-        <div class="command-box">
-          <span class="prompt">$</span>
-          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span></code>
-          <button type="button" class="copy-btn" id="copyBtn-install" aria-live="polite" onclick="copyCommand('install')">Copy</button>
-        </div>
-        <p class="command-hint" style="margin-bottom: 6px;">
-          <strong style="color:var(--green)">Recommended</strong> Verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run <code>bash install.sh</code>. No global npm.
-        </p>
-        <p class="command-hint" style="margin-bottom: 18px;">
-          Prefer npm? <code id="cmd-npx">npx clawfix@0.11.2</code> · Dry run: <code>npx clawfix@0.11.2 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
-        </p>
-        <div class="proof-row" aria-label="Release verification">
-          <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
-          <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
-          <span class="proof-pill"><strong>✓</strong> 21-file allowlisted package</span>
+        <div class="install-panel" aria-labelledby="install-heading">
+          <div class="install-heading">
+            <div>
+              <h2 id="install-heading">Recommended: verify, then install</h2>
+              <p>Three explicit steps install under <code>~/.clawfix</code>. No global npm, no remote shell pipe.</p>
+            </div>
+            <p>macOS, Linux, WSL · Node.js 22+</p>
+          </div>
+
+          <div class="install-steps">
+            <article class="install-step">
+              <p class="install-step-label"><span>1</span> Download</p>
+              <div class="command-box">
+                <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span></code>
+                <button type="button" class="copy-btn" id="copyBtn-install" data-copy-command="install" aria-live="polite">Copy</button>
+              </div>
+            </article>
+            <article class="install-step">
+              <p class="install-step-label"><span>2</span> Verify SHA-256</p>
+              <div class="command-box">
+                <code id="cmd-verify">shasum -a 256 install.sh</code>
+                <button type="button" class="copy-btn" id="copyBtn-verify" data-copy-command="verify" aria-live="polite">Copy</button>
+              </div>
+              <p class="install-step-note">Compare with <a href="/install/sha256">the published hash</a>. On Linux, use <code>sha256sum</code>.</p>
+            </article>
+            <article class="install-step">
+              <p class="install-step-label"><span>3</span> Install</p>
+              <div class="command-box">
+                <code id="cmd-run">bash install.sh</code>
+                <button type="button" class="copy-btn" id="copyBtn-run" data-copy-command="run" aria-live="polite">Copy</button>
+              </div>
+            </article>
+          </div>
+
+          <div class="quick-command">
+            <h3>Quick one-command alternative</h3>
+            <p>Run the portable npm CLI without the chat-first TUI. Use <code>--dry-run</code> to inspect collected data without sending it.</p>
+            <div class="command-box">
+              <code id="cmd-npx">npx clawfix@0.11.2</code>
+              <button type="button" class="copy-btn" id="copyBtn-npx" data-copy-command="npx" aria-live="polite">Copy</button>
+            </div>
+          </div>
+
+          <div class="privacy-summary" aria-label="Privacy summary">
+            <p><strong>Local first.</strong> Deterministic checks and local commands do not upload.</p>
+            <p><strong>You choose.</strong> Remote analysis asks <code>[y/N]</code> before upload unless you explicitly override it.</p>
+            <p><strong>Inspect first.</strong> Recognized secrets are redacted; workspace document contents stay local. <a href="#security">See exactly what may be sent.</a></p>
+          </div>
+
+          <div class="proof-row" aria-label="Release verification">
+            <span class="proof-pill"><strong>✓</strong> GitHub OIDC publish</span>
+            <span class="proof-pill"><strong>✓</strong> npm attestation verified</span>
+            <span class="proof-pill"><strong>✓</strong> 21-file allowlisted package</span>
+          </div>
         </div>
       </div>
     </section>
@@ -559,9 +773,9 @@ const LANDING_HTML = `<!DOCTYPE html>
       <div class="container">
         <div class="tui-panel">
           <div class="tui-copy">
-            <div class="eyebrow">Latest main update</div>
-            <h2>Chat-first TUI is the default session of the standalone binary.</h2>
-            <p>The standalone binary opens directly into a conversation, keeps local commands offline, and asks before remote AI or guarded repairs. <strong>The npm package ships the portable CLI only</strong> — <code>npx clawfix</code> runs the plain readline session.</p>
+            <div class="eyebrow">Next release · not in v0.11.2</div>
+            <h2>Chat-first TUI ships after v0.11.2.</h2>
+            <p>The next standalone binary will open directly into a conversation, keep local commands offline, and ask before remote AI or guarded repairs. <strong>The npm package ships the portable CLI only</strong> — <code>npx clawfix</code> runs the plain readline session.</p>
             <ul class="tui-list">
               <li><strong>✓</strong><span>Scrollable transcript, findings sidebar, and responsive terminal layouts.</span></li>
               <li><strong>✓</strong><span>Approval defaults to Cancel and reports success only after verified repairs.</span></li>
@@ -868,14 +1082,56 @@ gateway-restart repair. Want me to?
   </footer>
 
   <script>
+    function selectCommand(command) {
+      const selection = window.getSelection?.();
+      if (!selection || typeof document.createRange !== 'function') return false;
+      const range = document.createRange();
+      range.selectNodeContents(command);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.rangeCount > 0 && !selection.isCollapsed;
+    }
+
     function copyCommand(type) {
-      const cmd = document.getElementById('cmd-' + type).textContent;
+      const command = document.getElementById('cmd-' + type);
+      const cmd = command.textContent;
+      const btn = document.getElementById('copyBtn-' + type);
       navigator.clipboard.writeText(cmd).then(() => {
-        const btn = document.getElementById('copyBtn-' + type);
-        btn.textContent = 'Copied!';
+        btn.textContent = 'Copied';
         setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      }).catch(() => {
+        btn.textContent = selectCommand(command) ? 'Command selected' : 'Copy unavailable';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 3000);
       });
     }
+
+    document.querySelector('.skip-link').addEventListener('click', () => {
+      document.getElementById('main-content').focus();
+    });
+
+    function toggleNav(button) {
+      const nav = document.getElementById('site-nav');
+      const open = button.getAttribute('aria-expanded') === 'true';
+      button.setAttribute('aria-expanded', String(!open));
+      button.textContent = open ? 'Menu' : 'Close';
+      nav.classList.toggle('is-open', !open);
+    }
+
+    document.querySelector('.nav-toggle').addEventListener('click', event => {
+      toggleNav(event.currentTarget);
+    });
+    document.querySelectorAll('[data-copy-command]').forEach(button => {
+      button.addEventListener('click', () => copyCommand(button.dataset.copyCommand));
+    });
+
+    document.querySelectorAll('#site-nav a').forEach(link => {
+      link.addEventListener('click', () => {
+        const button = document.querySelector('.nav-toggle');
+        button.setAttribute('aria-expanded', 'false');
+        button.textContent = 'Menu';
+        document.getElementById('site-nav').classList.remove('is-open');
+      });
+    });
   </script>
 </body>
 </html>`;

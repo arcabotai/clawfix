@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { access, readFile, stat } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const read = path => readFile(new URL(`../${path}`, import.meta.url), 'utf8');
 const json = async path => JSON.parse(await read(path));
@@ -77,7 +78,9 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.doesNotMatch(landing, /7-file allowlisted package/);
   assert.doesNotMatch(landing, /18-file allowlisted package/);
   assert.match(landing, /Evidence before repair/);
-  assert.match(landing, /Chat-first TUI is the default session of the standalone binary/);
+  assert.match(landing, /Diagnose OpenClaw in one command/);
+  assert.match(landing, /Review supported repairs/);
+  assert.match(landing, /Chat-first TUI ships after v0\.11\.2/);
   // The npm package ships the portable CLI only — the site must not imply npx gives the TUI.
   assert.match(landing, /The npm package ships the portable CLI only/);
   assert.match(landing, /standalone binary on the GitHub release/);
@@ -98,6 +101,149 @@ test('landing page presents truthful evidence for the published 0.11.2 twenty-on
   assert.match(landing, /releases\/tag\/v0\.11\.2/);
   assert.doesNotMatch(landing, /class="beta-banner"/);
   assert.doesNotMatch(landing, /<code id="cmd-npx">npx clawfix<\/code>/);
+});
+
+test('landing install flow is safe, truthful, accessible, and mobile navigable', async () => {
+  const landing = await read('src/landing.js');
+
+  assert.match(landing, /Recommended: verify, then install/);
+  assert.match(landing, /id="cmd-install"/);
+  assert.match(landing, /id="cmd-verify"/);
+  assert.match(landing, /id="cmd-run"/);
+  assert.match(landing, /Quick one-command alternative/);
+  assert.match(landing, /not in v0\.11\.2/);
+  assert.match(landing, /class="privacy-summary"/);
+  assert.match(landing, /See exactly what may be sent/);
+  assert.doesNotMatch(landing, /Fix your OpenClaw<br>in/);
+
+  assert.match(landing, /class="skip-link" href="#main-content"/);
+  assert.match(landing, /<main id="main-content" tabindex="-1">/);
+  assert.match(landing, /class="nav-toggle" aria-expanded="false" aria-controls="site-nav"/);
+  assert.match(landing, /id="site-nav" aria-label="Primary navigation"/);
+  assert.match(landing, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(landing, /color-scheme: dark/);
+  assert.match(landing, /meta name="theme-color"/);
+  assert.match(landing, /min-height: 44px/);
+  assert.match(landing, /data-copy-command="install"/);
+  assert.match(landing, /addEventListener\('click'/);
+  assert.doesNotMatch(landing, /onclick=/);
+  assert.match(landing, /\.install-step \.command-box code \{ white-space: normal; overflow-wrap: anywhere; \}/);
+  assert.match(landing, /\.install-step \.copy-btn \{ min-width: 44px; padding-inline: 8px; \}/);
+  assert.doesNotMatch(landing, /transition:\s*all/);
+  assert.doesNotMatch(landing, /\.nav-optional \{ display: none; \}/);
+});
+
+test('landing skip link focuses main with a visible indicator', async () => {
+  const landing = await read('src/landing.js');
+  const focusRule = landing.match(/#main-content:focus\s*\{([^}]+)\}/)?.[1];
+  assert.ok(focusRule, 'main content needs an explicit focus rule');
+  assert.match(focusRule, /outline:\s*3px solid var\(--blue\)/);
+  assert.match(focusRule, /outline-offset:\s*-3px/);
+  assert.doesNotMatch(focusRule, /outline:\s*none/);
+
+  const listeners = new Map();
+  const main = {
+    focused: false,
+    focus() {
+      this.focused = true;
+    },
+  };
+  const skipLink = {
+    addEventListener(type, listener) {
+      listeners.set(`skip:${type}`, listener);
+    },
+  };
+  const navToggle = {
+    addEventListener() {},
+  };
+  const siteNav = {
+    classList: { toggle() {}, remove() {} },
+  };
+  const script = landing.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  assert.ok(script, 'landing interaction script should exist');
+
+  vm.runInNewContext(script, {
+    document: {
+      createRange() {
+        return { selectNodeContents() {} };
+      },
+      getElementById(id) {
+        return { 'main-content': main, 'site-nav': siteNav }[id];
+      },
+      querySelector(selector) {
+        return { '.skip-link': skipLink, '.nav-toggle': navToggle }[selector];
+      },
+      querySelectorAll() {
+        return [];
+      },
+    },
+    navigator: { clipboard: { writeText: async () => {} } },
+    setTimeout() {},
+    window: { getSelection: () => null },
+  });
+
+  assert.equal(typeof listeners.get('skip:click'), 'function');
+  listeners.get('skip:click')();
+  assert.equal(main.focused, true, 'Enter activation dispatches click and must focus main');
+});
+
+test('landing selects command text when clipboard write is rejected', async () => {
+  const landing = await read('src/landing.js');
+  const listeners = new Map();
+  const command = { textContent: 'npx clawfix@0.11.2' };
+  const button = {
+    dataset: { copyCommand: 'npx' },
+    textContent: 'Copy',
+    addEventListener(type, listener) {
+      listeners.set(`copy:${type}`, listener);
+    },
+  };
+  const range = {
+    selected: null,
+    selectNodeContents(node) {
+      this.selected = node;
+    },
+  };
+  const selection = {
+    rangeCount: 0,
+    isCollapsed: true,
+    removeAllRanges() {
+      this.rangeCount = 0;
+      this.isCollapsed = true;
+    },
+    addRange(addedRange) {
+      assert.equal(addedRange, range);
+      this.rangeCount = 1;
+      this.isCollapsed = false;
+    },
+  };
+  const script = landing.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+
+  vm.runInNewContext(script, {
+    document: {
+      createRange: () => range,
+      getElementById(id) {
+        return { 'cmd-npx': command, 'copyBtn-npx': button, 'main-content': { focus() {} }, 'site-nav': { classList: { toggle() {}, remove() {} } } }[id];
+      },
+      querySelector(selector) {
+        return { '.skip-link': { addEventListener() {} }, '.nav-toggle': { addEventListener() {} } }[selector];
+      },
+      querySelectorAll(selector) {
+        return selector === '[data-copy-command]' ? [button] : [];
+      },
+    },
+    navigator: { clipboard: { writeText: () => Promise.reject(new Error('denied')) } },
+    setTimeout() {},
+    window: { getSelection: () => selection },
+  });
+
+  listeners.get('copy:click')();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(range.selected, command);
+  assert.equal(selection.rangeCount, 1);
+  assert.equal(selection.isCollapsed, false);
+  assert.equal(button.textContent, 'Command selected');
+  assert.doesNotMatch(landing, /Select command/);
 });
 
 test('script download guidance requires HTTPS and review before execution', async () => {
