@@ -142,7 +142,10 @@ const LANDING_HTML = `<!DOCTYPE html>
       font-weight: 700;
       cursor: pointer;
     }
-    main:focus { outline: none; }
+    #main-content:focus {
+      outline: 3px solid var(--blue);
+      outline-offset: -3px;
+    }
     section[id] { scroll-margin-top: 24px; }
 
     /* Hero */
@@ -1079,18 +1082,32 @@ gateway-restart repair. Want me to?
   </footer>
 
   <script>
+    function selectCommand(command) {
+      const selection = window.getSelection?.();
+      if (!selection || typeof document.createRange !== 'function') return false;
+      const range = document.createRange();
+      range.selectNodeContents(command);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.rangeCount > 0 && !selection.isCollapsed;
+    }
+
     function copyCommand(type) {
-      const cmd = document.getElementById('cmd-' + type).textContent;
+      const command = document.getElementById('cmd-' + type);
+      const cmd = command.textContent;
       const btn = document.getElementById('copyBtn-' + type);
       navigator.clipboard.writeText(cmd).then(() => {
         btn.textContent = 'Copied';
         setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
       }).catch(() => {
-        btn.textContent = 'Select command';
-        document.getElementById('cmd-' + type).focus?.();
+        btn.textContent = selectCommand(command) ? 'Command selected' : 'Copy unavailable';
         setTimeout(() => { btn.textContent = 'Copy'; }, 3000);
       });
     }
+
+    document.querySelector('.skip-link').addEventListener('click', () => {
+      document.getElementById('main-content').focus();
+    });
 
     function toggleNav(button) {
       const nav = document.getElementById('site-nav');
