@@ -21,14 +21,15 @@ import { applyFailureReason } from './repair-engine.js';
  */
 function terminalResult(result, details = {}) {
   const source = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  const flag = (field) => (Object.hasOwn(source, field) ? source[field] : false);
   const projected = {
     status: source.status,
     signal: source.signal ?? null,
-    timedOut: source.timedOut ?? false,
-    aborted: source.aborted ?? false,
-    stdoutTruncated: source.stdoutTruncated ?? false,
-    stderrTruncated: source.stderrTruncated ?? false,
-    outputLimitExceeded: source.outputLimitExceeded ?? false,
+    timedOut: flag('timedOut'),
+    aborted: flag('aborted'),
+    stdoutTruncated: flag('stdoutTruncated'),
+    stderrTruncated: flag('stderrTruncated'),
+    outputLimitExceeded: flag('outputLimitExceeded'),
     errorCode: source.errorCode ?? null,
     errorSummary: source.errorSummary ?? null,
     error: source.error == null ? null : true,
