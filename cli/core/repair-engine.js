@@ -30,6 +30,56 @@ async function safeRollback(entry, ctx, applyResult, preflight) {
   }
 }
 
+function safeResultText(value, fallback) {
+  try {
+    const text = String(value)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .trim();
+    return text ? text.slice(0, 200) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function applyFailureReason(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return 'adapter returned no structured result';
+  }
+
+  const terminalFlags = [
+    ['timedOut', 'command timed out'],
+    ['aborted', 'command was aborted'],
+    ['outputLimitExceeded', 'command output limit was exceeded'],
+    ['stdoutTruncated', 'command stdout was truncated'],
+    ['stderrTruncated', 'command stderr was truncated'],
+    ['partial', 'command reported a partial apply'],
+    ['partiallyApplied', 'command reported a partial apply'],
+  ];
+  for (const [field, message] of terminalFlags) {
+    if (result[field] === true) return message;
+    if (result[field] !== undefined && result[field] !== false) {
+      return `adapter returned invalid ${field} metadata`;
+    }
+  }
+
+  if (result.signal != null) {
+    return `command terminated by signal ${safeResultText(result.signal, 'unknown')}`;
+  }
+  if (result.error != null) {
+    return `adapter error: ${safeResultText(result.error?.message || result.error, 'unknown error')}`;
+  }
+  if (result.errorCode != null) {
+    return `adapter error code ${safeResultText(result.errorCode, 'unknown')}`;
+  }
+  const errorSummary = result.errorSummary == null ? '' : safeResultText(result.errorSummary, '');
+  if (errorSummary) {
+    return errorSummary;
+  }
+  if (result.changed === 'unknown') return 'adapter could not determine whether it changed state';
+  if (result.status !== 0) return `status ${safeResultText(result.status, 'unknown')}`;
+  return null;
+}
+
 function stableFingerprintInput(finding, revision) {
   return JSON.stringify({
     revision,
@@ -177,13 +227,14 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
       });
     }
 
-    if (!applyResult || applyResult.status !== 0) {
-      const rollback = applyResult?.changed
-        ? await safeRollback(entry, ctx, applyResult, preflight)
-        : null;
+    const applyFailure = applyFailureReason(applyResult);
+    if (applyFailure) {
+      // A failed/ambiguous process result may still have changed state. Roll back every returned
+      // failure rather than trusting an optional `changed` flag supplied by the failing adapter.
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
       return Object.freeze({
         status: 'error',
-        error: `apply failed: ${applyResult?.errorSummary || `status ${applyResult?.status}`}`,
+        error: `apply failed: ${applyFailure}`,
         plan,
         preview,
         applyResult,
