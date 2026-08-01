@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { repairCatalog } from '../cli/core/repair-catalog.js';
+import { createRepairEngine } from '../cli/core/repair-engine.js';
 
 function fakeOpenClaw({ statusText = '', pid = '', invokeResult } = {}) {
   const calls = [];
@@ -96,6 +97,54 @@ test('gateway restart apply preserves every terminal-failure field for the engin
     errorSummary: 'bounded failure',
     error: true,
   });
+});
+
+test('gateway restart rejects explicit null terminal markers before verification', async (t) => {
+  for (const marker of [
+    'timedOut',
+    'aborted',
+    'stdoutTruncated',
+    'stderrTruncated',
+    'outputLimitExceeded',
+  ]) {
+    await t.test(marker, async () => {
+      let listeningChecks = 0;
+      const ctx = {
+        openclaw: {
+          async gatewayStatusText() { return 'not running'; },
+          async gatewayProcesses() { return ''; },
+          async gatewayListening() {
+            listeningChecks += 1;
+            return listeningChecks > 1;
+          },
+          async invoke() { return { status: 0, [marker]: null }; },
+        },
+        wait: async () => {},
+      };
+      const finding = {
+        id: `gateway-${marker}`,
+        title: 'Gateway is not running',
+        severity: 'medium',
+        repairable: true,
+        repairId: 'gateway-not-running',
+        evidence: {},
+      };
+      const engine = createRepairEngine({ catalog: repairCatalog });
+      const plan = engine.createPlan({ finding, revision: 'rev-null-marker' });
+
+      const result = await engine.applyPlan({
+        planId: plan.planId,
+        approvalToken: plan.approvalToken,
+        revision: 'rev-null-marker',
+        finding,
+        ctx,
+      });
+
+      assert.equal(result.status, 'error');
+      assert.match(result.error, new RegExp(`invalid ${marker} metadata`));
+      assert.equal(listeningChecks, 1, 'verification must not run after ambiguous apply metadata');
+    });
+  }
 });
 
 test('verify uses live runtime evidence (process/port), not any title comparison', async () => {
