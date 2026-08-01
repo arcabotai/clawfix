@@ -118,7 +118,9 @@ function parseJson(text, label) {
 
 export function parseSseEvents(raw) {
   const events = [];
-  const frames = String(raw).replace(/\r\n/g, '\n').split(/\n\n+/);
+  const normalized = String(raw).replace(/\r\n/g, '\n');
+  invariant(normalized.length === 0 || /\n\n+$/.test(normalized), 'unterminated SSE frame');
+  const frames = normalized.split(/\n\n+/);
   for (const frame of frames) {
     if (!frame.trim()) continue;
     let event = 'message';
@@ -249,9 +251,16 @@ async function verifyAgentCanary({ baseUrl, fetchImpl, timeoutMs, apiToken }) {
     'agent canary did not return SSE',
   );
   const events = parseSseEvents(result.text);
-  const meta = events.find((event) => event.event === 'agent.meta');
+  invariant(!events.some((event) => event.event === 'agent.error'), 'agent canary emitted agent.error');
+  const metaEvents = events.filter((event) => event.event === 'agent.meta');
+  invariant(metaEvents.length === 1, 'agent canary must emit exactly one agent.meta event');
+  const meta = metaEvents[0];
+  invariant(events[0] === meta, 'agent.meta must be the first event');
   const deltas = events.filter((event) => event.event === 'assistant.delta');
-  const done = events.find((event) => event.event === 'agent.done');
+  const doneEvents = events.filter((event) => event.event === 'agent.done');
+  invariant(doneEvents.length === 1, 'agent canary must emit exactly one agent.done event');
+  const done = doneEvents[0];
+  invariant(events.at(-1) === done, 'agent.done must be the final event');
   invariant(meta?.data?.conversationId === conversationId, 'agent canary metadata did not match the conversation');
   invariant(deltas.some((event) => typeof event.data?.text === 'string' && event.data.text.length > 0), 'agent canary returned no assistant text');
   invariant(done?.data?.conversationId === conversationId, 'agent canary did not complete');

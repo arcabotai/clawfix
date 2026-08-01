@@ -214,6 +214,7 @@ test('SSE parser requires complete event frames and rejects malformed JSON', () 
     'event: agent.done',
     'data: {"repairProposed":false}',
     '',
+    '',
   ].join('\n'));
   assert.deepEqual(events.map((event) => event.event), [
     'agent.meta',
@@ -221,6 +222,10 @@ test('SSE parser requires complete event frames and rejects malformed JSON', () 
     'agent.done',
   ]);
   assert.throws(() => parseSseEvents('event: agent.done\ndata: {bad}\n\n'), /invalid SSE JSON/);
+  assert.throws(
+    () => parseSseEvents('event: agent.done\ndata: {"repairProposed":false}\n'),
+    /unterminated SSE frame/,
+  );
 });
 
 test('agent canary makes exactly one bounded metered request and validates SSE completion', async () => {
@@ -242,6 +247,7 @@ test('agent canary makes exactly one bounded metered request and validates SSE c
         'event: agent.done',
         `data: {"conversationId":"${body.conversationId}","repairProposed":false}`,
         '',
+        '',
       ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
     },
   });
@@ -256,6 +262,105 @@ test('agent canary makes exactly one bounded metered request and validates SSE c
   assert.equal(report.ok, true);
   assert.equal(report.meteredMode, 'agent');
   assert.equal(calls.filter((call) => call.path === '/api/v2/agent/messages').length, 1);
+});
+
+test('agent canary rejects agent.error even when partial text and agent.done are present', async () => {
+  const { fetchImpl } = verifierFetch({
+    handler(parsed, options) {
+      if (parsed.pathname !== '/api/v2/agent/messages') return null;
+      const { conversationId } = JSON.parse(options.body);
+      return response([
+        'event: agent.meta',
+        `data: {"conversationId":"${conversationId}"}`,
+        '',
+        'event: assistant.delta',
+        'data: {"text":"partial"}',
+        '',
+        'event: agent.error',
+        'data: {"error":"provider failed","fatal":true}',
+        '',
+        'event: agent.done',
+        `data: {"conversationId":"${conversationId}","repairProposed":false}`,
+        '',
+        '',
+      ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.11.2',
+      meteredMode: 'agent',
+      fetchImpl,
+    }),
+    /agent canary emitted agent\.error/,
+  );
+});
+
+test('agent canary requires agent.done to be the final event', async () => {
+  const { fetchImpl } = verifierFetch({
+    handler(parsed, options) {
+      if (parsed.pathname !== '/api/v2/agent/messages') return null;
+      const { conversationId } = JSON.parse(options.body);
+      return response([
+        'event: agent.meta',
+        `data: {"conversationId":"${conversationId}"}`,
+        '',
+        'event: assistant.delta',
+        'data: {"text":"healthy"}',
+        '',
+        'event: agent.done',
+        `data: {"conversationId":"${conversationId}","repairProposed":false}`,
+        '',
+        'event: assistant.delta',
+        'data: {"text":"late"}',
+        '',
+        '',
+      ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.11.2',
+      meteredMode: 'agent',
+      fetchImpl,
+    }),
+    /agent\.done must be the final event/,
+  );
+});
+
+test('agent canary requires agent.meta before assistant output', async () => {
+  const { fetchImpl } = verifierFetch({
+    handler(parsed, options) {
+      if (parsed.pathname !== '/api/v2/agent/messages') return null;
+      const { conversationId } = JSON.parse(options.body);
+      return response([
+        'event: assistant.delta',
+        'data: {"text":"early"}',
+        '',
+        'event: agent.meta',
+        `data: {"conversationId":"${conversationId}"}`,
+        '',
+        'event: agent.done',
+        `data: {"conversationId":"${conversationId}","repairProposed":false}`,
+        '',
+        '',
+      ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.11.2',
+      meteredMode: 'agent',
+      fetchImpl,
+    }),
+    /agent\.meta must be the first event/,
+  );
 });
 
 test('diagnosis canary requires its own token and never includes it in the body', async () => {

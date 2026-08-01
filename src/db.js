@@ -228,8 +228,7 @@ export async function storeFeedback(fixId, success, issuesRemaining, comment) {
 /**
  * Retrieve a diagnosis by fix ID (for results page persistence)
  */
-export async function getDiagnosis(fixId) {
-  const db = getPool();
+export async function getDiagnosis(fixId, db = getPool()) {
   if (!db) return null;
 
   try {
@@ -256,6 +255,7 @@ export async function getDiagnosis(fixId) {
 
     return {
       fixId: row.id,
+      _source: row.source || 'unknown',
       timestamp: row.created_at.toISOString(),
       issuesFound: row.issues_count,
       knownIssues,

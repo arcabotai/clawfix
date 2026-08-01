@@ -6,6 +6,7 @@ import {
   isAuthorizedCanaryRequest,
 } from '../src/security.js';
 import {
+  getDiagnosis,
   getPublicStatsQueries,
   shouldCountDiagnosisInPublicMetrics,
   storeDiagnosis,
@@ -71,6 +72,37 @@ test('canary persistence reports failure when durable storage is unavailable', a
   delete process.env.DATABASE_URL;
   try {
     assert.equal(await storeDiagnosis({ fixId: 'canaryFix12' }, 'canary'), false);
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
+  }
+});
+
+test('rehydrated canaries retain their source and stay out of fallback memory counts', async () => {
+  const row = {
+    id: 'canaryRehydrated12',
+    created_at: new Date('2026-08-01T00:00:00.000Z'),
+    issues_count: 0,
+    known_issues_detail: [],
+    issues_pattern: [],
+    ai_summary: 'canary',
+    source: 'canary',
+  };
+  const db = {
+    async query(sql) {
+      assert.match(sql, /FROM diagnoses/);
+      return { rows: [row] };
+    },
+  };
+  const previous = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    const rehydrated = await getDiagnosis(row.id, db);
+    assert.equal(rehydrated?._source, 'canary');
+    const fallbackPublicCount = [rehydrated]
+      .filter((fix) => fix?._source !== 'canary')
+      .length;
+    assert.equal(fallbackPublicCount, 0);
   } finally {
     if (previous === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = previous;
