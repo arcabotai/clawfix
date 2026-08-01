@@ -99,7 +99,7 @@ test('gateway restart apply preserves every terminal-failure field for the engin
   });
 });
 
-test('gateway restart rejects explicit null terminal markers before verification', async (t) => {
+test('gateway restart rejects explicit invalid terminal markers before verification', async (t) => {
   for (const marker of [
     'timedOut',
     'aborted',
@@ -107,43 +107,45 @@ test('gateway restart rejects explicit null terminal markers before verification
     'stderrTruncated',
     'outputLimitExceeded',
   ]) {
-    await t.test(marker, async () => {
-      let listeningChecks = 0;
-      const ctx = {
-        openclaw: {
-          async gatewayStatusText() { return 'not running'; },
-          async gatewayProcesses() { return ''; },
-          async gatewayListening() {
-            listeningChecks += 1;
-            return listeningChecks > 1;
+    for (const [label, value] of [['null', null], ['undefined', undefined]]) {
+      await t.test(`${marker}=${label}`, async () => {
+        let listeningChecks = 0;
+        const ctx = {
+          openclaw: {
+            async gatewayStatusText() { return 'not running'; },
+            async gatewayProcesses() { return ''; },
+            async gatewayListening() {
+              listeningChecks += 1;
+              return listeningChecks > 1;
+            },
+            async invoke() { return { status: 0, [marker]: value }; },
           },
-          async invoke() { return { status: 0, [marker]: null }; },
-        },
-        wait: async () => {},
-      };
-      const finding = {
-        id: `gateway-${marker}`,
-        title: 'Gateway is not running',
-        severity: 'medium',
-        repairable: true,
-        repairId: 'gateway-not-running',
-        evidence: {},
-      };
-      const engine = createRepairEngine({ catalog: repairCatalog });
-      const plan = engine.createPlan({ finding, revision: 'rev-null-marker' });
+          wait: async () => {},
+        };
+        const finding = {
+          id: `gateway-${marker}`,
+          title: 'Gateway is not running',
+          severity: 'medium',
+          repairable: true,
+          repairId: 'gateway-not-running',
+          evidence: {},
+        };
+        const engine = createRepairEngine({ catalog: repairCatalog });
+        const plan = engine.createPlan({ finding, revision: 'rev-invalid-marker' });
 
-      const result = await engine.applyPlan({
-        planId: plan.planId,
-        approvalToken: plan.approvalToken,
-        revision: 'rev-null-marker',
-        finding,
-        ctx,
+        const result = await engine.applyPlan({
+          planId: plan.planId,
+          approvalToken: plan.approvalToken,
+          revision: 'rev-invalid-marker',
+          finding,
+          ctx,
+        });
+
+        assert.equal(result.status, 'error');
+        assert.match(result.error, new RegExp(`invalid ${marker} metadata`));
+        assert.equal(listeningChecks, 1, 'verification must not run after ambiguous apply metadata');
       });
-
-      assert.equal(result.status, 'error');
-      assert.match(result.error, new RegExp(`invalid ${marker} metadata`));
-      assert.equal(listeningChecks, 1, 'verification must not run after ambiguous apply metadata');
-    });
+    }
   }
 });
 
