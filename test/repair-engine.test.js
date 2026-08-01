@@ -357,6 +357,60 @@ test('a throwing rollback does not mask the verify failure', async () => {
   assert.match(outcome.rollback.note, /rollback failed: rollback exploded/);
 });
 
+test('a throwing apply attempts rollback and preserves a partial-change outcome', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    throw new Error('second step crashed');
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.error, /apply failed: second step crashed/);
+  assert.equal(outcome.applyResult.changed, 'unknown');
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
+  assert.ok(outcome.rollback);
+});
+
+test('a failed apply result rolls back recorded changes and never verifies', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    return {
+      status: 1,
+      changed: true,
+      changes: [{ type: 'config', key: 'gateway.auth.mode', before: 'none', after: 'token' }],
+      errorSummary: 'second step failed',
+    };
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.error, /apply failed: second step failed/);
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
+  assert.equal(entry.calls.includes('verify'), false);
+});
+
 test('a throwing preflight reports an error outcome instead of rejecting', async () => {
   const finding = gatewayFinding();
   const entry = fakeCatalogEntry();
