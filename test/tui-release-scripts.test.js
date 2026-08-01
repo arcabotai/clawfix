@@ -135,13 +135,19 @@ process.stdin.on('data', data => {
     assert.match(publishJob, /uses: actions\/checkout@v6/);
     assert.match(publishJob, /fetch-depth: 0/);
     assert.match(publishJob, /chmod 0755 "\$launcher" "\$binary"/);
+    assert.match(publishJob, /assert_archive_mode "\$tarball" "\.\/clawfix-tui-\$target"/);
+    assert.match(publishJob, /assert_archive_mode "\$tarball" "\.\/clawfix-tui-\$target\.bin"/);
     assert.match(publishJob, /tar -xzf "\$tarball" -C "\$smoke_dir"/);
     assert.match(publishJob, /test -x "\$smoke_launcher"/);
     assert.match(publishJob, /test -x "\$smoke_binary"/);
+    assert.match(publishJob, /stat -c '%a' "\$smoke_launcher"/);
+    assert.match(publishJob, /stat -c '%a' "\$smoke_binary"/);
     assert.match(publishJob, /smoke-tui-binary\.mjs "\$smoke_launcher"/);
     assert.match(publishJob, /smoke-tui-interactive\.mjs "\$smoke_launcher"/);
     assert.match(publishJob, /node:24-alpine/);
     assert.match(publishJob, /release-smoke\/linux-x64-musl/);
+    assert.match(publishJob, /apk add --no-cache python3/);
+    assert.match(publishJob, /CLAWFIX_TUI_REQUIRE_PTY=1 node scripts\/smoke-tui-interactive\.mjs/);
 
     const packageAt = publishJob.indexOf('- name: Package and smoke final target tarballs');
     const attestAt = publishJob.indexOf('- name: Attest TUI release tarballs');

@@ -209,6 +209,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-dist release-smoke
+          assert_archive_mode() {
+            local tarball="$1"
+            local member="$2"
+            local listing mode
+            listing="$(tar -tvzf "$tarball" "$member")"
+            read -r mode _ <<< "$listing"
+            if [ "$mode" != "-rwxr-xr-x" ]; then
+              echo "::error ::archive member $member in $tarball has mode $mode, expected -rwxr-xr-x"
+              exit 1
+            fi
+          }
           # download-artifact layout with merge-multiple=false:
           #   release-tui/clawfix-tui-<target>/{launcher,.bin,assets-<target>/,...}
           shopt -s nullglob
@@ -231,6 +242,8 @@ jobs:
 
             tarball="release-dist/clawfix-tui-${target}.tar.gz"
             tar -C "$dir" -czf "$tarball" .
+            assert_archive_mode "$tarball" "./clawfix-tui-$target"
+            assert_archive_mode "$tarball" "./clawfix-tui-$target.bin"
 
             # Release evidence starts after packaging. Extract into a fresh directory and smoke
             # only those bytes; build-tree checks cannot prove the public download is runnable.
@@ -242,6 +255,8 @@ jobs:
             smoke_binary="$smoke_dir/clawfix-tui-$target.bin"
             test -x "$smoke_launcher"
             test -x "$smoke_binary"
+            test "$(stat -c '%a' "$smoke_launcher")" = "755"
+            test "$(stat -c '%a' "$smoke_binary")" = "755"
             test -d "$smoke_dir/assets-$target"
             node scripts/verify-tui-artifact.mjs "$smoke_binary" --target "$target"
 
