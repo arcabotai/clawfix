@@ -14,6 +14,7 @@ import { redactOutbound, validateFixId } from '../../cli/bin/security.js';
 import {
   clientIp,
   createRateLimiter,
+  isAuthorizedCanaryRequest,
   isPaidAIEnabled,
   positiveEnvInteger,
   sharedAIRequestGuard,
@@ -31,6 +32,11 @@ const diagnoseLimiter = createRateLimiter({
   limit: positiveEnvInteger(process.env.DIAGNOSE_RATE_LIMIT, 10),
   windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
 });
+
+export function diagnosisSource(req, env = process.env) {
+  if (isAuthorizedCanaryRequest(req, env)) return 'canary';
+  return req?.headers?.['user-agent']?.includes('node') ? 'npx' : 'curl';
+}
 
 
 const SYSTEM_PROMPT = `You are ClawFix, an expert AI diagnostician for OpenClaw installations.
@@ -128,6 +134,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
 
     // Redact again at the service boundary before AI, persistence, or response.
     const diagnostic = redactOutbound(req.body);
+    const source = diagnosisSource(req);
 
     // Step 1: Pattern matching (fast, free)
     let knownIssues = detectIssues(diagnostic);
@@ -198,12 +205,12 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
       _processExists: diagnostic.openclaw?.processExists ?? null,
       _portListening: diagnostic.openclaw?.portListening ?? null,
       _aiIssues: aiAnalysis.additionalIssues || [],
+      _source: source,
     });
 
     fixes.set(fixId, result);
 
     // Persist to database
-    const source = req.headers['user-agent']?.includes('node') ? 'npx' : 'curl';
     storeDiagnosis(result, source).catch(() => {});
 
     // Clean up old fixes (keep last 1000)
@@ -213,7 +220,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     }
 
     // Strip internal metadata before sending to client
-    const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, ...clientResult } = result;
+    const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, _source, ...clientResult } = result;
     res.json(clientResult);
   } catch (error) {
     console.error('Diagnosis error:', redactOutbound(error?.message || 'unknown error'));
@@ -251,16 +258,19 @@ diagnoseRouter.get('/fix/:fixId', async (req, res) => {
   }
   
   // Strip internal metadata
-  const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, ...clientFix } = fix;
+  const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, _source, ...clientFix } = fix;
   res.json(clientFix);
 });
 
 // Stats endpoint
 diagnoseRouter.get('/stats', async (req, res) => {
   const dbStats = await getStats();
+  const inMemoryPublicCount = [...fixes.values()]
+    .filter(fix => fix?._source !== 'canary')
+    .length;
   
   res.json({
-    totalDiagnoses: dbStats?.totalDiagnoses || fixes.size,
+    totalDiagnoses: dbStats?.totalDiagnoses ?? inMemoryPublicCount,
     last24h: dbStats?.last24h || 0,
     topIssues: dbStats?.topIssues || [],
     versionBreakdown: dbStats?.versionBreakdown || [],

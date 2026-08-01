@@ -4,6 +4,25 @@ const { Pool } = pg;
 
 let pool = null;
 
+const PUBLIC_DIAGNOSIS_FILTER = "source IS DISTINCT FROM 'canary'";
+
+export function shouldCountDiagnosisInPublicMetrics(source) {
+  return source !== 'canary';
+}
+
+/** Public dashboard queries over diagnoses. Canary rows stay available for operations only. */
+export function getPublicStatsQueries() {
+  return Object.freeze({
+    total: `SELECT COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER}`,
+    today: `SELECT COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} AND created_at > NOW() - INTERVAL '24 hours'`,
+    versions: `SELECT openclaw_version, COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} AND openclaw_version IS NOT NULL GROUP BY openclaw_version ORDER BY count DESC LIMIT 5`,
+    outcomes: `SELECT outcome, COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} GROUP BY outcome`,
+    serviceManagers: `SELECT service_manager, COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} AND service_manager IS NOT NULL GROUP BY service_manager ORDER BY count DESC`,
+    sigterms: `SELECT COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} AND (sigterm_count > 0 OR service_state = 'sigterm')`,
+    zombies: `SELECT COUNT(*) as count FROM diagnoses WHERE ${PUBLIC_DIAGNOSIS_FILTER} AND (service_state = 'crashed' OR service_state = 'failed')`,
+  });
+}
+
 export function getPool() {
   if (!pool && process.env.DATABASE_URL) {
     pool = new Pool({
@@ -150,7 +169,7 @@ export async function storeDiagnosis(result, source = 'cli') {
     ]);
 
     // Update pattern detection counts
-    if (result.knownIssues) {
+    if (shouldCountDiagnosisInPublicMetrics(source) && result.knownIssues) {
       for (const issue of result.knownIssues) {
         await db.query(`
           INSERT INTO patterns (id, title, severity, times_detected, last_seen)
@@ -186,8 +205,8 @@ export async function storeFeedback(fixId, success, issuesRemaining, comment) {
 
     // Update pattern success rates
     if (success) {
-      const diag = await db.query('SELECT issues_pattern FROM diagnoses WHERE id = $1', [fixId]);
-      if (diag.rows[0]) {
+      const diag = await db.query('SELECT issues_pattern, source FROM diagnoses WHERE id = $1', [fixId]);
+      if (diag.rows[0] && shouldCountDiagnosisInPublicMetrics(diag.rows[0].source)) {
         const patterns = diag.rows[0].issues_pattern || [];
         for (const patternId of patterns) {
           await db.query(`
@@ -264,15 +283,16 @@ export async function getStats() {
   if (!db) return null;
 
   try {
+    const queries = getPublicStatsQueries();
     const [total, today, topIssues, versions, outcomes, serviceManagers, sigterms, zombies] = await Promise.all([
-      db.query('SELECT COUNT(*) as count FROM diagnoses'),
-      db.query("SELECT COUNT(*) as count FROM diagnoses WHERE created_at > NOW() - INTERVAL '24 hours'"),
+      db.query(queries.total),
+      db.query(queries.today),
       db.query('SELECT id, title, severity, times_detected, success_rate FROM patterns ORDER BY times_detected DESC LIMIT 10'),
-      db.query('SELECT openclaw_version, COUNT(*) as count FROM diagnoses WHERE openclaw_version IS NOT NULL GROUP BY openclaw_version ORDER BY count DESC LIMIT 5'),
-      db.query("SELECT outcome, COUNT(*) as count FROM diagnoses GROUP BY outcome"),
-      db.query("SELECT service_manager, COUNT(*) as count FROM diagnoses WHERE service_manager IS NOT NULL GROUP BY service_manager ORDER BY count DESC"),
-      db.query("SELECT COUNT(*) as count FROM diagnoses WHERE sigterm_count > 0 OR service_state = 'sigterm'"),
-      db.query("SELECT COUNT(*) as count FROM diagnoses WHERE service_state = 'crashed' OR service_state = 'failed'"),
+      db.query(queries.versions),
+      db.query(queries.outcomes),
+      db.query(queries.serviceManagers),
+      db.query(queries.sigterms),
+      db.query(queries.zombies),
     ]);
 
     return {

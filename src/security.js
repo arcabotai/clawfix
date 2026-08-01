@@ -93,6 +93,18 @@ function tokensEqual(expected, received) {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+/**
+ * Recognize an operational canary without turning its marker into an auth bypass.
+ * Missing configuration, non-string headers, and any mismatch all fail closed.
+ */
+export function isAuthorizedCanaryRequest(req, env = process.env) {
+  const expected = env?.CLAWFIX_CANARY_TOKEN;
+  const received = req?.headers?.['x-clawfix-canary'];
+  if (typeof expected !== 'string' || expected.length === 0) return false;
+  if (typeof received !== 'string' || received.length === 0) return false;
+  return tokensEqual(expected, received);
+}
+
 export function createAIRequestGuard({
   token = '',
   dailyLimit = 200,
