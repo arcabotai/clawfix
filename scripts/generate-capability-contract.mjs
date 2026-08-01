@@ -67,6 +67,7 @@ export async function buildCapabilityContract() {
     release: {
       version,
       tag: evidence.release.tag,
+      state: evidence.release.state || 'published',
       publishedAt: evidence.release.publishedAt,
       package: cliPackage.name,
       nodeEngine: cliPackage.engines.node,
@@ -133,8 +134,12 @@ export function renderCapabilityMarkdown(contract) {
   const testedVersions = contract.compatibility.testedOpenClawVersions
     .map(item => `- OpenClaw ${item.version}: ${item.scope} ([source](../../${item.source}))`)
     .join('\n');
+  const releaseLabel = contract.release.state === 'published' ? 'release' : 'release candidate';
+  const assetVerb = contract.release.state === 'published'
+    ? 'publishes these separate assets'
+    : 'is expected to publish these separate assets';
 
-  return `# ClawFix ${contract.release.version} capability contract
+  return `# ClawFix ${contract.release.version} ${releaseLabel} capability contract
 
 Evidence snapshot: **${contract.evidenceAsOf}**. This file is generated; edit \`evidence.json\` or shipped source, then run \`npm run capabilities:generate\`.
 
@@ -160,7 +165,7 @@ Run \`${contract.interfaces.npx.run}\`. It delivers: ${contract.interfaces.npx.d
 
 ### Standalone TUI
 
-The TUI is **not bundled with npm**. ClawFix ${contract.release.version} publishes these separate assets:
+The TUI is **not bundled with npm**. ClawFix ${contract.release.version} ${assetVerb}:
 
 ${markdownList(contract.interfaces.standaloneTui.assets.map(asset => `\`${asset}\``))}
 

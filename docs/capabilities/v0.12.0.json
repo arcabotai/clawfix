@@ -1,0 +1,179 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": {
+    "packageMetadata": [
+      "package.json",
+      "cli/package.json"
+    ],
+    "detectorCatalog": "src/known-issues.js",
+    "repairCatalog": "cli/core/repair-catalog.js",
+    "evidenceSnapshot": "docs/capabilities/evidence.json"
+  },
+  "evidenceAsOf": "2026-08-01",
+  "release": {
+    "version": "0.12.0",
+    "tag": "v0.12.0",
+    "state": "candidate",
+    "publishedAt": null,
+    "package": "clawfix",
+    "nodeEngine": ">=22.0.0",
+    "releaseMetadataSource": "docs/capabilities/evidence.json",
+    "releaseAssets": [
+      "clawfix-tui-linux-x64-baseline.tar.gz",
+      "clawfix-tui-linux-x64.tar.gz",
+      "clawfix-tui-linux-x64-musl.tar.gz",
+      "TUI-SHA256SUMS"
+    ]
+  },
+  "interfaces": {
+    "installer": {
+      "preparation": [
+        "Download https://clawfix.dev/install to install-clawfix.sh.",
+        "Inspect the script and compare its SHA-256 with https://clawfix.dev/install/sha256.",
+        "Run bash install-clawfix.sh."
+      ],
+      "run": "clawfix",
+      "delivers": "Portable plain readline CLI installed under ~/.clawfix with a ~/.local/bin/clawfix launcher.",
+      "platforms": [
+        "macOS",
+        "Linux",
+        "WSL"
+      ]
+    },
+    "npx": {
+      "run": "npx clawfix@0.12.0",
+      "delivers": "Portable plain readline CLI.",
+      "platforms": [
+        "macOS",
+        "Linux",
+        "WSL"
+      ]
+    },
+    "standaloneTui": {
+      "bundledWithNpm": false,
+      "delivers": "Separate chat-first OpenTUI release asset.",
+      "platforms": [
+        "Linux x64",
+        "Linux x64 baseline",
+        "Linux x64 musl"
+      ],
+      "assets": [
+        "clawfix-tui-linux-x64-baseline.tar.gz",
+        "clawfix-tui-linux-x64.tar.gz",
+        "clawfix-tui-linux-x64-musl.tar.gz"
+      ]
+    }
+  },
+  "detectors": {
+    "deterministicCount": 49,
+    "ids": [
+      "auto-update-enabled-warning",
+      "auto-update-restart-loop",
+      "browser-port-binding",
+      "browser-relay-handshake-spam",
+      "browser-relay-not-listening",
+      "browser-relay-outdated",
+      "browser-relay-wrong-port",
+      "codex-service-tier-not-fast",
+      "codex-session-store-permission",
+      "codex-shell-home-mismatch",
+      "config-reload-sigterm-cascade",
+      "context-overflow",
+      "discord-allowlist-empty",
+      "duplicate-plugin",
+      "filevault-blocks-reboot",
+      "gateway-extended-downtime",
+      "gateway-not-listening",
+      "gateway-not-running",
+      "gateway-watchdog-missing",
+      "gateway-zombie",
+      "ggml-metal-crash",
+      "heartbeat-no-model-override",
+      "high-token-usage",
+      "invalid-gh-token-override",
+      "large-workspace-files",
+      "launchd-corrupted-state",
+      "macos-app-metadata-upgrade",
+      "matrix-sync-timeout-spam",
+      "mem0-graph-free",
+      "missing-agents-md",
+      "native-codex-timeout-boundary",
+      "no-compaction-config",
+      "no-context-pruning",
+      "no-hybrid-search",
+      "no-memory-files",
+      "no-memory-flush",
+      "no-soul",
+      "openclaw-node-engine-mismatch",
+      "orphan-tool-calls",
+      "oversized-error-log",
+      "pi-backed-openai-codex-route",
+      "plaintext-secrets-in-config",
+      "port-conflict",
+      "provider-prefix-unregistered",
+      "session-transcript-not-indexed",
+      "stale-bundled-plugin-load-paths",
+      "stale-plist-env-secrets",
+      "stale-self-paired-node",
+      "state-dir-migration"
+    ]
+  },
+  "executableRepairs": {
+    "count": 5,
+    "items": [
+      {
+        "id": "auto-update-enabled-warning",
+        "title": "Disable OpenClaw auto-update",
+        "risk": "low"
+      },
+      {
+        "id": "gateway-loopback-no-auth",
+        "title": "Require a token on the gateway",
+        "risk": "medium"
+      },
+      {
+        "id": "gateway-not-running",
+        "title": "Restart the OpenClaw gateway",
+        "risk": "low"
+      },
+      {
+        "id": "no-hybrid-search",
+        "title": "Enable hybrid memory search",
+        "risk": "low"
+      },
+      {
+        "id": "no-memory-flush",
+        "title": "Enable memory flush on compaction",
+        "risk": "low"
+      }
+    ],
+    "safetyBoundary": "Repairs are deterministic catalog entries with preview, apply, verify, and rollback contracts."
+  },
+  "aiBoundary": {
+    "optional": true,
+    "serverControlled": true,
+    "purpose": "Explain unmatched diagnostic evidence and provide advisory analysis.",
+    "modelOutputCanBecomeExecutableShell": false,
+    "novelAiFindingsAutomaticallyRepairable": false
+  },
+  "compatibility": {
+    "supportedOpenClawVersions": [],
+    "supportStatement": "No broad OpenClaw compatibility range has been validated or asserted.",
+    "testedOpenClawVersions": [
+      {
+        "version": "2026.6.11",
+        "scope": "Real-machine diagnostic and guarded-repair scenarios in the Blaxel lab.",
+        "source": "REVIEW.md"
+      }
+    ]
+  },
+  "measuredOutcomes": {
+    "source": "https://clawfix.dev/api/stats",
+    "observedAt": "2026-08-01",
+    "totalDiagnoses": 207,
+    "recordedSuccesses": 5,
+    "unknown": 202,
+    "interpretation": "Unknown outcomes are missing follow-up, not failures. This snapshot does not establish a repair success rate."
+  },
+  "claimBoundary": "ClawFix diagnoses OpenClaw in one command and can apply only the supported repairs listed in this contract."
+}
