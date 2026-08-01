@@ -240,6 +240,19 @@ test('the real fix command routes catalog repairs through the repair engine befo
   assert.match(source, /const catalogRepair = repairCatalog\[issue\.repairId\]/);
   assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, rl, session\)/);
   assert.match(source, /revision: result\.revision/);
+
+  const batchStart = source.indexOf('async function applyAllFixes');
+  const batchEnd = source.indexOf('// Diagnostic core compatibility bridge', batchStart);
+  const batchSource = source.slice(batchStart, batchEnd);
+  assert.match(batchSource, /individual approval and verification/i);
+  assert.doesNotMatch(batchSource, /\.apply\(/, 'fix all must not bypass catalog transactions');
+
+  const legacyStart = source.indexOf('async function applyBuiltinFix');
+  const legacyEnd = source.indexOf('async function applyAllFixes', legacyStart);
+  const legacyBody = source.slice(legacyStart, batchStart);
+  assert.doesNotMatch(legacyBody, /return \{ applied: true \}/);
+  assert.match(legacyBody, /status = 'verify_failed'/);
+  assert.match(legacyBody, /let status = 'unverified'/);
 });
 
 // ============================================================

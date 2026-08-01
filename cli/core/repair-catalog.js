@@ -12,6 +12,33 @@
 // which itself only ever spawns argv arrays (shell: false). ctx.wait is an injectable delay hook
 // so tests can drive apply -> verify without real timers.
 
+import { applyFailureReason } from './repair-engine.js';
+
+/**
+ * Preserve the process adapter's complete terminal verdict without retaining command output or
+ * raw Error objects in repair/session state. The repair engine must see every failure marker;
+ * projecting only `status` lets a status-zero timeout, abort, signal, or truncated result pass.
+ */
+function terminalResult(result, details = {}) {
+  const source = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  const projected = {
+    status: source.status,
+    signal: source.signal ?? null,
+    timedOut: source.timedOut ?? false,
+    aborted: source.aborted ?? false,
+    stdoutTruncated: source.stdoutTruncated ?? false,
+    stderrTruncated: source.stderrTruncated ?? false,
+    outputLimitExceeded: source.outputLimitExceeded ?? false,
+    errorCode: source.errorCode ?? null,
+    errorSummary: source.errorSummary ?? null,
+    error: source.error == null ? null : true,
+  };
+  for (const field of ['partial', 'partiallyApplied']) {
+    if (Object.hasOwn(source, field)) projected[field] = source[field];
+  }
+  return Object.freeze({ ...projected, ...details });
+}
+
 /**
  * Is the gateway actually up?
  *
@@ -78,12 +105,7 @@ const gatewayNotRunning = Object.freeze({
   async apply(ctx) {
     const { openclaw } = ctx;
     const result = await openclaw.invoke(['gateway', 'restart'], { timeoutMs: 60_000 });
-    return Object.freeze({
-      status: result.status,
-      timedOut: result.timedOut,
-      errorSummary: result.errorSummary,
-      stdout: result.stdout,
-    });
+    return terminalResult(result);
   },
 
   async verify(ctx) {
@@ -162,14 +184,12 @@ function configToggleRepair({ id, key, target, title, description, blockedReason
 
     async apply(ctx) {
       const result = await ctx.openclaw.configSet(key, targetText, { timeoutMs: 30_000 });
-      return Object.freeze({
-        changed: result.status === 0 ? true : 'unknown',
-        changes: result.status === 0
+      const failure = applyFailureReason(result);
+      return terminalResult(result, {
+        changed: failure === null ? true : 'unknown',
+        changes: failure === null
           ? Object.freeze([Object.freeze({ type: 'config', key, before: previousText, after: targetText })])
           : Object.freeze([]),
-        status: result.status,
-        timedOut: result.timedOut,
-        errorSummary: result.errorSummary,
       });
     },
 
@@ -289,8 +309,7 @@ const gatewayLoopbackNoAuth = Object.freeze({
       { timeoutMs: 10_000 },
     );
     if (!tokenBefore.ok) {
-      return Object.freeze({
-        status: tokenBefore.status,
+      return terminalResult(tokenBefore, {
         stage: 'read-token-state',
         changed: false,
         changes: Object.freeze(changes),
@@ -298,15 +317,13 @@ const gatewayLoopbackNoAuth = Object.freeze({
       });
     }
     const set = await ctx.openclaw.configSet('gateway.auth.mode', 'token', { timeoutMs: 30_000 });
-    if (set.status !== 0) {
-      return Object.freeze({
-        status: set.status,
+    if (applyFailureReason(set) !== null) {
+      return terminalResult(set, {
         stage: 'set-mode',
         changed: 'unknown',
         changes: Object.freeze(changes),
         tokenPreviouslyPresent: tokenBefore.present,
         tokenMayHaveChanged: false,
-        errorSummary: set.errorSummary,
       });
     }
     changes.push(Object.freeze({
@@ -316,14 +333,12 @@ const gatewayLoopbackNoAuth = Object.freeze({
       after: 'token',
     }));
     if (tokenBefore.present) {
-      return Object.freeze({
-        status: 0,
+      return terminalResult(set, {
         stage: 'set-mode',
         changed: true,
         changes: Object.freeze(changes),
         tokenPreviouslyPresent: true,
         tokenMayHaveChanged: false,
-        errorSummary: null,
       });
     }
     let generated;
@@ -333,25 +348,22 @@ const gatewayLoopbackNoAuth = Object.freeze({
         { timeoutMs: 120_000 },
       );
     } catch (error) {
-      return Object.freeze({
-        status: null,
+      return terminalResult(null, {
         stage: 'generate-token',
         changed: true,
         changes: Object.freeze(changes),
         tokenPreviouslyPresent: false,
         tokenMayHaveChanged: true,
         errorSummary: error.message,
+        error: true,
       });
     }
-    return Object.freeze({
-      status: generated.status,
+    return terminalResult(generated, {
       stage: 'generate-token',
       changed: true,
       changes: Object.freeze(changes),
       tokenPreviouslyPresent: false,
       tokenMayHaveChanged: true,
-      timedOut: generated.timedOut,
-      errorSummary: generated.errorSummary,
     });
   },
 

@@ -41,7 +41,7 @@ function safeResultText(value, fallback) {
   }
 }
 
-function applyFailureReason(result) {
+export function applyFailureReason(result) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return 'adapter returned no structured result';
   }
