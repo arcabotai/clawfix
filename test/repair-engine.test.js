@@ -13,7 +13,9 @@ function gatewayFinding(overrides = {}) {
   return finding;
 }
 
-function fakeCatalogEntry({ preflightOk = true, verifyOk = true } = {}) {
+function fakeCatalogEntry(options = {}) {
+  const { preflightOk = true, verifyOk = true } = options;
+  const applyResult = Object.hasOwn(options, 'applyResult') ? options.applyResult : { status: 0 };
   const calls = [];
   return {
     calls,
@@ -30,7 +32,7 @@ function fakeCatalogEntry({ preflightOk = true, verifyOk = true } = {}) {
     },
     async apply() {
       calls.push('apply');
-      return { status: 0 };
+      return applyResult;
     },
     async verify() {
       calls.push('verify');
@@ -380,6 +382,44 @@ test('a failed apply result rolls back recorded changes and never verifies', asy
   assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
   assert.equal(entry.calls.includes('verify'), false);
 });
+
+const terminalApplyFailures = [
+  ['nonzero status', { status: 1 }],
+  ['null status', { status: null }],
+  ['string status', { status: '0' }],
+  ['timed out', { status: 0, timedOut: true }],
+  ['aborted', { status: 0, aborted: true }],
+  ['terminated by signal', { status: 0, signal: 'SIGKILL' }],
+  ['stdout truncated', { status: 0, stdoutTruncated: true }],
+  ['stderr truncated', { status: 0, stderrTruncated: true }],
+  ['output limit exceeded', { status: 0, outputLimitExceeded: true }],
+  ['error summary present', { status: 0, errorSummary: 'spawn was not clean' }],
+  ['error code present', { status: 0, errorCode: 'EIO' }],
+  ['error object present', { status: 0, error: new Error('adapter failure') }],
+  ['missing result', undefined],
+];
+
+for (const [scenario, applyResult] of terminalApplyFailures) {
+  test(`applyPlan treats ${scenario} as failure, rolls back, and never verifies`, async () => {
+    const finding = gatewayFinding();
+    const entry = fakeCatalogEntry({ applyResult });
+    const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+    const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+    const outcome = await engine.applyPlan({
+      planId: plan.planId,
+      approvalToken: plan.approvalToken,
+      revision: 'rev-1',
+      finding,
+      ctx: {},
+    });
+
+    assert.equal(outcome.status, 'error', scenario);
+    assert.match(outcome.error, /apply failed:/, scenario);
+    assert.equal(outcome.applyResult, applyResult, scenario);
+    assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback'], scenario);
+  });
+}
 
 test('a throwing preflight reports an error outcome instead of rejecting', async () => {
   const finding = gatewayFinding();
