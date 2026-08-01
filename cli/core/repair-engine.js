@@ -56,10 +56,10 @@ export function applyFailureReason(result) {
     ['partiallyApplied', 'command reported a partial apply'],
   ];
   for (const [field, message] of terminalFlags) {
-    if (result[field] === true) return message;
-    if (result[field] !== undefined && result[field] !== false) {
+    if (Object.hasOwn(result, field) && typeof result[field] !== 'boolean') {
       return `adapter returned invalid ${field} metadata`;
     }
+    if (result[field] === true) return message;
   }
 
   if (result.signal != null) {
