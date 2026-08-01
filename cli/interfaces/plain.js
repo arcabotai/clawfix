@@ -497,14 +497,16 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
       console.log(`  ${c.green('✅')} ${change}`);
     }
 
-    // Restart if needed
+    // Restart if needed. A failed restart is a failed verification, never a soft success.
+    let restartVerified = true;
     if (builtinFix.needsRestart) {
       process.stdout.write(`  ${c.blue('🔄')} Restarting gateway...`);
-      const ok = tryGatewayRestart();
-      console.log(ok ? ` ${c.green('✅')}` : ` ${c.yellow('⚠️  may need manual restart')}`);
+      restartVerified = tryGatewayRestart();
+      console.log(restartVerified ? ` ${c.green('✅')}` : ` ${c.yellow('⚠️  restart failed')}`);
     }
 
-    // Re-scan to verify
+    // Re-scan to verify. Legacy fixes are never reported as applied without this evidence.
+    let status = 'unverified';
     if (scanFn) {
       process.stdout.write(`  ${c.blue('🔍')} Re-scanning...`);
       const scanResult = await scanFn();
@@ -512,18 +514,26 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
         const allAfter = mergeIssues(scanResult.issues, scanResult.serverIssues);
         const stillPresent = allAfter.some(candidate => candidate.id === issue.id);
 
-        if (stillPresent) {
-          console.log(` ${c.yellow('⚠️  issue may persist until gateway fully restarts')}`);
+        if (stillPresent || !restartVerified) {
+          status = 'verify_failed';
+          console.log(` ${c.yellow('⚠️  verification failed')}`);
         } else {
+          status = 'applied';
           console.log(` ${c.green('✅ Issue resolved!')}`);
         }
       } else {
         console.log(` ${c.dim('skipped')}`);
       }
+    } else {
+      console.log(`  ${c.yellow('⚠️')} Verification unavailable; repair is not marked applied.`);
     }
 
     console.log('');
-    return { applied: true };
+    return {
+      status,
+      applied: status === 'applied',
+      backupPath,
+    };
 
   } catch (err) {
     console.log(`  ${c.red('❌')} Error: ${err.message}`);
@@ -531,7 +541,7 @@ async function applyBuiltinFix(issue, builtinFix, rl, scanFn) {
       console.log(`  ${c.dim(`Rollback available: cp ${backupPath} ${CONFIG_PATH}`)}`);
     }
     console.log('');
-    return { error: err.message };
+    return { status: 'error', applied: false, error: err.message, backupPath };
   }
 }
 

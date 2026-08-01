@@ -121,8 +121,9 @@ test('applyPlan never reports applied when the adapter apply step returns a fail
     ctx: {},
   });
 
-  assert.equal(result.status, 'verify_failed');
-  assert.equal(result.verify.ok, false);
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /status 1/);
+  assert.equal(result.rollback.rolledBack, false);
   assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
 });
 
@@ -270,6 +271,13 @@ test('the real fix command routes catalog repairs through the repair engine befo
   assert.match(source, /Batch repair is disabled/);
   assert.match(source, /Apply\?'.*\[y\/N\]/);
   assert.doesNotMatch(source, /function applyAllFixes|\[Y\/n\]/);
+
+  const legacyStart = source.indexOf('async function applyBuiltinFix');
+  const legacyEnd = source.indexOf('// Diagnostic core compatibility bridge', legacyStart);
+  const legacyBody = source.slice(legacyStart, legacyEnd);
+  assert.doesNotMatch(legacyBody, /return \{ applied: true \}/);
+  assert.match(legacyBody, /status = 'verify_failed'/);
+  assert.match(legacyBody, /let status = 'unverified'/);
 });
 
 // ============================================================
