@@ -8,6 +8,7 @@ import {
 import {
   getPublicStatsQueries,
   shouldCountDiagnosisInPublicMetrics,
+  storeDiagnosis,
 } from '../src/db.js';
 import { diagnosisSource } from '../src/routes/diagnose.js';
 
@@ -62,5 +63,16 @@ test('every diagnosis-backed public stats query excludes canary rows', () => {
   for (const [name, sql] of Object.entries(queries)) {
     assert.match(sql, /\bdiagnoses\b/, name);
     assert.match(sql, /source IS DISTINCT FROM 'canary'/, name);
+  }
+});
+
+test('canary persistence reports failure when durable storage is unavailable', async () => {
+  const previous = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  try {
+    assert.equal(await storeDiagnosis({ fixId: 'canaryFix12' }, 'canary'), false);
+  } finally {
+    if (previous === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previous;
   }
 });

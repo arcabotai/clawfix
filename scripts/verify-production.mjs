@@ -21,23 +21,87 @@ function safeMessage(error) {
   return message.replace(/[\r\n]+/g, ' ').slice(0, 500);
 }
 
+function normalizeBaseUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('base URL is invalid');
+  }
+  invariant(!parsed.username && !parsed.password, 'base URL must not contain credentials');
+  invariant(!parsed.search && !parsed.hash, 'base URL must not contain a query or fragment');
+  invariant(parsed.pathname === '/', 'base URL must not contain a path');
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  invariant(
+    parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopback),
+    'remote base URL must use HTTPS',
+  );
+  return parsed.origin;
+}
+
+async function readBoundedText(response, label) {
+  const advertisedLength = Number(response.headers?.get?.('content-length'));
+  if (Number.isFinite(advertisedLength) && advertisedLength > MAX_RESPONSE_BYTES) {
+    throw new Error(`${label} body exceeded ${MAX_RESPONSE_BYTES} bytes`);
+  }
+
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    invariant(typeof response.text === 'function', `${label} returned an invalid response`);
+    const text = await response.text();
+    invariant(
+      Buffer.byteLength(text, 'utf8') <= MAX_RESPONSE_BYTES,
+      `${label} body exceeded ${MAX_RESPONSE_BYTES} bytes`,
+    );
+    return text;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The size failure remains authoritative.
+        }
+        throw new Error(`${label} body exceeded ${MAX_RESPONSE_BYTES} bytes`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, totalBytes).toString('utf8');
+}
+
 async function requestText(fetchImpl, url, options, { label, timeoutMs }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     let response;
     try {
-      response = await fetchImpl(url, { ...options, signal: controller.signal });
+      response = await fetchImpl(url, {
+        ...options,
+        redirect: 'error',
+        signal: controller.signal,
+      });
     } catch (error) {
       if (controller.signal.aborted) {
         throw new Error(`${label} timed out after ${timeoutMs}ms`);
       }
       throw new Error(`${label} request failed: ${safeMessage(error)}`);
     }
-    invariant(response && typeof response.text === 'function', `${label} returned an invalid response`);
+    invariant(response && typeof response === 'object', `${label} returned an invalid response`);
     invariant(response.ok, `${label} returned HTTP ${response.status}`);
-    const text = await response.text();
-    invariant(Buffer.byteLength(text, 'utf8') <= MAX_RESPONSE_BYTES, `${label} response was too large`);
+    const text = await readBoundedText(response, label);
     return { response, text };
   } finally {
     clearTimeout(timer);
@@ -216,6 +280,10 @@ async function verifyDiagnosisCanary({ baseUrl, fetchImpl, timeoutMs, apiToken, 
   const diagnostic = parseJson(result.text, 'diagnosis canary');
   invariant(typeof diagnostic?.fixId === 'string' && diagnostic.fixId.length >= 10, 'diagnosis canary returned no fix ID');
   invariant(typeof diagnostic?.analysis === 'string' && diagnostic.analysis.length > 0, 'diagnosis canary returned no analysis');
+  invariant(
+    diagnostic.canary === true && diagnostic.persisted === true,
+    'diagnosis canary classification or persistence was not acknowledged',
+  );
   return { name: 'diagnosis-canary', ok: true, fixIdPresent: true };
 }
 
@@ -234,14 +302,10 @@ export async function runProductionVerification({
     invariant(canaryToken, 'CLAWFIX_CANARY_TOKEN is required for --diagnose-canary');
   }
 
-  const normalizedBaseUrl = new URL(baseUrl);
-  invariant(['http:', 'https:'].includes(normalizedBaseUrl.protocol), 'base URL must use HTTP or HTTPS');
-  normalizedBaseUrl.pathname = normalizedBaseUrl.pathname.replace(/\/$/, '');
-  normalizedBaseUrl.search = '';
-  normalizedBaseUrl.hash = '';
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
   const startedAt = new Date().toISOString();
   const checks = await verifyFreeSurface({
-    baseUrl: normalizedBaseUrl.toString().replace(/\/$/, ''),
+    baseUrl: normalizedBaseUrl,
     expectedVersion,
     fetchImpl,
     timeoutMs,
@@ -249,14 +313,14 @@ export async function runProductionVerification({
 
   if (meteredMode === 'agent') {
     checks.push(await verifyAgentCanary({
-      baseUrl: normalizedBaseUrl.toString().replace(/\/$/, ''),
+      baseUrl: normalizedBaseUrl,
       fetchImpl,
       timeoutMs,
       apiToken,
     }));
   } else if (meteredMode === 'diagnose') {
     checks.push(await verifyDiagnosisCanary({
-      baseUrl: normalizedBaseUrl.toString().replace(/\/$/, ''),
+      baseUrl: normalizedBaseUrl,
       fetchImpl,
       timeoutMs,
       apiToken,
@@ -266,7 +330,7 @@ export async function runProductionVerification({
 
   return {
     ok: true,
-    baseUrl: normalizedBaseUrl.origin,
+    baseUrl: normalizedBaseUrl,
     expectedVersion,
     meteredMode,
     startedAt,

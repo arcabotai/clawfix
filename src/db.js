@@ -137,7 +137,7 @@ export async function initDB() {
  */
 export async function storeDiagnosis(result, source = 'cli') {
   const db = getPool();
-  if (!db) return;
+  if (!db) return false;
 
   try {
     await db.query(`
@@ -180,8 +180,10 @@ export async function storeDiagnosis(result, source = 'cli') {
         `, [issue.id, issue.title, issue.severity]);
       }
     }
+    return true;
   } catch (err) {
     console.error('Store diagnosis failed:', err.message);
+    return false;
   }
 }
 

@@ -211,7 +211,16 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     fixes.set(fixId, result);
 
     // Persist to database
-    storeDiagnosis(result, source).catch(() => {});
+    const persistence = storeDiagnosis(result, source);
+    if (source === 'canary') {
+      const persisted = await persistence;
+      if (!persisted) {
+        fixes.delete(fixId);
+        return res.status(503).json({ error: 'Canary persistence failed' });
+      }
+    } else {
+      persistence.catch(() => {});
+    }
 
     // Clean up old fixes (keep last 1000)
     if (fixes.size > 1000) {
@@ -221,7 +230,9 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
 
     // Strip internal metadata before sending to client
     const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, _source, ...clientResult } = result;
-    res.json(clientResult);
+    res.json(source === 'canary'
+      ? { ...clientResult, canary: true, persisted: true }
+      : clientResult);
   } catch (error) {
     console.error('Diagnosis error:', redactOutbound(error?.message || 'unknown error'));
     res.status(500).json({ error: 'Diagnosis failed' });

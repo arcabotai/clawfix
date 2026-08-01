@@ -19,7 +19,12 @@ function response(body, { status = 200, headers = {} } = {}) {
   return new Response(body, { status, headers });
 }
 
-function verifierFetch({ version = '0.11.2', installerHash = INSTALLER_HASH, handler } = {}) {
+function verifierFetch({
+  version = '0.11.2',
+  installerHash = INSTALLER_HASH,
+  rootBody = '<!doctype html><title>ClawFix</title><h1>ClawFix</h1>',
+  handler,
+} = {}) {
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
     const parsed = new URL(url);
@@ -30,7 +35,7 @@ function verifierFetch({ version = '0.11.2', installerHash = INSTALLER_HASH, han
     }
     switch (parsed.pathname) {
       case '/':
-        return response('<!doctype html><title>ClawFix</title><h1>ClawFix</h1>', {
+        return response(rootBody, {
           headers: { 'content-type': 'text/html' },
         });
       case '/api/health':
@@ -78,6 +83,7 @@ test('free production verification checks root, health, stats, installer, and ex
     calls.map((call) => call.path).sort(),
     ['/', '/api/health', '/api/stats', '/install', '/install/sha256'].sort(),
   );
+  assert.ok(calls.every((call) => call.options.redirect === 'error'));
 });
 
 test('production verification fails closed on version drift and installer hash mismatch', async () => {
@@ -97,6 +103,71 @@ test('production verification fails closed on version drift and installer hash m
       fetchImpl: verifierFetch({ installerHash: '0'.repeat(64) }).fetchImpl,
     }),
     /installer SHA-256 mismatch/,
+  );
+});
+
+test('remote verification refuses insecure or credential-bearing base URLs before fetching', async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    throw new Error('must not fetch');
+  };
+
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'http://clawfix.dev',
+      expectedVersion: '0.11.2',
+      fetchImpl,
+    }),
+    /must use https/i,
+  );
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://user:password@clawfix.dev',
+      expectedVersion: '0.11.2',
+      fetchImpl,
+    }),
+    /must not contain credentials/i,
+  );
+  for (const baseUrl of [
+    'https://clawfix.dev/api',
+    'https://clawfix.dev/?source=test',
+    'https://clawfix.dev/#fragment',
+  ]) {
+    await assert.rejects(
+      runProductionVerification({ baseUrl, expectedVersion: '0.11.2', fetchImpl }),
+      /must not contain (?:a path|a query or fragment)/i,
+    );
+  }
+  assert.equal(calls, 0);
+});
+
+test('metered canaries never run after a free prerequisite drifts', async () => {
+  const { fetchImpl, calls } = verifierFetch({ version: '0.11.2' });
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.12.0',
+      meteredMode: 'agent',
+      apiToken: 'must-not-be-sent',
+      fetchImpl,
+    }),
+    /expected version 0\.12\.0, received 0\.11\.2/,
+  );
+  assert.equal(calls.some((call) => call.path === '/api/v2/agent/messages'), false);
+});
+
+test('response bodies are rejected while reading once they exceed the verifier limit', async () => {
+  const oversized = verifierFetch({
+    rootBody: 'C'.repeat((1024 * 1024) + 1),
+  });
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.11.2',
+      fetchImpl: oversized.fetchImpl,
+    }),
+    /body exceeded/i,
   );
 });
 
@@ -204,7 +275,12 @@ test('diagnosis canary requires its own token and never includes it in the body'
       if (parsed.pathname !== '/api/diagnose') return null;
       assert.equal(options.headers['x-clawfix-canary'], canaryToken);
       assert.equal(options.body.includes(canaryToken), false);
-      return response(JSON.stringify({ fixId: 'canaryFix12', analysis: 'bounded canary' }), {
+      return response(JSON.stringify({
+        fixId: 'canaryFix12',
+        analysis: 'bounded canary',
+        canary: true,
+        persisted: true,
+      }), {
         headers: { 'content-type': 'application/json' },
       });
     },
@@ -219,6 +295,33 @@ test('diagnosis canary requires its own token and never includes it in the body'
   assert.equal(report.ok, true);
   assert.equal(calls.filter((call) => call.path === '/api/diagnose').length, 1);
   assert.equal(JSON.stringify(report).includes(canaryToken), false);
+});
+
+test('diagnosis canary fails unless production acknowledges canary classification and persistence', async () => {
+  const canaryToken = `secret-${randomUUID()}`;
+  for (const diagnostic of [
+    { fixId: 'canaryFix12', analysis: 'bounded canary' },
+    { fixId: 'canaryFix12', analysis: 'bounded canary', canary: true, persisted: false },
+  ]) {
+    const { fetchImpl } = verifierFetch({
+      handler(parsed) {
+        if (parsed.pathname !== '/api/diagnose') return null;
+        return response(JSON.stringify(diagnostic), {
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    await assert.rejects(
+      runProductionVerification({
+        baseUrl: 'https://example.test',
+        expectedVersion: '0.11.2',
+        meteredMode: 'diagnose',
+        canaryToken,
+        fetchImpl,
+      }),
+      /classification or persistence was not acknowledged/i,
+    );
+  }
 });
 
 test('CLI parsing caps each invocation at one explicit metered mode', () => {
