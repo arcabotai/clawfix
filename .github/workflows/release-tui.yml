@@ -176,6 +176,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Download all TUI artifacts
         uses: actions/download-artifact@v4
         with:
@@ -183,10 +195,20 @@ jobs:
           pattern: clawfix-tui-*
           merge-multiple: false
 
-      - name: Package target tarballs
+      - name: Revalidate remote tag before packaging
         run: |
           set -euo pipefail
-          mkdir -p release-dist
+          remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)"
+          fi
+          test -n "$remote_sha"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Package and smoke final target tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p release-dist release-smoke
           # download-artifact layout with merge-multiple=false:
           #   release-tui/clawfix-tui-<target>/{launcher,.bin,assets-<target>/,...}
           shopt -s nullglob
@@ -202,7 +224,45 @@ jobs:
               ls -la "$dir" || true
               exit 1
             fi
-            tar -C "$dir" -czf "release-dist/clawfix-tui-${target}.tar.gz" .
+
+            # actions/upload-artifact intentionally normalizes regular files to 0644. Restore
+            # executable modes after download so the release archive contains runnable files.
+            chmod 0755 "$launcher" "$binary"
+
+            tarball="release-dist/clawfix-tui-${target}.tar.gz"
+            tar -C "$dir" -czf "$tarball" .
+
+            # Release evidence starts after packaging. Extract into a fresh directory and smoke
+            # only those bytes; build-tree checks cannot prove the public download is runnable.
+            smoke_dir="release-smoke/$target"
+            rm -rf "$smoke_dir"
+            mkdir -p "$smoke_dir"
+            tar -xzf "$tarball" -C "$smoke_dir"
+            smoke_launcher="$smoke_dir/clawfix-tui-$target"
+            smoke_binary="$smoke_dir/clawfix-tui-$target.bin"
+            test -x "$smoke_launcher"
+            test -x "$smoke_binary"
+            test -d "$smoke_dir/assets-$target"
+            node scripts/verify-tui-artifact.mjs "$smoke_binary" --target "$target"
+
+            if [ "$target" = "linux-x64-musl" ]; then
+              docker run --rm \
+                -v "$PWD:/work" \
+                -w /work \
+                node:24-alpine \
+                sh -lc 'set -eu
+                  apk add --no-cache python3 >/dev/null
+                  smoke_launcher=/work/release-smoke/linux-x64-musl/clawfix-tui-linux-x64-musl
+                  smoke_binary=/work/release-smoke/linux-x64-musl/clawfix-tui-linux-x64-musl.bin
+                  test -x "$smoke_launcher"
+                  test -x "$smoke_binary"
+                  node scripts/smoke-tui-binary.mjs "$smoke_launcher"
+                  CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$smoke_launcher"'
+            else
+              node scripts/smoke-tui-binary.mjs "$smoke_launcher"
+              CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$smoke_launcher"
+            fi
+
             echo "packed clawfix-tui-${target}.tar.gz"
             packed=$((packed + 1))
           done
@@ -236,9 +296,20 @@ jobs:
           echo "::error ::CLI release was not created within 10 minutes"
           exit 1
 
+      - name: Revalidate remote tag before upload
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)"
+          fi
+          test -n "$remote_sha"
+          test "$remote_sha" = "$GITHUB_SHA"
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             release-dist/*.tar.gz
             release-dist/TUI-SHA256SUMS

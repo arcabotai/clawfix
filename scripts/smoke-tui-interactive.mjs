@@ -18,10 +18,13 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
 const DRIVER = String.raw`
-import os, pty, re, subprocess, sys, threading, time
+import fcntl, os, pty, re, struct, subprocess, sys, termios, threading, time
 
 binary = sys.argv[1]
 master, slave = pty.openpty()
+# Some CI and nested-container PTYs start at 0x0. OpenTUI can exit cleanly without ever
+# rendering in that state, which is a harness false positive rather than product evidence.
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
 proc = subprocess.Popen([binary, "--fake-session"], stdin=slave, stdout=slave, stderr=slave,
                         env={**os.environ, "TERM": "xterm-256color", "CLAWFIX_TUI_SMOKE": "1"})
 os.close(slave)
