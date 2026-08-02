@@ -4,7 +4,7 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
-## 0.12.0 - 2026-07-27
+## 0.12.0 - 2026-08-02
 
 - Expanded the guarded repair catalog from 1 to 5 entries: `gateway-not-running` (needs systemd/launchd), plus four config toggles applied and verified through OpenClaw's own CLI — `auto-update-enabled-warning`, `gateway-loopback-no-auth`, `no-hybrid-search`, and `no-memory-flush`. Every toggle shares one `configToggleRepair` contract with a read-back verification and a rollback path.
 - Fixed `checkGatewayRunning()` reporting a repair as applied when nothing was actually listening on the gateway port; the listening port is now the sole verdict, never process-status prose or PIDs.
