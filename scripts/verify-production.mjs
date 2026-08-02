@@ -262,7 +262,10 @@ async function verifyAgentCanary({ baseUrl, fetchImpl, timeoutMs, apiToken }) {
   const done = doneEvents[0];
   invariant(events.at(-1) === done, 'agent.done must be the final event');
   invariant(meta?.data?.conversationId === conversationId, 'agent canary metadata did not match the conversation');
-  invariant(deltas.some((event) => typeof event.data?.text === 'string' && event.data.text.length > 0), 'agent canary returned no assistant text');
+  const assistantText = deltas
+    .map((event) => typeof event.data?.text === 'string' ? event.data.text : '')
+    .join('');
+  invariant(assistantText.trim().length > 0, 'agent canary returned no assistant text');
   invariant(done?.data?.conversationId === conversationId, 'agent canary did not complete');
   return { name: 'agent-canary', ok: true, sseEvents: events.length };
 }

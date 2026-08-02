@@ -264,6 +264,103 @@ test('agent canary makes exactly one bounded metered request and validates SSE c
   assert.equal(calls.filter((call) => call.path === '/api/v2/agent/messages').length, 1);
 });
 
+test('agent canary rejects whitespace-only assistant output', async () => {
+  const { fetchImpl } = verifierFetch({
+    handler(parsed, options) {
+      if (parsed.pathname !== '/api/v2/agent/messages') return null;
+      const { conversationId } = JSON.parse(options.body);
+      return response([
+        'event: agent.meta',
+        `data: {"conversationId":"${conversationId}"}`,
+        '',
+        'event: assistant.delta',
+        'data: {"text":"   \\n\\t"}',
+        '',
+        'event: agent.done',
+        `data: {"conversationId":"${conversationId}","repairProposed":false}`,
+        '',
+        '',
+      ].join('\n'), { headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+
+  await assert.rejects(
+    runProductionVerification({
+      baseUrl: 'https://example.test',
+      expectedVersion: '0.11.2',
+      meteredMode: 'agent',
+      fetchImpl,
+    }),
+    /agent canary returned no assistant text/,
+  );
+});
+
+test('agent canary rejects duplicate or mismatched protocol terminal events', async (t) => {
+  const scenarios = [
+    {
+      name: 'duplicate agent.meta',
+      expected: /exactly one agent\.meta event/,
+      events(conversationId) {
+        return [
+          ['agent.meta', { conversationId }],
+          ['agent.meta', { conversationId }],
+          ['assistant.delta', { text: 'healthy' }],
+          ['agent.done', { conversationId, repairProposed: false }],
+        ];
+      },
+    },
+    {
+      name: 'duplicate agent.done',
+      expected: /exactly one agent\.done event/,
+      events(conversationId) {
+        return [
+          ['agent.meta', { conversationId }],
+          ['assistant.delta', { text: 'healthy' }],
+          ['agent.done', { conversationId, repairProposed: false }],
+          ['agent.done', { conversationId, repairProposed: false }],
+        ];
+      },
+    },
+    {
+      name: 'mismatched agent.done conversation',
+      expected: /agent canary did not complete/,
+      events(conversationId) {
+        return [
+          ['agent.meta', { conversationId }],
+          ['assistant.delta', { text: 'healthy' }],
+          ['agent.done', { conversationId: 'different-conversation', repairProposed: false }],
+        ];
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const { fetchImpl } = verifierFetch({
+        handler(parsed, options) {
+          if (parsed.pathname !== '/api/v2/agent/messages') return null;
+          const { conversationId } = JSON.parse(options.body);
+          const stream = scenario.events(conversationId)
+            .flatMap(([event, data]) => [`event: ${event}`, `data: ${JSON.stringify(data)}`, ''])
+            .concat('')
+            .join('\n');
+          return response(stream, { headers: { 'content-type': 'text/event-stream' } });
+        },
+      });
+
+      await assert.rejects(
+        runProductionVerification({
+          baseUrl: 'https://example.test',
+          expectedVersion: '0.11.2',
+          meteredMode: 'agent',
+          fetchImpl,
+        }),
+        scenario.expected,
+      );
+    });
+  }
+});
+
 test('agent canary rejects agent.error even when partial text and agent.done are present', async () => {
   const { fetchImpl } = verifierFetch({
     handler(parsed, options) {
