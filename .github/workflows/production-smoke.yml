@@ -1,0 +1,77 @@
+name: Production continuity verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      metered_mode:
+        description: Optional single paid canary for this run
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - agent
+          - diagnose
+  schedule:
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-continuity
+  cancel-in-progress: false
+
+jobs:
+  verify-production:
+    name: clawfix.dev contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CLAWFIX_API_TOKEN: ${{ secrets.CLAWFIX_API_TOKEN }}
+      CLAWFIX_CANARY_TOKEN: ${{ secrets.CLAWFIX_CANARY_TOKEN }}
+      CLAWFIX_SCHEDULED_CANARY: ${{ vars.CLAWFIX_SCHEDULED_CANARY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Verify public production contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="none"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            mode="${{ inputs.metered_mode }}"
+          elif [ -n "${CLAWFIX_SCHEDULED_CANARY:-}" ]; then
+            # Scheduled paid traffic is opt-in. No repository variable means free checks only.
+            mode="$CLAWFIX_SCHEDULED_CANARY"
+          fi
+
+          case "$mode" in
+            none) canary_args=() ;;
+            agent) canary_args=(--agent-canary) ;;
+            diagnose) canary_args=(--diagnose-canary) ;;
+            *) echo "::error ::invalid canary mode: $mode"; exit 2 ;;
+          esac
+
+          version="$(node -p "require('./package.json').version")"
+          node scripts/verify-production.mjs \
+            --base-url https://clawfix.dev \
+            --expected-version "$version" \
+            "${canary_args[@]}" \
+            2>&1 | tee production-verification.json
+
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-verification-${{ github.run_id }}
+          path: production-verification.json
+          if-no-files-found: warn
+          retention-days: 30
