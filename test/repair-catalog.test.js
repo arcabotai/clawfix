@@ -106,6 +106,8 @@ test('gateway restart rejects explicit invalid terminal markers before verificat
     'stdoutTruncated',
     'stderrTruncated',
     'outputLimitExceeded',
+    'partial',
+    'partiallyApplied',
   ]) {
     for (const [label, value] of [['null', null], ['undefined', undefined]]) {
       await t.test(`${marker}=${label}`, async () => {
