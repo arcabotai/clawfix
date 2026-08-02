@@ -176,6 +176,111 @@ test('version and gatewayStatus construct immutable argv and bounded process opt
   assert.equal(calls[1].options.maxStderrBytes, 256 * 1024);
 });
 
+test('configGet distinguishes an empty value from a failed invocation', async () => {
+  const results = [
+    Object.freeze({ status: 0, stdout: '', stderr: '' }),
+    Object.freeze({ status: 1, stdout: '', stderr: 'cannot read config' }),
+  ];
+  const processAdapter = {
+    async run() {
+      return results.shift();
+    },
+  };
+  const fs = {
+    async access() {},
+    async stat() { return { isFile: () => true }; },
+  };
+  const adapter = createOpenClawAdapter({
+    env: { PATH: '/tools' },
+    fs,
+    platform: 'linux',
+    processAdapter,
+  });
+
+  assert.deepEqual(await adapter.configGet('gateway.auth.mode'), {
+    ok: true,
+    value: '',
+    status: 0,
+    errorSummary: null,
+  });
+  const failed = await adapter.configGet('gateway.auth.mode');
+  assert.equal(failed.ok, false);
+  assert.equal(failed.value, '');
+  assert.equal(failed.status, 1);
+  assert.match(failed.errorSummary, /status 1/);
+  assert.equal(Object.isFrozen(failed), true);
+});
+
+test('configHasValue reports only presence and configUnset uses literal argv', async () => {
+  const calls = [];
+  const processAdapter = {
+    async run(_executable, argv) {
+      calls.push(argv);
+      if (argv[1] === 'get') {
+        return Object.freeze({ status: 0, stdout: 'super-secret-token\n', stderr: '' });
+      }
+      return Object.freeze({ status: 0, stdout: '', stderr: '' });
+    },
+  };
+  const fs = {
+    async access() {},
+    async stat() { return { isFile: () => true }; },
+  };
+  const adapter = createOpenClawAdapter({
+    env: { PATH: '/tools' },
+    fs,
+    platform: 'linux',
+    processAdapter,
+  });
+
+  const presence = await adapter.configHasValue('gateway.auth.token');
+  assert.deepEqual(presence, {
+    ok: true,
+    present: true,
+    status: 0,
+    errorSummary: null,
+  });
+  assert.equal(JSON.stringify(presence).includes('super-secret-token'), false);
+
+  const unset = await adapter.configUnset('gateway.auth.token');
+  assert.equal(unset.status, 0);
+  assert.deepEqual(calls, [
+    ['config', 'get', 'gateway.auth.token'],
+    ['config', 'unset', 'gateway.auth.token'],
+  ]);
+});
+
+test('configHasValue fails closed without returning failed stdout', async () => {
+  const adapter = createOpenClawAdapter({
+    env: { PATH: '/tools' },
+    fs: {
+      async access() {},
+      async stat() { return { isFile: () => true }; },
+    },
+    platform: 'linux',
+    processAdapter: {
+      async run() {
+        return Object.freeze({ status: 1, stdout: 'must-not-escape', stderr: 'failed' });
+      },
+    },
+  });
+
+  const presence = await adapter.configHasValue('gateway.auth.token');
+  assert.equal(presence.ok, false);
+  assert.equal(presence.present, false);
+  assert.equal(JSON.stringify(presence).includes('must-not-escape'), false);
+});
+
+test('configGet rejects invalid keys without invoking OpenClaw', async () => {
+  const adapter = createOpenClawAdapter();
+  assert.deepEqual(await adapter.configGet('bad key'), {
+    ok: false,
+    value: '',
+    status: null,
+    errorSummary: 'invalid config key',
+  });
+});
+
 test('runtime collectors pass hostile values as literal argv and parse Linux service evidence', async () => {
   const calls = [];
   const processAdapter = {

@@ -13,7 +13,9 @@ function gatewayFinding(overrides = {}) {
   return finding;
 }
 
-function fakeCatalogEntry({ preflightOk = true, verifyOk = true } = {}) {
+function fakeCatalogEntry(options = {}) {
+  const { preflightOk = true, verifyOk = true } = options;
+  const applyResult = Object.hasOwn(options, 'applyResult') ? options.applyResult : { status: 0 };
   const calls = [];
   return {
     calls,
@@ -30,7 +32,7 @@ function fakeCatalogEntry({ preflightOk = true, verifyOk = true } = {}) {
     },
     async apply() {
       calls.push('apply');
-      return { status: 0 };
+      return applyResult;
     },
     async verify() {
       calls.push('verify');
@@ -99,6 +101,30 @@ test('applyPlan rolls back and reports verify_failed when runtime verification f
 
   assert.equal(result.status, 'verify_failed');
   assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'verify', 'rollback']);
+});
+
+test('applyPlan never reports applied when the adapter apply step returns a failure status', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    return { status: 1, stage: 'generate-token' };
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const result = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /status 1/);
+  assert.equal(result.rollback.rolledBack, false);
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
 });
 
 test('applyPlan is blocked without ever calling apply when preflight evidence says it is unnecessary', async () => {
@@ -236,8 +262,22 @@ test('two plans for the same finding get different tokens, and each others token
 test('the real fix command routes catalog repairs through the repair engine before legacy fixes', async () => {
   const source = await readFile(new URL('../cli/interfaces/plain.js', import.meta.url), 'utf8');
   assert.match(source, /const catalogRepair = repairCatalog\[issue\.repairId\]/);
+  assert.match(source, /knownRepairIds: \[\.\.\.new Set\(\[\.\.\.Object\.keys\(BUILTIN_FIXES\), \.\.\.Object\.keys\(repairCatalog\)\]\)\]/);
   assert.match(source, /if \(catalogRepair\) \{\s*await applyCatalogRepair\(issue, rl, session\)/);
+  assert.match(source, /Repair applied and verified\./);
+  assert.match(source, /Repair ran, but runtime verification failed\./);
+  assert.doesNotMatch(source, /Gateway restarted and verified\./);
   assert.match(source, /revision: result\.revision/);
+  assert.match(source, /Batch repair is disabled/);
+  assert.match(source, /Apply\?'.*\[y\/N\]/);
+  assert.doesNotMatch(source, /function applyAllFixes|\[Y\/n\]/);
+
+  const legacyStart = source.indexOf('async function applyBuiltinFix');
+  const legacyEnd = source.indexOf('// Diagnostic core compatibility bridge', legacyStart);
+  const legacyBody = source.slice(legacyStart, legacyEnd);
+  assert.doesNotMatch(legacyBody, /return \{ applied: true \}/);
+  assert.match(legacyBody, /status = 'verify_failed'/);
+  assert.match(legacyBody, /let status = 'unverified'/);
 });
 
 // ============================================================
@@ -326,6 +366,98 @@ test('a throwing rollback does not mask the verify failure', async () => {
   assert.equal(outcome.rollback.rolledBack, false);
   assert.match(outcome.rollback.note, /rollback failed: rollback exploded/);
 });
+
+test('a throwing apply attempts rollback and preserves a partial-change outcome', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    throw new Error('second step crashed');
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.error, /apply failed: second step crashed/);
+  assert.equal(outcome.applyResult.changed, 'unknown');
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
+  assert.ok(outcome.rollback);
+});
+
+test('a failed apply result rolls back recorded changes and never verifies', async () => {
+  const finding = gatewayFinding();
+  const entry = fakeCatalogEntry();
+  entry.apply = async () => {
+    entry.calls.push('apply');
+    return {
+      status: 1,
+      changed: true,
+      changes: [{ type: 'config', key: 'gateway.auth.mode', before: 'none', after: 'token' }],
+      errorSummary: 'second step failed',
+    };
+  };
+  const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+  const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+  const outcome = await engine.applyPlan({
+    planId: plan.planId,
+    approvalToken: plan.approvalToken,
+    revision: 'rev-1',
+    finding,
+    ctx: {},
+  });
+
+  assert.equal(outcome.status, 'error');
+  assert.match(outcome.error, /apply failed: second step failed/);
+  assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback']);
+  assert.equal(entry.calls.includes('verify'), false);
+});
+
+const terminalApplyFailures = [
+  ['nonzero status', { status: 1 }],
+  ['null status', { status: null }],
+  ['string status', { status: '0' }],
+  ['timed out', { status: 0, timedOut: true }],
+  ['aborted', { status: 0, aborted: true }],
+  ['terminated by signal', { status: 0, signal: 'SIGKILL' }],
+  ['stdout truncated', { status: 0, stdoutTruncated: true }],
+  ['stderr truncated', { status: 0, stderrTruncated: true }],
+  ['output limit exceeded', { status: 0, outputLimitExceeded: true }],
+  ['error summary present', { status: 0, errorSummary: 'spawn was not clean' }],
+  ['error code present', { status: 0, errorCode: 'EIO' }],
+  ['error object present', { status: 0, error: new Error('adapter failure') }],
+  ['missing result', undefined],
+];
+
+for (const [scenario, applyResult] of terminalApplyFailures) {
+  test(`applyPlan treats ${scenario} as failure, rolls back, and never verifies`, async () => {
+    const finding = gatewayFinding();
+    const entry = fakeCatalogEntry({ applyResult });
+    const engine = createRepairEngine({ catalog: { 'gateway-not-running': entry } });
+    const plan = engine.createPlan({ finding, revision: 'rev-1' });
+
+    const outcome = await engine.applyPlan({
+      planId: plan.planId,
+      approvalToken: plan.approvalToken,
+      revision: 'rev-1',
+      finding,
+      ctx: {},
+    });
+
+    assert.equal(outcome.status, 'error', scenario);
+    assert.match(outcome.error, /apply failed:/, scenario);
+    assert.equal(outcome.applyResult, applyResult, scenario);
+    assert.deepEqual(entry.calls, ['preflight', 'preview', 'apply', 'rollback'], scenario);
+  });
+}
 
 test('a throwing preflight reports an error outcome instead of rejecting', async () => {
   const finding = gatewayFinding();

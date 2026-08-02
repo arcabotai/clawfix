@@ -203,13 +203,13 @@ export function stageOtuiAssetRoot(spec: TargetSpec, assetRoot: string): void {
 }
 
 function writeUnixLauncher(launcherPath: string, binName: string, assetDirName: string) {
-  const script = `#!/usr/bin/env bash
+  const script = `#!/bin/sh
 # ClawFix TUI launcher — sets OTUI_ASSET_ROOT for bun --compile OpenTUI assets.
-set -euo pipefail
+set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 export OTUI_ASSET_ROOT="\${OTUI_ASSET_ROOT:-$HERE/${assetDirName}}"
 export OTUI_TREE_SITTER_WORKER_PATH="\${OTUI_TREE_SITTER_WORKER_PATH:-$OTUI_ASSET_ROOT/@opentui/core/parser.worker.js}"
-if [[ ! -d "$OTUI_ASSET_ROOT" ]]; then
+if [ ! -d "$OTUI_ASSET_ROOT" ]; then
   echo "clawfix-tui: missing assets at $OTUI_ASSET_ROOT" >&2
   exit 1
 fi

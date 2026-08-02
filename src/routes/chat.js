@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDiagnosis } from '../db.js';
 import { getAIConfig, requestAI } from '../ai.js';
 import { redactOutbound, redactText } from '../../cli/bin/security.js';
+import { pruneLegacyConversations } from '../conversation-store.js';
 import {
   clientIp,
   createRateLimiter,
@@ -53,6 +54,8 @@ Rules:
  */
 chatRouter.post('/chat', async (req, res) => {
   let release = null;
+  let upstreamAbort = null;
+  let closeHandler = null;
   try {
     if (!validateChatBody(req.body).ok) {
       return res.status(400).json({ error: 'Invalid chat request' });
@@ -77,18 +80,25 @@ chatRouter.post('/chat', async (req, res) => {
       }
     }
 
-    // Get or create conversation history
+    // Get or create conversation history. Prune before and after insertion so fallback and
+    // provider-error paths cannot grow this process-local store without bound.
+    const now = Date.now();
+    pruneLegacyConversations(conversations, { now });
     if (!conversations.has(conversationId)) {
       conversations.set(conversationId, {
         messages: [],
         diagnosticId,
-        createdAt: Date.now(),
+        createdAt: now,
+        lastSeenAt: now,
       });
+      pruneLegacyConversations(conversations, { now });
     }
     const conv = conversations.get(conversationId);
+    if (!conv) return res.status(503).json({ error: 'Conversation capacity unavailable' });
     if (conv.diagnosticId !== diagnosticId) {
       return res.status(409).json({ error: 'Conversation diagnostic mismatch' });
     }
+    conv.lastSeenAt = now;
 
     // Add user message
     conv.messages.push({ role: 'user', content: safeMessage });
@@ -119,11 +129,18 @@ chatRouter.post('/chat', async (req, res) => {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
 
+    upstreamAbort = new AbortController();
+    closeHandler = () => {
+      if (!res.writableEnded) upstreamAbort.abort();
+    };
+    res.once('close', closeHandler);
+
     // Stream from AI
     const aiResponse = await requestAI({
       config: AI_CONFIG,
       messages: aiMessages,
       stream: true,
+      signal: upstreamAbort.signal,
     });
 
     // Stream the response chunks
@@ -169,16 +186,6 @@ chatRouter.post('/chat', async (req, res) => {
 
     res.write('data: [DONE]\n\n');
     res.end();
-
-    // Clean up old conversations (keep last 500)
-    if (conversations.size > 500) {
-      const oldest = [...conversations.entries()]
-        .sort((a, b) => a[1].createdAt - b[1].createdAt)
-        .slice(0, conversations.size - 500);
-      for (const [key] of oldest) {
-        conversations.delete(key);
-      }
-    }
   } catch (error) {
     console.error('Chat error:', redactText(error?.message || 'unknown error'));
     if (!res.headersSent) {
@@ -189,6 +196,7 @@ chatRouter.post('/chat', async (req, res) => {
       res.end();
     }
   } finally {
+    if (closeHandler) res.off('close', closeHandler);
     release?.();
   }
 });

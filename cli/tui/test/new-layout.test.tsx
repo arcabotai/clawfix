@@ -14,9 +14,9 @@ afterEach(() => {
 const plan: RepairPlanView = {
   planId: "plan-1",
   scanFingerprint: "fp",
-  repairIds: ["gateway-restart"],
-  risk: "medium",
-  summary: "Restart the OpenClaw gateway service",
+  repairIds: ["gateway-not-running"],
+  risk: "low",
+  summary: "Restart the OpenClaw gateway",
   effects: [{ kind: "service", summary: "systemctl --user restart openclaw-gateway" }],
   previewText: "~/.openclaw/openclaw.json (model)",
   unifiedDiff: null,
@@ -26,8 +26,8 @@ const plan: RepairPlanView = {
 }
 
 const findings = [
-  { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-restart" },
-  { id: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-restart" },
+  { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-not-running" },
+  { id: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-not-running" },
 ]
 
 function state(partial: Partial<TuiSessionView>): TuiSessionView {
@@ -64,7 +64,7 @@ describe("new layout", () => {
     expect(frame).toContain("First paragraph.")
     expect(frame).toContain("Second paragraph.")
     expect(frame).toContain("Repair proposal · proposed")
-    expect(frame).toContain("Restart the OpenClaw gateway service")
+    expect(frame).toContain("Restart the OpenClaw gateway")
   })
 
   test("approval dialog keeps action buttons visible on small terminals", async () => {

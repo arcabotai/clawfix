@@ -1,0 +1,46 @@
+{
+  "asOf": "2026-08-02",
+  "release": {
+    "tag": "v0.12.0",
+    "state": "published",
+    "publishedAt": "2026-08-02T05:24:40Z",
+    "source": "https://github.com/arcabotai/clawfix/releases/tag/v0.12.0",
+    "assets": [
+      "clawfix-tui-linux-x64-baseline.tar.gz",
+      "clawfix-tui-linux-x64.tar.gz",
+      "clawfix-tui-linux-x64-musl.tar.gz",
+      "TUI-SHA256SUMS"
+    ]
+  },
+  "platforms": {
+    "portableCli": [
+      "macOS",
+      "Linux",
+      "WSL"
+    ],
+    "standaloneTui": [
+      "Linux x64",
+      "Linux x64 baseline",
+      "Linux x64 musl"
+    ]
+  },
+  "validation": {
+    "supportedOpenClawVersions": [],
+    "supportStatement": "No broad OpenClaw compatibility range has been validated or asserted.",
+    "testedOpenClawVersions": [
+      {
+        "version": "2026.6.11",
+        "scope": "Real-machine diagnostic and guarded-repair scenarios in the Blaxel lab.",
+        "source": "REVIEW.md"
+      }
+    ]
+  },
+  "outcomes": {
+    "source": "https://clawfix.dev/api/stats",
+    "observedAt": "2026-08-01",
+    "totalDiagnoses": 207,
+    "recordedSuccesses": 5,
+    "unknown": 202,
+    "interpretation": "Unknown outcomes are missing follow-up, not failures. This snapshot does not establish a repair success rate."
+  }
+}

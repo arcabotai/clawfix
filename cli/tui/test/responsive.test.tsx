@@ -52,7 +52,7 @@ describe("responsive frames", () => {
     const withFindings = Object.freeze({
       ...createFakeSession(),
       findings: [
-        { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-restart" },
+        { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-not-running" },
       ],
       revision: "a1b2c3d",
     })

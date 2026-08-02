@@ -1,7 +1,7 @@
 {
   "name": "clawfix",
-  "version": "0.11.2",
-  "description": "AI-powered OpenClaw diagnostic and repair service",
+  "version": "0.12.0",
+  "description": "Deterministic-first OpenClaw diagnostics and guarded repairs with optional AI analysis",
   "private": true,
   "license": "MIT",
   "homepage": "https://clawfix.dev",
@@ -19,6 +19,8 @@
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
     "test": "node scripts/run-node-tests.mjs",
+    "capabilities:generate": "node scripts/generate-capability-contract.mjs",
+    "capabilities:check": "node scripts/generate-capability-contract.mjs --check",
     "hash:script": "node scripts/update-script-hash.mjs",
     "test:tui": "bun test --cwd cli/tui",
     "prove:remediation": "node scripts/prove-remediation.mjs .",
@@ -32,7 +34,8 @@
     "build:tui": "node scripts/build-tui-release.mjs",
     "verify:tui": "node scripts/verify-tui-artifact.mjs",
     "smoke:tui": "node scripts/smoke-tui-binary.mjs",
-    "smoke:tui:interactive": "node scripts/smoke-tui-interactive.mjs"
+    "smoke:tui:interactive": "node scripts/smoke-tui-interactive.mjs",
+    "verify:production": "node scripts/verify-production.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",

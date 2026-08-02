@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { repairCatalog } from '../cli/core/repair-catalog.js';
+import { createRepairEngine } from '../cli/core/repair-engine.js';
 
 function fakeOpenClaw({ statusText = '', pid = '', invokeResult } = {}) {
   const calls = [];
@@ -63,6 +64,90 @@ test('apply invokes the OpenClaw adapter with an argv array, never a shell strin
   assert.deepEqual(argv, ['gateway', 'restart']);
   for (const part of argv) {
     assert.equal(typeof part, 'string');
+  }
+});
+
+test('gateway restart apply preserves every terminal-failure field for the engine', async () => {
+  const terminalFailure = {
+    status: 0,
+    signal: 'SIGTERM',
+    timedOut: true,
+    aborted: true,
+    stdoutTruncated: true,
+    stderrTruncated: true,
+    outputLimitExceeded: true,
+    errorCode: 'ETIMEDOUT',
+    errorSummary: 'bounded failure',
+    error: new Error('private detail'),
+  };
+  const entry = repairCatalog['gateway-not-running'];
+  const applied = await entry.apply({
+    openclaw: { invoke: async () => terminalFailure },
+  });
+
+  assert.deepEqual(applied, {
+    status: 0,
+    signal: 'SIGTERM',
+    timedOut: true,
+    aborted: true,
+    stdoutTruncated: true,
+    stderrTruncated: true,
+    outputLimitExceeded: true,
+    errorCode: 'ETIMEDOUT',
+    errorSummary: 'bounded failure',
+    error: true,
+  });
+});
+
+test('gateway restart rejects explicit invalid terminal markers before verification', async (t) => {
+  for (const marker of [
+    'timedOut',
+    'aborted',
+    'stdoutTruncated',
+    'stderrTruncated',
+    'outputLimitExceeded',
+    'partial',
+    'partiallyApplied',
+  ]) {
+    for (const [label, value] of [['null', null], ['undefined', undefined]]) {
+      await t.test(`${marker}=${label}`, async () => {
+        let listeningChecks = 0;
+        const ctx = {
+          openclaw: {
+            async gatewayStatusText() { return 'not running'; },
+            async gatewayProcesses() { return ''; },
+            async gatewayListening() {
+              listeningChecks += 1;
+              return listeningChecks > 1;
+            },
+            async invoke() { return { status: 0, [marker]: value }; },
+          },
+          wait: async () => {},
+        };
+        const finding = {
+          id: `gateway-${marker}`,
+          title: 'Gateway is not running',
+          severity: 'medium',
+          repairable: true,
+          repairId: 'gateway-not-running',
+          evidence: {},
+        };
+        const engine = createRepairEngine({ catalog: repairCatalog });
+        const plan = engine.createPlan({ finding, revision: 'rev-invalid-marker' });
+
+        const result = await engine.applyPlan({
+          planId: plan.planId,
+          approvalToken: plan.approvalToken,
+          revision: 'rev-invalid-marker',
+          finding,
+          ctx,
+        });
+
+        assert.equal(result.status, 'error');
+        assert.match(result.error, new RegExp(`invalid ${marker} metadata`));
+        assert.equal(listeningChecks, 1, 'verification must not run after ambiguous apply metadata');
+      });
+    }
   }
 });
 
@@ -166,21 +251,77 @@ test('without a port probe the filtered PID evidence is used', async () => {
 // auto-update-enabled-warning
 // ============================================================
 
-function configCtx(values, { setStatus = 0, invokeStatus = 0 } = {}) {
+function configCtx(values, {
+  setStatus = 0,
+  setResult = null,
+  invokeStatus = 0,
+  invokeResult = null,
+  invokeThrows = false,
+  invokeCreatesToken = true,
+  invokeCreatesTokenOnFailure = false,
+  setNoOpKeys = [],
+  unsetStatus = 0,
+  unsetNoOpKeys = [],
+  unreadableKeys = [],
+  unreadableOnGetCounts = {},
+} = {}) {
   const store = { ...values };
   const calls = [];
+  const getCounts = new Map();
   return {
     calls,
     store,
     ctx: {
       openclaw: {
-        async configGet(key) { calls.push(['get', key]); return store[key] ?? ''; },
+        async configGet(key) {
+          calls.push(['get', key]);
+          const count = (getCounts.get(key) ?? 0) + 1;
+          getCounts.set(key, count);
+          if (unreadableKeys.includes(key)
+              || unreadableOnGetCounts[key]?.includes(count)) {
+            return { ok: false, value: '', status: 1, errorSummary: 'read failed' };
+          }
+          return { ok: true, value: store[key] ?? '', status: 0, errorSummary: null };
+        },
+        async configHasValue(key) {
+          calls.push(['has', key]);
+          const count = (getCounts.get(key) ?? 0) + 1;
+          getCounts.set(key, count);
+          if (unreadableKeys.includes(key)
+              || unreadableOnGetCounts[key]?.includes(count)) {
+            return { ok: false, present: false, status: 1, errorSummary: 'read failed' };
+          }
+          return {
+            ok: true,
+            present: String(store[key] ?? '').trim().length > 0,
+            status: 0,
+            errorSummary: null,
+          };
+        },
         async configSet(key, value) {
           calls.push(['set', key, value]);
-          if (setStatus === 0) store[key] = String(value);
-          return { status: setStatus };
+          const result = setResult ?? { status: setStatus };
+          if (result.status === 0 && !setNoOpKeys.includes(key)) store[key] = String(value);
+          return result;
         },
-        async invoke(argv) { calls.push(['invoke', argv.join(' ')]); return { status: invokeStatus }; },
+        async configUnset(key) {
+          calls.push(['unset', key]);
+          if (unsetStatus === 0 && !unsetNoOpKeys.includes(key)) delete store[key];
+          return { status: unsetStatus };
+        },
+        async invoke(argv) {
+          calls.push(['invoke', argv.join(' ')]);
+          if (invokeThrows) throw new Error('token generation crashed');
+          const result = invokeResult ?? {
+            status: invokeStatus,
+            errorSummary: invokeStatus === 0 ? null : 'token generation failed',
+          };
+          if ((result.status === 0 && invokeCreatesToken)
+              || (result.status !== 0 && invokeCreatesTokenOnFailure)) {
+            store['gateway.auth.token'] = 'generated-secret';
+          }
+          return result;
+        },
         async gatewayStatusText() { return ''; },
         async gatewayProcesses() { return ''; },
         async gatewayListening() { return false; },
@@ -245,18 +386,76 @@ test('gateway auth repair sets token mode and has OpenClaw generate the token', 
   const applied = await entry.apply(ctx);
   assert.equal(applied.status, 0);
   assert.equal(store['gateway.auth.mode'], 'token');
+  assert.equal(store['gateway.auth.token'], 'generated-secret');
   assert.deepEqual(calls.at(-1), ['invoke', 'doctor --fix --generate-gateway-token']);
   assert.equal((await entry.verify(ctx)).ok, true);
 });
 
-test('gateway auth repair never reads the token into its evidence', async () => {
+test('gateway auth repair verifies token presence without exposing its value', async () => {
   const entry = repairCatalog['gateway-loopback-no-auth'];
-  const { ctx, calls } = configCtx({ 'gateway.auth.mode': 'none' });
+  const { ctx } = configCtx({ 'gateway.auth.mode': 'none' });
   await entry.apply(ctx);
   const verify = await entry.verify(ctx);
 
-  assert.equal(JSON.stringify(verify).includes('token.'), false);
-  assert.equal(calls.some(([, key]) => String(key).includes('auth.token')), false);
+  assert.equal(verify.ok, true);
+  assert.equal(verify.evidence.tokenPresent, true);
+  assert.equal(JSON.stringify(verify).includes('generated-secret'), false);
+});
+
+test('gateway auth repair reuses an existing token without invoking the generator', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, calls, store } = configCtx({
+    'gateway.auth.mode': 'none',
+    'gateway.auth.token': 'existing-secret',
+  });
+
+  const applied = await entry.apply(ctx);
+  assert.equal(applied.status, 0);
+  assert.equal(applied.tokenPreviouslyPresent, true);
+  assert.equal(calls.some(([verb]) => verb === 'invoke'), false);
+  assert.equal(store['gateway.auth.token'], 'existing-secret');
+  assert.equal((await entry.verify(ctx)).ok, true);
+});
+
+test('gateway auth set-mode stage does not erase an ambiguous status-zero result', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, calls } = configCtx(
+    {
+      'gateway.auth.mode': 'none',
+      'gateway.auth.token': 'existing-secret',
+    },
+    { setResult: { status: 0, timedOut: true } },
+  );
+
+  const applied = await entry.apply(ctx);
+  assert.equal(applied.status, 0);
+  assert.equal(applied.timedOut, true);
+  assert.equal(applied.stage, 'set-mode');
+  assert.equal(applied.changed, 'unknown');
+  assert.equal(calls.some(([verb]) => verb === 'invoke'), false);
+});
+
+test('gateway auth token-generation stage preserves terminal-failure metadata', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx } = configCtx(
+    { 'gateway.auth.mode': 'none' },
+    {
+      invokeCreatesToken: false,
+      invokeResult: {
+        status: 0,
+        signal: 'SIGKILL',
+        stderrTruncated: true,
+        outputLimitExceeded: true,
+      },
+    },
+  );
+
+  const applied = await entry.apply(ctx);
+  assert.equal(applied.status, 0);
+  assert.equal(applied.signal, 'SIGKILL');
+  assert.equal(applied.stderrTruncated, true);
+  assert.equal(applied.outputLimitExceeded, true);
+  assert.equal(applied.stage, 'generate-token');
 });
 
 test('gateway auth repair is blocked when auth is already required', async () => {
@@ -269,11 +468,151 @@ test('gateway auth repair is blocked when auth is already required', async () =>
   }
 });
 
+test('gateway auth repair blocks when the current mode cannot be read', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, calls } = configCtx({}, { unreadableKeys: ['gateway.auth.mode'] });
+  const preflight = await entry.preflight(ctx);
+
+  assert.equal(preflight.ok, false);
+  assert.equal(preflight.reason, 'config_state_unknown');
+  assert.match(preflight.evidence.errorSummary, /read failed/);
+  assert.equal(calls.some(([verb]) => verb === 'set'), false);
+});
+
+test('gateway auth repair fails verification when doctor exits zero without a token', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx } = configCtx(
+    { 'gateway.auth.mode': 'none' },
+    { invokeCreatesToken: false },
+  );
+
+  const applied = await entry.apply(ctx);
+  assert.equal(applied.status, 0);
+  assert.equal((await entry.verify(ctx)).ok, false);
+});
+
+test('gateway auth repair removes a partially generated token during rollback', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx(
+    { 'gateway.auth.mode': 'none' },
+    { invokeStatus: 1, invokeCreatesTokenOnFailure: true },
+  );
+  const preflight = await entry.preflight(ctx);
+  const applied = await entry.apply(ctx);
+
+  assert.equal(applied.status, 1);
+  assert.equal(applied.changed, true);
+  assert.equal(applied.stage, 'generate-token');
+  assert.deepEqual(applied.changes, [{
+    type: 'config',
+    key: 'gateway.auth.mode',
+    before: 'none',
+    after: 'token',
+  }]);
+  assert.equal(store['gateway.auth.mode'], 'token');
+  assert.equal(store['gateway.auth.token'], 'generated-secret');
+
+  const rollback = await entry.rollback(ctx, { applyResult: applied, preflight });
+  assert.equal(rollback.rolledBack, true);
+  assert.equal(store['gateway.auth.mode'], 'none');
+  assert.equal('gateway.auth.token' in store, false);
+});
+
+test('gateway auth rollback rejects a status-zero mode no-op', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx(
+    { 'gateway.auth.mode': 'token', 'gateway.auth.token': 'generated-secret' },
+    { setNoOpKeys: ['gateway.auth.mode'] },
+  );
+  const rollback = await entry.rollback(ctx, {
+    applyResult: {
+      changed: true,
+      tokenPreviouslyPresent: false,
+      tokenMayHaveChanged: true,
+    },
+  });
+
+  assert.equal(rollback.rolledBack, false);
+  assert.equal(store['gateway.auth.mode'], 'token');
+  assert.equal(store['gateway.auth.token'], 'generated-secret');
+});
+
+test('gateway auth rollback rejects an unreadable post-rollback mode', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx } = configCtx(
+    { 'gateway.auth.mode': 'token' },
+    { unreadableOnGetCounts: { 'gateway.auth.mode': [1] } },
+  );
+  const rollback = await entry.rollback(ctx, {
+    applyResult: { changed: true, tokenPreviouslyPresent: true, tokenMayHaveChanged: false },
+  });
+
+  assert.equal(rollback.rolledBack, false);
+  assert.match(rollback.note, /could not be read back/i);
+});
+
+test('gateway auth rollback rejects a status-zero token-unset no-op', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx(
+    { 'gateway.auth.mode': 'token', 'gateway.auth.token': 'generated-secret' },
+    { unsetNoOpKeys: ['gateway.auth.token'] },
+  );
+  const rollback = await entry.rollback(ctx, {
+    applyResult: {
+      changed: true,
+      tokenPreviouslyPresent: false,
+      tokenMayHaveChanged: true,
+    },
+  });
+
+  assert.equal(rollback.rolledBack, false);
+  assert.equal(store['gateway.auth.mode'], 'none');
+  assert.equal(store['gateway.auth.token'], 'generated-secret');
+});
+
+test('gateway auth rollback rejects unreadable token state after removal', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx(
+    { 'gateway.auth.mode': 'token', 'gateway.auth.token': 'generated-secret' },
+    { unreadableOnGetCounts: { 'gateway.auth.token': [1] } },
+  );
+  const rollback = await entry.rollback(ctx, {
+    applyResult: {
+      changed: true,
+      tokenPreviouslyPresent: false,
+      tokenMayHaveChanged: true,
+    },
+  });
+
+  assert.equal(rollback.rolledBack, false);
+  assert.equal(store['gateway.auth.mode'], 'none');
+  assert.equal('gateway.auth.token' in store, false);
+  assert.match(rollback.note, /absence could not be verified/i);
+});
+
 test('gateway auth repair carries medium risk and says clients need the new token', async () => {
   const entry = repairCatalog['gateway-loopback-no-auth'];
   assert.equal(entry.risk, 'medium');
   const preview = await entry.preview();
   assert.match(preview.steps.join(' '), /existing clients need the new token/i);
+});
+
+test('gateway auth failure records enough state for the engine rollback to restore the mode', async () => {
+  const entry = repairCatalog['gateway-loopback-no-auth'];
+  const { ctx, store } = configCtx({ 'gateway.auth.mode': 'none' }, { invokeStatus: 1 });
+
+  const applied = await entry.apply(ctx);
+  assert.notEqual(applied.status, 0);
+  assert.equal(applied.stage, 'generate-token');
+  assert.equal(applied.changed, true);
+  assert.equal(store['gateway.auth.mode'], 'token');
+
+  const rollback = await entry.rollback(ctx, { applyResult: applied });
+  assert.equal(rollback.rolledBack, true);
+  assert.equal(store['gateway.auth.mode'], 'none');
+
+  const verify = await entry.verify(ctx);
+  assert.equal(verify.ok, false, 'verify must not report success when token generation failed');
 });
 
 test('the catalog exposes exactly the repairs the findings map can authorize', async () => {
@@ -305,6 +644,27 @@ for (const toggle of TOGGLES) {
     assert.equal((await entry.verify(ctx)).ok, true);
   });
 
+  test(`${toggle.id}: preserves terminal-failure metadata from config set`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx } = configCtx(
+      { [toggle.key]: toggle.from },
+      {
+        setResult: {
+          status: 0,
+          aborted: true,
+          stdoutTruncated: true,
+          errorCode: 'ABORT_ERR',
+        },
+      },
+    );
+
+    const applied = await entry.apply(ctx);
+    assert.equal(applied.status, 0);
+    assert.equal(applied.aborted, true);
+    assert.equal(applied.stdoutTruncated, true);
+    assert.equal(applied.errorCode, 'ABORT_ERR');
+  });
+
   test(`${toggle.id}: is blocked when the key is already correct`, async () => {
     const entry = repairCatalog[toggle.id];
     const { ctx } = configCtx({ [toggle.key]: toggle.to });
@@ -332,6 +692,28 @@ for (const toggle of TOGGLES) {
     await entry.apply(ctx);
     assert.equal((await entry.rollback(ctx)).rolledBack, true);
     assert.equal(store[toggle.key], toggle.from);
+  });
+
+  test(`${toggle.id}: rollback rejects a status-zero setter no-op`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx, store } = configCtx(
+      { [toggle.key]: toggle.to },
+      { setNoOpKeys: [toggle.key] },
+    );
+    const rollback = await entry.rollback(ctx);
+    assert.equal(rollback.rolledBack, false);
+    assert.equal(store[toggle.key], toggle.to);
+  });
+
+  test(`${toggle.id}: rollback rejects an unreadable restored value`, async () => {
+    const entry = repairCatalog[toggle.id];
+    const { ctx } = configCtx(
+      { [toggle.key]: toggle.to },
+      { unreadableOnGetCounts: { [toggle.key]: [1] } },
+    );
+    const rollback = await entry.rollback(ctx);
+    assert.equal(rollback.rolledBack, false);
+    assert.match(rollback.note, /could not be read back/i);
   });
 
   test(`${toggle.id}: preview names the exact command and has no side effects`, async () => {

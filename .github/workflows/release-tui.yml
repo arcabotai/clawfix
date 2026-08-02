@@ -5,11 +5,6 @@ name: Release TUI binaries
 
 on:
   workflow_dispatch:
-    inputs:
-      targets:
-        description: Comma-separated TUI targets
-        required: false
-        default: linux-x64,linux-x64-baseline
   push:
     tags:
       - "v*"
@@ -24,8 +19,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  test-tui:
+    name: TUI tests and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          root_version="$(node -p "require('./package.json').version")"
+          cli_version="$(node -p "require('./cli/package.json').version")"
+          test "$root_version" = "$cli_version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$GITHUB_REF_NAME" = "v$root_version"
+            test "$(git rev-list -n 1 "$GITHUB_REF_NAME")" = "$GITHUB_SHA"
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+
+      - name: Install TUI dependencies
+        working-directory: cli/tui
+        run: bun install --frozen-lockfile
+
+      - name: Test TUI
+        working-directory: cli/tui
+        run: bun test
+
+      - name: Typecheck TUI
+        working-directory: cli/tui
+        run: bunx tsc --noEmit
+
   build-tui:
     name: tui-${{ matrix.target }}
+    needs: test-tui
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -80,7 +115,7 @@ jobs:
             windows-x64) pkg="@opentui/core-windows-x64" ;;
             *) echo "unknown target"; exit 1 ;;
           esac
-          bun add --optional "${pkg}@0.4.5" || true
+          bun add --optional --no-save "${pkg}@0.4.5"
 
       - name: Build standalone binary
         env:
@@ -117,6 +152,15 @@ jobs:
           # a session nobody can type into.
           CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$launcher"
 
+      - name: Smoke musl binary on Alpine
+        if: matrix.target == 'linux-x64-musl'
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            node:24-alpine \
+            sh -lc 'apk add --no-cache python3 >/dev/null && launcher=/work/dist/tui/clawfix-tui-linux-x64-musl && test -x "$launcher" && node scripts/smoke-tui-binary.mjs "$launcher" && CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$launcher"'
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -132,6 +176,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout exact release source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Download all TUI artifacts
         uses: actions/download-artifact@v4
         with:
@@ -139,10 +195,31 @@ jobs:
           pattern: clawfix-tui-*
           merge-multiple: false
 
-      - name: Package target tarballs
+      - name: Revalidate remote tag before packaging
         run: |
           set -euo pipefail
-          mkdir -p release-dist
+          remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)"
+          fi
+          test -n "$remote_sha"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Package and smoke final target tarballs
+        run: |
+          set -euo pipefail
+          mkdir -p release-dist release-smoke
+          assert_archive_mode() {
+            local tarball="$1"
+            local member="$2"
+            local listing mode
+            listing="$(tar -tvzf "$tarball" "$member")"
+            read -r mode _ <<< "$listing"
+            if [ "$mode" != "-rwxr-xr-x" ]; then
+              echo "::error ::archive member $member in $tarball has mode $mode, expected -rwxr-xr-x"
+              exit 1
+            fi
+          }
           # download-artifact layout with merge-multiple=false:
           #   release-tui/clawfix-tui-<target>/{launcher,.bin,assets-<target>/,...}
           shopt -s nullglob
@@ -158,7 +235,49 @@ jobs:
               ls -la "$dir" || true
               exit 1
             fi
-            tar -C "$dir" -czf "release-dist/clawfix-tui-${target}.tar.gz" .
+
+            # actions/upload-artifact intentionally normalizes regular files to 0644. Restore
+            # executable modes after download so the release archive contains runnable files.
+            chmod 0755 "$launcher" "$binary"
+
+            tarball="release-dist/clawfix-tui-${target}.tar.gz"
+            tar -C "$dir" -czf "$tarball" .
+            assert_archive_mode "$tarball" "./clawfix-tui-$target"
+            assert_archive_mode "$tarball" "./clawfix-tui-$target.bin"
+
+            # Release evidence starts after packaging. Extract into a fresh directory and smoke
+            # only those bytes; build-tree checks cannot prove the public download is runnable.
+            smoke_dir="release-smoke/$target"
+            rm -rf "$smoke_dir"
+            mkdir -p "$smoke_dir"
+            tar -xzf "$tarball" -C "$smoke_dir"
+            smoke_launcher="$smoke_dir/clawfix-tui-$target"
+            smoke_binary="$smoke_dir/clawfix-tui-$target.bin"
+            test -x "$smoke_launcher"
+            test -x "$smoke_binary"
+            test "$(stat -c '%a' "$smoke_launcher")" = "755"
+            test "$(stat -c '%a' "$smoke_binary")" = "755"
+            test -d "$smoke_dir/assets-$target"
+            node scripts/verify-tui-artifact.mjs "$smoke_binary" --target "$target"
+
+            if [ "$target" = "linux-x64-musl" ]; then
+              docker run --rm \
+                -v "$PWD:/work" \
+                -w /work \
+                node:24-alpine \
+                sh -lc 'set -eu
+                  apk add --no-cache python3 >/dev/null
+                  smoke_launcher=/work/release-smoke/linux-x64-musl/clawfix-tui-linux-x64-musl
+                  smoke_binary=/work/release-smoke/linux-x64-musl/clawfix-tui-linux-x64-musl.bin
+                  test -x "$smoke_launcher"
+                  test -x "$smoke_binary"
+                  node scripts/smoke-tui-binary.mjs "$smoke_launcher"
+                  CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$smoke_launcher"'
+            else
+              node scripts/smoke-tui-binary.mjs "$smoke_launcher"
+              CLAWFIX_TUI_REQUIRE_PTY=1 node scripts/smoke-tui-interactive.mjs "$smoke_launcher"
+            fi
+
             echo "packed clawfix-tui-${target}.tar.gz"
             packed=$((packed + 1))
           done
@@ -174,9 +293,38 @@ jobs:
             test -s TUI-SHA256SUMS
           )
 
+      - name: Attest TUI release tarballs
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-dist/*.tar.gz
+
+      - name: Wait for CLI workflow to create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error ::CLI release was not created within 10 minutes"
+          exit 1
+
+      - name: Revalidate remote tag before upload
+        run: |
+          set -euo pipefail
+          remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME^{}" | cut -f1)"
+          if [ -z "$remote_sha" ]; then
+            remote_sha="$(git ls-remote --tags origin "refs/tags/$GITHUB_REF_NAME" | cut -f1)"
+          fi
+          test -n "$remote_sha"
+          test "$remote_sha" = "$GITHUB_SHA"
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             release-dist/*.tar.gz
             release-dist/TUI-SHA256SUMS

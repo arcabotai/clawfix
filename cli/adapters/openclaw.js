@@ -490,11 +490,50 @@ export function createOpenClawAdapter({
      *
      * Repairs verify against this rather than parsing openclaw.json: it is the value OpenClaw
      * resolves, and it keeps repair evidence to a single key instead of a whole config blob.
-     * Returns '' when the key is unset or the call fails — callers must not read that as false.
+     * An empty value can be a successful "unset" result. Callers must use `ok` to distinguish
+     * that from an invocation failure.
      */
     async configGet(key, options = {}) {
-      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) return '';
-      return processText(await invoke(['config', 'get', key], options));
+      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {
+        return Object.freeze({
+          ok: false,
+          value: '',
+          status: null,
+          errorSummary: 'invalid config key',
+        });
+      }
+      const result = await invoke(['config', 'get', key], options);
+      const ok = result.status === 0
+        && result.errorCode == null
+        && result.errorSummary == null
+        && result.signal == null
+        && !result.timedOut
+        && !result.aborted
+        && !result.outputLimitExceeded
+        && !result.stdoutTruncated
+        && !result.stderrTruncated;
+      return Object.freeze({
+        ok,
+        value: ok ? String(result.stdout || '').trim() : '',
+        status: result.status,
+        errorSummary: ok
+          ? null
+          : result.errorSummary || `openclaw config get exited with status ${result.status}`,
+      });
+    },
+
+    /**
+     * Check whether a config key has a non-empty value without returning that value to callers.
+     * This is the only repair-facing primitive allowed for secret-bearing config keys.
+     */
+    async configHasValue(key, options = {}) {
+      const read = await this.configGet(key, options);
+      return Object.freeze({
+        ok: read.ok,
+        present: read.ok ? read.value.trim().length > 0 : false,
+        status: read.status,
+        errorSummary: read.errorSummary,
+      });
     },
 
     /** Set one config key. Values are passed as literal argv, never through a shell. */
@@ -503,6 +542,14 @@ export function createOpenClawAdapter({
         return Object.freeze({ status: 1, errorSummary: 'invalid config key' });
       }
       return invoke(['config', 'set', key, String(value)], options);
+    },
+
+    /** Remove one config key through OpenClaw itself. */
+    async configUnset(key, options = {}) {
+      if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {
+        return Object.freeze({ status: 1, errorSummary: 'invalid config key' });
+      }
+      return invoke(['config', 'unset', key], options);
     },
     /**
      * PIDs that plausibly belong to a running gateway *server*.

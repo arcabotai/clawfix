@@ -104,7 +104,7 @@ export function createLiveSession(options: LiveSessionOptions): SessionBridge {
     offlineAnalyzer: createOfflineAnalyzer({ session }) as any,
     remoteAnalyzer: createRemoteAnalyzer({ session }) as any,
     preferRemote: true,
-    remoteBaseUrl: process.env.CLAWFIX_API_URL || "https://clawfix.dev",
+    remoteBaseUrl: process.env.CLAWFIX_API || "https://clawfix.dev",
     repairContext: {
       openclaw: openClawAdapter,
       wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),

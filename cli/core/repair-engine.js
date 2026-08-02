@@ -22,12 +22,62 @@ function defaultRandomToken() {
 }
 
 /** Rollback is best-effort cleanup — a throw here must never mask the apply/verify outcome. */
-async function safeRollback(entry, ctx, applyResult) {
+async function safeRollback(entry, ctx, applyResult, preflight) {
   try {
-    return await entry.rollback(ctx, { applyResult });
+    return await entry.rollback(ctx, { applyResult, preflight });
   } catch (error) {
     return Object.freeze({ rolledBack: false, note: `rollback failed: ${error.message}` });
   }
+}
+
+function safeResultText(value, fallback) {
+  try {
+    const text = String(value)
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+      .trim();
+    return text ? text.slice(0, 200) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function applyFailureReason(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return 'adapter returned no structured result';
+  }
+
+  const terminalFlags = [
+    ['timedOut', 'command timed out'],
+    ['aborted', 'command was aborted'],
+    ['outputLimitExceeded', 'command output limit was exceeded'],
+    ['stdoutTruncated', 'command stdout was truncated'],
+    ['stderrTruncated', 'command stderr was truncated'],
+    ['partial', 'command reported a partial apply'],
+    ['partiallyApplied', 'command reported a partial apply'],
+  ];
+  for (const [field, message] of terminalFlags) {
+    if (Object.hasOwn(result, field) && typeof result[field] !== 'boolean') {
+      return `adapter returned invalid ${field} metadata`;
+    }
+    if (result[field] === true) return message;
+  }
+
+  if (result.signal != null) {
+    return `command terminated by signal ${safeResultText(result.signal, 'unknown')}`;
+  }
+  if (result.error != null) {
+    return `adapter error: ${safeResultText(result.error?.message || result.error, 'unknown error')}`;
+  }
+  if (result.errorCode != null) {
+    return `adapter error code ${safeResultText(result.errorCode, 'unknown')}`;
+  }
+  const errorSummary = result.errorSummary == null ? '' : safeResultText(result.errorSummary, '');
+  if (errorSummary) {
+    return errorSummary;
+  }
+  if (result.changed === 'unknown') return 'adapter could not determine whether it changed state';
+  if (result.status !== 0) return `status ${safeResultText(result.status, 'unknown')}`;
+  return null;
 }
 
 function stableFingerprintInput(finding, revision) {
@@ -160,7 +210,53 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     try {
       applyResult = await entry.apply(ctx);
     } catch (error) {
-      return Object.freeze({ status: 'error', error: error.message, plan, preview });
+      applyResult = Object.freeze({
+        status: null,
+        changed: 'unknown',
+        changes: Object.freeze([]),
+        errorSummary: error.message,
+      });
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
+      return Object.freeze({
+        status: 'error',
+        error: `apply failed: ${error.message}`,
+        plan,
+        preview,
+        applyResult,
+        rollback,
+      });
+    }
+
+    const applyFailure = applyFailureReason(applyResult);
+    if (applyFailure) {
+      // A failed/ambiguous process result may still have changed state. Roll back every returned
+      // failure rather than trusting an optional `changed` flag supplied by the failing adapter.
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
+      return Object.freeze({
+        status: 'error',
+        error: `apply failed: ${applyFailure}`,
+        plan,
+        preview,
+        applyResult,
+        rollback,
+      });
+    }
+
+    // An adapter-level failure is never evidence of a successful repair, even when a partial
+    // write makes the later state check look like the target state. This matters for multi-stage
+    // repairs such as gateway auth: setting auth.mode can succeed while token generation fails.
+    if (applyResult?.timedOut === true || (
+      Number.isInteger(applyResult?.status) && applyResult.status !== 0
+    )) {
+      const rollback = await safeRollback(entry, ctx, applyResult);
+      return Object.freeze({
+        status: 'verify_failed',
+        plan,
+        preview,
+        applyResult,
+        verify: Object.freeze({ ok: false, error: 'repair apply step failed' }),
+        rollback,
+      });
     }
 
     // Past this point the repair has run. Every remaining failure must still be reported as a
@@ -170,7 +266,7 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     try {
       verify = await entry.verify(ctx);
     } catch (error) {
-      const rollback = await safeRollback(entry, ctx, applyResult);
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
       return Object.freeze({
         status: 'verify_failed',
         plan,
@@ -182,7 +278,7 @@ export function createRepairEngine({ catalog = {}, now = () => Date.now(), rando
     }
 
     if (!verify.ok) {
-      const rollback = await safeRollback(entry, ctx, applyResult);
+      const rollback = await safeRollback(entry, ctx, applyResult, preflight);
       return Object.freeze({ status: 'verify_failed', plan, preview, applyResult, verify, rollback });
     }
 

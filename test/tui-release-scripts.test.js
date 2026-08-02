@@ -60,13 +60,100 @@ describe('tui release scripts', () => {
     assert.doesNotMatch(build, /spawnSync\("bun", \["build"/);
   });
 
-  it('interactive smoke fails a binary that renders but ignores input', () => {
-    const r = spawnSync(process.execPath, [join(root, 'scripts/smoke-tui-interactive.mjs'), '/no/such/binary'], {
-      encoding: 'utf8',
-    });
-    assert.notEqual(r.status, 0);
-    assert.match(`${r.stdout}${r.stderr}`, /binary not found/);
+  it('interactive smoke fails a renderer that redraws but ignores input', async () => {
+    const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'clawfix-interactive-'));
+    const fake = join(dir, 'ignore-input');
+    try {
+      await writeFile(fake, `#!/usr/bin/env node
+process.stdin.setRawMode?.(true);
+process.stdin.resume();
+setInterval(() => process.stdout.write('\\u001b[HClawFix redraw'), 50);
+process.stdin.on('data', data => { if (data.includes(4)) process.exit(0); });
+`);
+      await chmod(fake, 0o755);
+      const r = spawnSync(process.execPath, [join(root, 'scripts/smoke-tui-interactive.mjs'), fake], {
+        encoding: 'utf8',
+        env: { ...process.env, CLAWFIX_TUI_REQUIRE_PTY: '1' },
+      });
+      assert.notEqual(r.status, 0);
+      assert.match(`${r.stdout}${r.stderr}`, /ignored typed input/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
+
+  it('interactive smoke fails a binary that crashes after accepting input', async () => {
+    const { mkdtemp, writeFile, chmod, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const dir = await mkdtemp(join(tmpdir(), 'clawfix-interactive-'));
+    const fake = join(dir, 'crash-on-exit');
+    try {
+      await writeFile(fake, `#!/usr/bin/env node
+process.stdin.setRawMode?.(true);
+process.stdin.resume();
+process.stdout.write('ClawFix');
+process.stdin.on('data', data => {
+  if (data.includes(4)) process.exit(7);
+  process.stdout.write(data);
+});
+`);
+      await chmod(fake, 0o755);
+      const r = spawnSync(process.execPath, [join(root, 'scripts/smoke-tui-interactive.mjs'), fake], {
+        encoding: 'utf8',
+        env: { ...process.env, CLAWFIX_TUI_REQUIRE_PTY: '1' },
+      });
+      assert.notEqual(r.status, 0);
+      assert.match(`${r.stdout}${r.stderr}`, /nonzero status 7/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('configures a nonzero PTY window before judging the compiled session', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const smoke = await readFile(join(root, 'scripts/smoke-tui-interactive.mjs'), 'utf8');
+    assert.match(smoke, /TIOCSWINSZ/);
+    assert.match(smoke, /struct\.pack\("HHHH", 30, 100, 0, 0\)/);
+  });
+
+  it('emits a POSIX launcher that stock Alpine can execute without Bash', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const buildSource = await readFile(join(root, 'cli/tui/scripts/build.ts'), 'utf8');
+    assert.match(buildSource, /const script = `#!\/bin\/sh/);
+    assert.match(buildSource, /set -eu/);
+    assert.match(buildSource, /if \[ ! -d "\$OTUI_ASSET_ROOT" \]; then/);
+    assert.doesNotMatch(buildSource, /#!\/usr\/bin\/env bash|set -euo pipefail|\[\[/);
+  });
+
+  it('restores modes and smokes the extracted final tarballs before attestation', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const workflow = await readFile(join(root, '.github/workflows/release-tui.yml'), 'utf8');
+
+    const publishJob = workflow.slice(workflow.indexOf('  publish-release-assets:'));
+    assert.match(publishJob, /uses: actions\/checkout@v6/);
+    assert.match(publishJob, /fetch-depth: 0/);
+    assert.match(publishJob, /chmod 0755 "\$launcher" "\$binary"/);
+    assert.match(publishJob, /assert_archive_mode "\$tarball" "\.\/clawfix-tui-\$target"/);
+    assert.match(publishJob, /assert_archive_mode "\$tarball" "\.\/clawfix-tui-\$target\.bin"/);
+    assert.match(publishJob, /tar -xzf "\$tarball" -C "\$smoke_dir"/);
+    assert.match(publishJob, /test -x "\$smoke_launcher"/);
+    assert.match(publishJob, /test -x "\$smoke_binary"/);
+    assert.match(publishJob, /stat -c '%a' "\$smoke_launcher"/);
+    assert.match(publishJob, /stat -c '%a' "\$smoke_binary"/);
+    assert.match(publishJob, /smoke-tui-binary\.mjs "\$smoke_launcher"/);
+    assert.match(publishJob, /smoke-tui-interactive\.mjs "\$smoke_launcher"/);
+    assert.match(publishJob, /node:24-alpine/);
+    assert.match(publishJob, /release-smoke\/linux-x64-musl/);
+    assert.match(publishJob, /apk add --no-cache python3/);
+    assert.match(publishJob, /CLAWFIX_TUI_REQUIRE_PTY=1 node scripts\/smoke-tui-interactive\.mjs/);
+
+    const packageAt = publishJob.indexOf('- name: Package and smoke final target tarballs');
+    const attestAt = publishJob.indexOf('- name: Attest TUI release tarballs');
+    assert.ok(packageAt >= 0 && attestAt > packageAt, 'attestation must follow packaged-artifact smoke');
+  });
+
   it('ships a musl target that stages its library under the key the runtime asks for', async () => {
     // @opentui/core resolves its native library by a hardcoded package name and has no musl
     // detection, so on Alpine it asks for @opentui/core-linux-x64. The musl build stages the

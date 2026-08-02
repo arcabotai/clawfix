@@ -1,5 +1,6 @@
 import { Router } from 'express';
 
+import { claimWebhookDelivery, releaseWebhookDelivery } from '../db.js';
 import { verifySvixSignature } from '../webhook-signatures.js';
 
 export const webhooksRouter = Router();
@@ -52,20 +53,28 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
 
   if (event.type === 'email.received') {
     const data = event.data;
-    console.log(`📨 Inbound from ${data.from} → ${data.to?.join(', ')} — ${data.subject}`);
+    if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid email event' });
+    const eventId = String(req.headers['svix-id'] || '');
+    const claimed = await claimWebhookDelivery('resend', eventId);
+    if (!claimed) return res.json({ received: true, duplicate: true });
 
-    // Forward if configured
+    const toSummary = Array.isArray(data.to) ? data.to.join(', ') : String(data.to || 'unknown');
+    console.log(`📨 Inbound from ${String(data.from || 'unknown')} → ${toSummary} — ${String(data.subject || '(no subject)')}`);
+
+    // Forward if configured. A failed side effect releases the claim and returns 503 so Resend
+    // retries; successful deliveries remain claimed across replicas when PostgreSQL is enabled.
     if (RESEND_CONFIG.apiKey && RESEND_CONFIG.forwardTo) {
       try {
         await forwardEmail(data);
         console.log(`📬 Forwarded to ${RESEND_CONFIG.forwardTo}`);
       } catch (err) {
+        await releaseWebhookDelivery('resend', eventId);
         console.error('Forward failed:', err.message);
+        return res.status(503).json({ error: 'Forward failed; retry requested' });
       }
     }
   }
 
-  // Always respond 200 so Resend marks delivery as successful
   res.json({ received: true });
 });
 

@@ -18,10 +18,13 @@ import { spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 
 const DRIVER = String.raw`
-import os, pty, subprocess, sys, threading, time
+import fcntl, os, pty, re, struct, subprocess, sys, termios, threading, time
 
 binary = sys.argv[1]
 master, slave = pty.openpty()
+# Some CI and nested-container PTYs start at 0x0. OpenTUI can exit cleanly without ever
+# rendering in that state, which is a harness false positive rather than product evidence.
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
 proc = subprocess.Popen([binary, "--fake-session"], stdin=slave, stdout=slave, stderr=slave,
                         env={**os.environ, "TERM": "xterm-256color", "CLAWFIX_TUI_SMOKE": "1"})
 os.close(slave)
@@ -64,7 +67,9 @@ if exited is None:
     proc.kill()
 
 print("RENDERED:", b"ClawFix" in rendered)
-print("ACCEPTS_INPUT:", len(echoed) > 0)
+ansi = re.compile(rb'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+plain_echoed = ansi.sub(b"", echoed)
+print("ACCEPTS_INPUT:", b"ZZTOP" in plain_echoed)
 print("EXIT_CODE:", "none" if exited is None else exited)
 `
 
@@ -107,8 +112,11 @@ if (!acceptsInput) {
     + `createSolidTransformPlugin() to Bun.build.\n--- driver output ---\n${output}`,
   )
 }
-if (exitCode === 'none') {
-  fail(`binary did not exit on Ctrl+D — there is no way out of the session\n--- driver output ---\n${output}`)
+if (exitCode !== '0') {
+  const reason = exitCode === 'none'
+    ? 'binary did not exit on Ctrl+D — there is no way out of the session'
+    : `binary exited with nonzero status ${exitCode}`
+  fail(`${reason}\n--- driver output ---\n${output}`)
 }
 
 console.log(JSON.stringify({ ok: true, mode: 'pty', rendered, acceptsInput, exitCode }, null, 2))

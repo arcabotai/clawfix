@@ -29,14 +29,18 @@ const MAX_CONVERSATIONS = positiveEnvInteger(process.env.AGENT_MAX_CONVERSATIONS
 
 export function pruneConversations(now = Date.now(), store = conversations) {
   for (const [id, conv] of store) {
-    if (now - conv.createdAt > CONVERSATION_TTL_MS) store.delete(id);
+    const touchedAt = Number(conv?.lastSeenAt || conv?.createdAt || 0);
+    if (!Number.isFinite(touchedAt) || now - touchedAt > CONVERSATION_TTL_MS) store.delete(id);
   }
-  // Map iterates in insertion order, so the oldest entries evict first.
-  while (store.size > MAX_CONVERSATIONS) {
-    const oldest = store.keys().next();
-    if (oldest.done) break;
-    store.delete(oldest.value);
-  }
+  if (store.size <= MAX_CONVERSATIONS) return store.size;
+  const overflow = [...store.entries()]
+    .sort((a, b) => {
+      const aTouched = Number(a[1]?.lastSeenAt || a[1]?.createdAt || 0);
+      const bTouched = Number(b[1]?.lastSeenAt || b[1]?.createdAt || 0);
+      return aTouched - bTouched;
+    })
+    .slice(0, store.size - MAX_CONVERSATIONS);
+  for (const [id] of overflow) store.delete(id);
   return store.size;
 }
 const AI_CONFIG = getAIConfig();
@@ -63,6 +67,8 @@ function chunkText(text, size = 48) {
  */
 agentV2Router.post('/v2/agent/messages', async (req, res) => {
   let release = null;
+  let upstreamAbort = null;
+  let closeHandler = null;
   try {
     if (!isAgentV2Enabled()) {
       return res.status(404).json({ error: 'Agent v2 is disabled' });
@@ -87,16 +93,20 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       release = capacity.release;
     }
 
-    pruneConversations();
+    const now = Date.now();
+    pruneConversations(now);
     if (!conversations.has(conversationId)) {
       conversations.set(conversationId, {
         messages: [],
         diagnosticId: diagnosticId || null,
-        createdAt: Date.now(),
+        createdAt: now,
+        lastSeenAt: now,
       });
+      pruneConversations(now);
     }
     const conv = conversations.get(conversationId);
-    conv.lastSeenAt = Date.now();
+    if (!conv) return res.status(503).json({ error: 'Conversation capacity unavailable' });
+    conv.lastSeenAt = now;
     // Allow first message to bind diagnostic; later rescans may update intentionally.
     if (diagnosticId && conv.diagnosticId && conv.diagnosticId !== diagnosticId) {
       conv.diagnosticId = diagnosticId;
@@ -144,6 +154,12 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
     const aiMessages = [{ role: 'system', content: systemContent }, ...conv.messages];
     const tool = buildProposeRepairTool(availableRepairs);
 
+    upstreamAbort = new AbortController();
+    closeHandler = () => {
+      if (!res.writableEnded) upstreamAbort.abort();
+    };
+    res.once('close', closeHandler);
+
     // Non-stream completion so tool calls are reliable. Content is then emitted as deltas.
     const completion = await requestAI({
       messages: aiMessages,
@@ -151,6 +167,7 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       tools: tool ? [tool] : undefined,
       toolChoice: tool ? 'auto' : undefined,
       config: AI_CONFIG,
+      signal: upstreamAbort.signal,
     });
 
     let assistantText = '';
@@ -206,6 +223,7 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
     }
     if (!res.writableEnded) res.end();
   } finally {
+    if (closeHandler) res.off('close', closeHandler);
     if (typeof release === 'function') release();
   }
 });

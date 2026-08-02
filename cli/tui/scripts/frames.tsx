@@ -31,9 +31,9 @@ const SIZES = [
 const plan: RepairPlanView = {
   planId: "plan-1",
   scanFingerprint: "fp",
-  repairIds: ["gateway-restart"],
-  risk: "medium",
-  summary: "Restart the OpenClaw gateway service",
+  repairIds: ["gateway-not-running"],
+  risk: "low",
+  summary: "Restart the OpenClaw gateway",
   effects: [{ kind: "service", summary: "systemctl --user restart openclaw-gateway" }],
   previewText: "~/.openclaw/openclaw.json (model)",
   unifiedDiff: null,
@@ -43,8 +43,8 @@ const plan: RepairPlanView = {
 }
 
 const findings = [
-  { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-restart" },
-  { id: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-restart" },
+  { id: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-not-running" },
+  { id: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-not-running" },
   { id: "f3", title: "Config file present but node version untested", severity: "warning", repairable: false, repairId: null },
   { id: "f4", title: "Memory files missing (MEMORY.md)", severity: "warning", repairable: false, repairId: null },
   { id: "f5", title: "Disk usage above 80% on data volume", severity: "optimization", repairable: false, repairId: null },
@@ -57,11 +57,11 @@ function state(partial: Partial<TuiSessionView>): TuiSessionView {
 }
 
 const chatItems: TranscriptItem[] = [
-  { kind: "finding", id: "fc-f1", findingId: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-restart", evidence: "systemctl --user status openclaw-gateway → inactive (dead)" },
-  { kind: "finding", id: "fc-f2", findingId: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-restart", evidence: null },
+  { kind: "finding", id: "fc-f1", findingId: "f1", title: "Gateway service is not running", severity: "critical", repairable: true, repairId: "gateway-not-running", evidence: "systemctl --user status openclaw-gateway → inactive (dead)" },
+  { kind: "finding", id: "fc-f2", findingId: "f2", title: "Port 18789 is not listening", severity: "critical", repairable: true, repairId: "gateway-not-running", evidence: null },
   { kind: "finding", id: "fc-f3", findingId: "f3", title: "Config file present but node version untested", severity: "warning", repairable: false, repairId: null, evidence: null },
   { kind: "message", id: "m1", role: "user", text: "why is my gateway not running" },
-  { kind: "message", id: "m2", role: "assistant", text: "Your gateway service is registered but currently stopped. The most common cause after a reboot is the systemd user service failing to start because Node is not on its PATH.\n\nI can restart it with the reviewed gateway-restart repair. Want me to?" },
+  { kind: "message", id: "m2", role: "assistant", text: "Your gateway service is registered but currently stopped. The most common cause after a reboot is the systemd user service failing to start because Node is not on its PATH.\n\nI can restart it with the reviewed gateway-not-running repair. Want me to?" },
   { kind: "repair", id: "r1", plan, rationale: "Gateway is down and port 18789 is closed.", status: "proposed" },
 ]
 

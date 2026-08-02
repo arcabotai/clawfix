@@ -66,6 +66,30 @@ jobs:
           npm pack ./cli --dry-run --json --cache /tmp/clawfix-npm-cache > "$manifest"
           node scripts/verify-cli-package.mjs "$manifest"
 
+  tui:
+    name: TUI tests and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+
+      - name: Install TUI dependencies
+        working-directory: cli/tui
+        run: bun install --frozen-lockfile
+
+      - name: Test TUI
+        working-directory: cli/tui
+        run: bun test
+
+      - name: Typecheck TUI
+        working-directory: cli/tui
+        run: bunx tsc --noEmit
+
   container:
     name: Production container
     runs-on: ubuntu-latest

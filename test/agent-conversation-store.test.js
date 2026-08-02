@@ -19,7 +19,18 @@ test('pruneConversations drops entries past the TTL', () => {
   assert.deepEqual([...store.keys()], ['fresh-conversation']);
 });
 
-test('pruneConversations enforces a hard cap, evicting oldest first', () => {
+test('pruneConversations uses last activity so an active long-lived chat does not expire', () => {
+  const now = 1_000_000_000;
+  const active = conv(now - 31 * 60_000);
+  active.lastSeenAt = now - 1_000;
+  const store = new Map([['active-conversation', active]]);
+
+  pruneConversations(now, store);
+
+  assert.equal(store.has('active-conversation'), true);
+});
+
+test('pruneConversations enforces a hard cap, evicting least recently active first', () => {
   const now = 1_000_000_000;
   const store = new Map();
   for (let i = 0; i < 1200; i += 1) {

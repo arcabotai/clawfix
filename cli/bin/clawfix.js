@@ -4,10 +4,10 @@
  * ClawFix CLI entrypoint — mode dispatch only.
  * https://clawfix.dev
  *
- * Usage: npx clawfix          (OpenTUI session; plain fallback without Bun)
- *        npx clawfix --plain  (classic interactive session)
+ * Usage: npx clawfix          (portable plain session from npm)
+ *        npx clawfix --plain  (portable plain session)
  *        npx clawfix --scan   (one-shot scan)
- *        npx clawfix --tui    (force OpenTUI; requires Bun)
+ *        npx clawfix --tui    (source checkout only; standalone release binary is separate)
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -25,7 +25,7 @@ const VERSION = (() => {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
   } catch {
-    return '0.11.2';
+    return '0.12.0';
   }
 })();
 
@@ -64,8 +64,7 @@ Environment:
   CLAWFIX_AUTO=1   Same as --yes
 
 Interactive Commands:
-  fix <#>          Fix issue (shows plan → confirm → apply → verify)
-  fix-all          Fix all auto-fixable issues at once
+  fix <#>          Fix one issue (shows plan → confirm → apply → verify)
   scan             Re-run diagnostics
   issues           Show detected issues
   help             Show help
