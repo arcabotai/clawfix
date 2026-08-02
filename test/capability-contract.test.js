@@ -15,8 +15,8 @@ test('capability contract derives release, detector, and repair truth from shipp
   const expectedRepairs = Object.keys(repairCatalog).sort();
 
   assert.equal(contract.release.version, '0.12.0');
-  assert.equal(contract.release.state, 'candidate');
-  assert.equal(contract.release.publishedAt, null);
+  assert.equal(contract.release.state, 'published');
+  assert.equal(contract.release.publishedAt, '2026-08-02T05:24:40Z');
   assert.equal(contract.release.nodeEngine, '>=22.0.0');
   assert.equal(contract.detectors.deterministicCount, KNOWN_ISSUES.length);
   assert.deepEqual(

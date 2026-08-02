@@ -9,15 +9,15 @@
     "repairCatalog": "cli/core/repair-catalog.js",
     "evidenceSnapshot": "docs/capabilities/evidence.json"
   },
-  "evidenceAsOf": "2026-08-01",
+  "evidenceAsOf": "2026-08-02",
   "release": {
     "version": "0.12.0",
     "tag": "v0.12.0",
-    "state": "candidate",
-    "publishedAt": null,
+    "state": "published",
+    "publishedAt": "2026-08-02T05:24:40Z",
     "package": "clawfix",
     "nodeEngine": ">=22.0.0",
-    "releaseMetadataSource": "docs/capabilities/evidence.json",
+    "releaseMetadataSource": "https://github.com/arcabotai/clawfix/releases/tag/v0.12.0",
     "releaseAssets": [
       "clawfix-tui-linux-x64-baseline.tar.gz",
       "clawfix-tui-linux-x64.tar.gz",

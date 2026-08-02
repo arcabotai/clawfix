@@ -1,10 +1,10 @@
 {
-  "asOf": "2026-08-01",
+  "asOf": "2026-08-02",
   "release": {
     "tag": "v0.12.0",
-    "state": "candidate",
-    "publishedAt": null,
-    "source": "docs/capabilities/evidence.json",
+    "state": "published",
+    "publishedAt": "2026-08-02T05:24:40Z",
+    "source": "https://github.com/arcabotai/clawfix/releases/tag/v0.12.0",
     "assets": [
       "clawfix-tui-linux-x64-baseline.tar.gz",
       "clawfix-tui-linux-x64.tar.gz",
