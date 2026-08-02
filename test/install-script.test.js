@@ -90,8 +90,16 @@ test('install script installs a pinned package into a local prefix without npm i
   const packDir = join(packRoot, 'package');
   const prefix = join(work, 'prefix');
   const binDir = join(work, 'bin');
+  const oldBinDir = join(work, 'old-bin');
+  let server;
   try {
-    await run('mkdir', ['-p', packDir, join(registryRoot, 'clawfix'), prefix, binDir]);
+    await run('mkdir', ['-p', packDir, join(registryRoot, 'clawfix'), prefix, binDir, oldBinDir]);
+
+    await writeFile(
+      join(oldBinDir, 'clawfix'),
+      '#!/usr/bin/env bash\necho "clawfix v0.9.0-old"\n',
+    );
+    await chmod(join(oldBinDir, 'clawfix'), 0o755);
 
     // Minimal package matching published clawfix bin layout
     const pkg = {
@@ -129,7 +137,7 @@ test('install script installs a pinned package into a local prefix without npm i
 
     // Fake registry HTTP server
     const tarballBytes = await readFile(tarball);
-    const server = createServer((req, res) => {
+    server = createServer((req, res) => {
       if (req.url === '/clawfix/0.10.0') {
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({
@@ -161,11 +169,14 @@ test('install script installs a pinned package into a local prefix without npm i
       CLAWFIX_PREFIX: prefix,
       CLAWFIX_BIN_DIR: binDir,
       CLAWFIX_REGISTRY: registry,
-      PATH: `${binDir}:${process.env.PATH}`,
+      PATH: `${oldBinDir}:${binDir}:${process.env.PATH}`,
       HOME: work,
     });
 
     assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /clawfix v0\.10\.0-test/);
+    assert.doesNotMatch(result.stdout, /clawfix v0\.9\.0-old/);
+    assert.match(result.stdout, new RegExp(`${join(binDir, 'clawfix')} --dry-run`));
     await access(join(binDir, 'clawfix'));
     await access(join(prefix, 'versions/0.10.0/bin/clawfix.js'));
 
@@ -173,8 +184,12 @@ test('install script installs a pinned package into a local prefix without npm i
     assert.equal(version.code, 0, version.stderr);
     assert.match(version.stdout, /clawfix v0\.10\.0-test/);
 
-    server.close();
   } finally {
+    if (server?.listening) {
+      await new Promise((resolve, reject) => {
+        server.close(error => error ? reject(error) : resolve());
+      });
+    }
     await rm(work, { recursive: true, force: true });
   }
 });

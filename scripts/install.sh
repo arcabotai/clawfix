@@ -202,7 +202,7 @@ main() {
   fi
   ok "✅ Node $(node --version)"
 
-  local meta tarball extract_dir version_dir launcher
+  local meta tarball extract_dir version_dir launcher command_hint
   CLEANUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/clawfix-install.XXXXXX")"
   tmp="$CLEANUP_DIR"
   trap 'rm -rf "${CLEANUP_DIR:-}"' EXIT
@@ -259,8 +259,13 @@ EOF
   log "   Binary:  $launcher"
   log ""
 
+  command_hint="$launcher"
   case ":${PATH}:" in
-    *":${BIN_DIR}:"*) ;;
+    *":${BIN_DIR}:"*)
+      if [ "$(command -v clawfix 2>/dev/null || true)" = "$launcher" ]; then
+        command_hint="clawfix"
+      fi
+      ;;
     *)
       warn "⚠️  ${BIN_DIR} is not on PATH"
       log "   Add this to your shell profile:"
@@ -269,18 +274,13 @@ EOF
       ;;
   esac
 
-  if command -v clawfix >/dev/null 2>&1; then
-    ok "✅ Ready: clawfix --version"
-    clawfix --version || true
-  else
-    ok "✅ Ready: ${launcher} --version"
-    "$launcher" --version || true
-  fi
+  ok "✅ Verifying installed binary: ${launcher} --version"
+  "$launcher" --version || die "Installed ClawFix failed its version check"
 
   log ""
   info "Next:"
-  log "  clawfix --dry-run"
-  log "  clawfix"
+  log "  ${command_hint} --dry-run"
+  log "  ${command_hint}"
   log ""
 }
 

@@ -509,11 +509,11 @@ const LANDING_HTML = `<!DOCTYPE html>
 
         <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span></code>
-          <button type="button" class="copy-btn" id="copyBtn-install" aria-live="polite" onclick="copyCommand('install')">Copy</button>
+          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span> <span>&amp;&amp; bash install.sh</span></code>
+          <button type="button" class="copy-btn" id="copyBtn-install" data-copy-command="install" aria-live="polite">Copy</button>
         </div>
         <p class="command-hint" style="margin-bottom: 6px;">
-          <strong style="color:var(--green)">Recommended</strong> Verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run <code>bash install.sh</code>. No global npm.
+          <strong style="color:var(--green)">Recommended</strong> Downloads and runs the installer. To inspect first, omit <code>&amp;&amp; bash install.sh</code>, verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run it. No global npm.
         </p>
         <p class="command-hint" style="margin-bottom: 18px;">
           Prefer npm? <code id="cmd-npx">npx clawfix@0.12.0</code> · Dry run: <code>npx clawfix@0.12.0 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
@@ -870,14 +870,53 @@ gateway-not-running repair. Want me to?
   </footer>
 
   <script>
-    function copyCommand(type) {
-      const cmd = document.getElementById('cmd-' + type).textContent;
-      navigator.clipboard.writeText(cmd).then(() => {
-        const btn = document.getElementById('copyBtn-' + type);
-        btn.textContent = 'Copied!';
-        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-      });
+    function copyTextFallback(text) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, text.length);
+
+      try {
+        return Boolean(document.execCommand && document.execCommand('copy'));
+      } catch {
+        return false;
+      } finally {
+        document.body.removeChild(textarea);
+      }
     }
+
+    async function copyCommand(type) {
+      const command = document.getElementById('cmd-' + type);
+      const btn = document.getElementById('copyBtn-' + type);
+      if (!command || !btn) return false;
+
+      const text = command.textContent;
+      let copied = false;
+
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+
+      if (!copied) copied = copyTextFallback(text);
+
+      btn.textContent = copied ? 'Copied!' : 'Copy failed';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      return copied;
+    }
+
+    document.querySelectorAll('[data-copy-command]').forEach((button) => {
+      button.addEventListener('click', () => copyCommand(button.dataset.copyCommand));
+    });
   </script>
 </body>
 </html>`;
