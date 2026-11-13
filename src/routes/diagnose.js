@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import { classifyKnownIssue, detectIssues, matchLocalKnownIssues } from '../known-issues.js';
-import { storeDiagnosis, storeFeedback, getStats, getDiagnosis } from '../db.js';
+import { getDiagnosis, getPool, getStats, hasDatabase, storeDiagnosis, storeFeedback } from '../db.js';
 import {
   AI_ANALYSIS_SCHEMA,
   getAIConfig,
@@ -9,11 +9,11 @@ import {
   requestAI,
 } from '../ai.js';
 import { validateRepairScript } from '../repair-validator.js';
+import { getRuntimeEnv } from '../runtime-env.js';
 import { APP_VERSION } from '../version.js';
 import { redactOutbound, validateFixId } from '../../cli/bin/security.js';
 import {
-  clientIp,
-  createRateLimiter,
+  consumeRouteRateLimit,
   isAuthorizedCanaryRequest,
   isPaidAIEnabled,
   positiveEnvInteger,
@@ -25,13 +25,6 @@ export const diagnoseRouter = Router();
 
 // In-memory store for fix results (use Redis/DB in production)
 const fixes = new Map();
-
-const AI_CONFIG = getAIConfig();
-const AI_ENABLED = isPaidAIEnabled(AI_CONFIG);
-const diagnoseLimiter = createRateLimiter({
-  limit: positiveEnvInteger(process.env.DIAGNOSE_RATE_LIMIT, 10),
-  windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
-});
 
 export function diagnosisSource(req, env = process.env) {
   if (isAuthorizedCanaryRequest(req, env)) return 'canary';
@@ -120,21 +113,30 @@ Rules:
 diagnoseRouter.post('/diagnose', async (req, res) => {
   let release = null;
   try {
+    const env = getRuntimeEnv();
+    const db = getPool();
+    const aiConfig = getAIConfig(env);
+    const aiEnabled = isPaidAIEnabled(aiConfig, env);
     if (!validateDiagnosticBody(req.body).ok) {
       return res.status(400).json({ error: 'Invalid diagnostic payload' });
     }
-    if (!diagnoseLimiter.consume(clientIp(req)).allowed) {
+    const rate = await consumeRouteRateLimit('diagnose-ip', req, {
+      env,
+      db,
+      limit: positiveEnvInteger(env.DIAGNOSE_RATE_LIMIT, 10),
+    });
+    if (!rate.allowed) {
       return res.status(429).json({ error: 'Too many diagnosis requests' });
     }
-    if (AI_ENABLED) {
-      const capacity = sharedAIRequestGuard.acquire(req);
+    if (aiEnabled) {
+      const capacity = await sharedAIRequestGuard.acquire(req, { env, db });
       if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
       release = capacity.release;
     }
 
     // Redact again at the service boundary before AI, persistence, or response.
     const diagnostic = redactOutbound(req.body);
-    const source = diagnosisSource(req);
+    const source = diagnosisSource(req, env);
 
     // Step 1: Pattern matching (fast, free)
     let knownIssues = detectIssues(diagnostic);
@@ -148,7 +150,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     }));
 
     // Step 2: AI analysis (for novel issues and better explanations)
-    const aiAnalysis = await analyzeWithAI(diagnostic, knownIssues);
+    const aiAnalysis = await analyzeWithAI(diagnostic, knownIssues, { aiConfig, aiEnabled });
 
     // Generate fix ID
     const fixId = nanoid(12);
@@ -183,7 +185,7 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
           ? ''
           : 'The combined repair script was withheld because it failed local shell validation.',
       ].filter(Boolean).join(' '),
-      model: AI_CONFIG.model,
+      model: aiConfig.model,
       systemInfo: {
         os: diagnostic.system?.os ? `${diagnostic.system.os} ${diagnostic.system.osVersion || ''} (${diagnostic.system.arch || ''})` : null,
         nodeVersion: diagnostic.system?.nodeVersion || null,
@@ -210,16 +212,12 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
 
     fixes.set(fixId, result);
 
-    // Persist to database
-    const persistence = storeDiagnosis(result, source);
-    if (source === 'canary') {
-      const persisted = await persistence;
-      if (!persisted) {
-        fixes.delete(fixId);
-        return res.status(503).json({ error: 'Canary persistence failed' });
-      }
-    } else {
-      persistence.catch(() => {});
+    // A configured database is authoritative. Do not report success before the row exists,
+    // because a later request may land in a different Worker isolate.
+    const persisted = await storeDiagnosis(result, source);
+    if (hasDatabase() && !persisted) {
+      fixes.delete(fixId);
+      return res.status(503).json({ error: 'Diagnosis persistence failed' });
     }
 
     // Clean up old fixes (keep last 1000)
@@ -231,13 +229,13 @@ diagnoseRouter.post('/diagnose', async (req, res) => {
     // Strip internal metadata before sending to client
     const { _hostHash, _os, _arch, _nodeVersion, _openclawVersion, _serviceManager, _serviceState, _serviceExitCode, _errLogSizeMB, _sigtermCount, _processExists, _portListening, _aiIssues, _source, ...clientResult } = result;
     res.json(source === 'canary'
-      ? { ...clientResult, canary: true, persisted: true }
+      ? { ...clientResult, canary: true, persisted }
       : clientResult);
   } catch (error) {
     console.error('Diagnosis error:', redactOutbound(error?.message || 'unknown error'));
     res.status(500).json({ error: 'Diagnosis failed' });
   } finally {
-    release?.();
+    await release?.();
   }
 });
 
@@ -275,6 +273,9 @@ diagnoseRouter.get('/fix/:fixId', async (req, res) => {
 
 // Stats endpoint
 diagnoseRouter.get('/stats', async (req, res) => {
+  const env = getRuntimeEnv();
+  const aiConfig = getAIConfig(env);
+  const aiEnabled = isPaidAIEnabled(aiConfig, env);
   const dbStats = await getStats();
   const inMemoryPublicCount = [...fixes.values()]
     .filter(fix => fix?._source !== 'canary')
@@ -291,9 +292,9 @@ diagnoseRouter.get('/stats', async (req, res) => {
     zombieProcesses: dbStats?.zombieProcesses || 0,
     uptime: process.uptime(),
     version: APP_VERSION,
-    aiProvider: AI_CONFIG.provider,
-    aiModel: AI_CONFIG.model,
-    aiAvailable: AI_ENABLED,
+    aiProvider: aiConfig.provider,
+    aiModel: aiConfig.model,
+    aiAvailable: aiEnabled,
   });
 });
 
@@ -312,9 +313,9 @@ diagnoseRouter.post('/feedback/:fixId', async (req, res) => {
   res.json({ received: true, fixId, success });
 });
 
-async function analyzeWithAI(diagnostic, knownIssues) {
+async function analyzeWithAI(diagnostic, knownIssues, { aiConfig, aiEnabled }) {
   try {
-    if (!AI_ENABLED) {
+    if (!aiEnabled) {
       const issueCount = knownIssues.filter(issue => issue.kind !== 'optimization').length;
       const optimizationCount = knownIssues.length - issueCount;
       return {
@@ -340,7 +341,7 @@ ${JSON.stringify(diagnostic, null, 2)}
 </diagnostic-data>`;
 
     const response = await requestAI({
-      config: AI_CONFIG,
+      config: aiConfig,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: userMessage },

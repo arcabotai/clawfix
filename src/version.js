@@ -1,7 +1,3 @@
-import { readFileSync } from 'node:fs';
-
-const packageMetadata = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-);
-
-export const APP_VERSION = packageMetadata.version;
+// Kept explicit so the Worker bundle does not depend on a runtime filesystem URL.
+// Repository contracts require this value to match package.json.
+export const APP_VERSION = '0.12.0';

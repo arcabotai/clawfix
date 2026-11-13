@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clawfix",
+  "account_id": "e320a5a80611f9a30148d452929b1fb1",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
+  "keep_vars": true,
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.sh"],
+      "fallthrough": true
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "054e6fd0b1bb4910906bd052fbd288fc"
+    }
+  ]
+}

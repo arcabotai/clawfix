@@ -1,6 +1,11 @@
 import { Router } from 'express';
 
-import { claimWebhookDelivery, releaseWebhookDelivery } from '../db.js';
+import {
+  claimWebhookDelivery,
+  completeWebhookDelivery,
+  releaseWebhookDelivery,
+} from '../db.js';
+import { getRuntimeEnv } from '../runtime-env.js';
 import { verifySvixSignature } from '../webhook-signatures.js';
 
 export const webhooksRouter = Router();
@@ -18,21 +23,24 @@ export const webhooksRouter = Router();
  *   EMAIL_FORWARD_TO       — Forward inbound emails to this address
  */
 
-const RESEND_CONFIG = {
-  apiKey: process.env.RESEND_API_KEY,
-  apiKeyFull: process.env.RESEND_API_KEY_FULL || process.env.RESEND_API_KEY,
-  webhookSecret: process.env.RESEND_WEBHOOK_SECRET,
-  forwardTo: process.env.EMAIL_FORWARD_TO,
-};
+function getResendConfig(env = getRuntimeEnv()) {
+  return {
+    apiKey: env.RESEND_API_KEY,
+    apiKeyFull: env.RESEND_API_KEY_FULL || env.RESEND_API_KEY,
+    webhookSecret: env.RESEND_WEBHOOK_SECRET,
+    forwardTo: env.EMAIL_FORWARD_TO,
+  };
+}
 
 // Resend webhook: email.received
 webhooksRouter.post('/webhooks/resend', async (req, res) => {
+  const config = getResendConfig();
   // This endpoint sends mail from a real domain to a real inbox, so it has to be certain the
   // caller is Resend. Checking only that the svix-* headers are *present* let anyone forge an
   // email.received event and use the route as an unauthenticated relay; an unset secret did
   // the same. The signature is now verified over the raw body, and both cases fail closed.
   const verified = verifySvixSignature({
-    secret: RESEND_CONFIG.webhookSecret,
+    secret: config.webhookSecret,
     rawBody: req.rawBody,
     id: req.headers['svix-id'],
     timestamp: req.headers['svix-timestamp'],
@@ -55,23 +63,34 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
     const data = event.data;
     if (!data || typeof data !== 'object') return res.status(400).json({ error: 'Invalid email event' });
     const eventId = String(req.headers['svix-id'] || '');
-    const claimed = await claimWebhookDelivery('resend', eventId);
-    if (!claimed) return res.json({ received: true, duplicate: true });
+    const claim = await claimWebhookDelivery('resend', eventId);
+    if (claim.status === 'duplicate') return res.json({ received: true, duplicate: true });
+    if (claim.status === 'pending') {
+      return res.status(503).json({ error: 'Delivery is still pending; retry requested' });
+    }
+    if (claim.status !== 'claimed') {
+      return res.status(503).json({ error: 'Delivery claim failed; retry requested' });
+    }
 
     const toSummary = Array.isArray(data.to) ? data.to.join(', ') : String(data.to || 'unknown');
     console.log(`📨 Inbound from ${String(data.from || 'unknown')} → ${toSummary} — ${String(data.subject || '(no subject)')}`);
 
     // Forward if configured. A failed side effect releases the claim and returns 503 so Resend
     // retries; successful deliveries remain claimed across replicas when PostgreSQL is enabled.
-    if (RESEND_CONFIG.apiKey && RESEND_CONFIG.forwardTo) {
+    if (config.apiKey && config.forwardTo) {
       try {
-        await forwardEmail(data);
-        console.log(`📬 Forwarded to ${RESEND_CONFIG.forwardTo}`);
+        await forwardEmail(data, config, eventId);
+        console.log(`📬 Forwarded to ${config.forwardTo}`);
       } catch (err) {
         await releaseWebhookDelivery('resend', eventId);
         console.error('Forward failed:', err.message);
         return res.status(503).json({ error: 'Forward failed; retry requested' });
       }
+    }
+    const completed = await completeWebhookDelivery('resend', eventId);
+    if (!completed) {
+      await releaseWebhookDelivery('resend', eventId);
+      return res.status(503).json({ error: 'Delivery completion failed; retry requested' });
     }
   }
 
@@ -82,7 +101,7 @@ webhooksRouter.post('/webhooks/resend', async (req, res) => {
  * Fetch inbound email content from Resend Receiving API
  * Note: /emails/receiving/:id (NOT /emails/:id which is for sent emails only)
  */
-async function fetchEmailContent(emailId) {
+async function fetchEmailContent(emailId, config) {
   // The id comes from the webhook body and is interpolated into a path on an API called with
   // the full-access key, so anything but an opaque id is refused rather than encoded away.
   if (typeof emailId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(emailId)) {
@@ -91,7 +110,7 @@ async function fetchEmailContent(emailId) {
   }
   try {
     const res = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}`, {
-      headers: { 'Authorization': `Bearer ${RESEND_CONFIG.apiKeyFull}` },
+      headers: { 'Authorization': `Bearer ${config.apiKeyFull}` },
     });
     if (!res.ok) {
       console.warn(`Failed to fetch received email ${emailId}: ${res.status}`);
@@ -118,13 +137,13 @@ function escapeHtml(value) {
 /**
  * Forward an inbound email using Resend's send API
  */
-async function forwardEmail(emailData) {
+async function forwardEmail(emailData, config, eventId) {
   // Fetch the full email body via API (webhook payload doesn't include it)
   let body = '';
   let htmlBody = '';
   
   if (emailData.email_id) {
-    const content = await fetchEmailContent(emailData.email_id);
+    const content = await fetchEmailContent(emailData.email_id, config);
     body = content.text;
     htmlBody = content.html;
     console.log(`📋 Fetched body: text=${body.length} chars, html=${htmlBody.length} chars`);
@@ -143,12 +162,13 @@ async function forwardEmail(emailData) {
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${RESEND_CONFIG.apiKey}`,
+      'Authorization': `Bearer ${config.apiKey}`,
       'Content-Type': 'application/json',
+      'Idempotency-Key': `clawfix-forward-${eventId}`,
     },
     body: JSON.stringify({
       from: 'Arca Inbox <arca@arcabot.ai>',
-      to: RESEND_CONFIG.forwardTo,
+      to: config.forwardTo,
       subject: forwardSubject,
       text: forwardText,
       ...(forwardHtml && { html: forwardHtml }),
