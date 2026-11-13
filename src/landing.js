@@ -23,10 +23,11 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
   <title>ClawFix 0.12.0 — OpenClaw Diagnostics & Repair</title>
   <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.12.0 is signed on npm, and ships the chat-first TUI as a standalone binary.">
   <meta property="og:title" content="ClawFix 0.12.0 — Evidence Before Repair">
-  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, five guarded repairs, and a chat-first TUI standalone binary.">
+  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, four guarded repairs, and a chat-first TUI standalone binary.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
@@ -49,6 +50,11 @@ const LANDING_HTML = `<!DOCTYPE html>
       --blue: #3b82f6;
     }
 
+    html {
+      color-scheme: dark;
+      scroll-behavior: smooth;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
@@ -63,6 +69,27 @@ const LANDING_HTML = `<!DOCTYPE html>
       padding: 0 24px;
     }
 
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 100;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: var(--text);
+      color: var(--bg);
+      font-weight: 700;
+      text-decoration: none;
+      transform: translateY(-160%);
+      transition: transform 0.2s;
+    }
+    .skip-link:focus,
+    .skip-link:focus-visible { transform: translateY(0); }
+    :focus-visible {
+      outline: 3px solid var(--blue);
+      outline-offset: 3px;
+    }
+
     /* Header */
     header {
       padding: 20px 0;
@@ -72,6 +99,7 @@ const LANDING_HTML = `<!DOCTYPE html>
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 16px;
     }
     .logo {
       font-size: 1.25rem;
@@ -79,15 +107,50 @@ const LANDING_HTML = `<!DOCTYPE html>
       text-decoration: none;
       color: var(--text);
     }
+    .logo,
+    .nav-links a,
+    .nav-toggle {
+      min-height: 44px;
+      touch-action: manipulation;
+    }
+    .logo { display: inline-flex; align-items: center; }
     .logo span { color: var(--accent); }
+    .nav-links {
+      display: flex;
+      flex: 1;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px 16px;
+      min-width: 0;
+    }
     .nav-links a {
+      display: inline-flex;
+      align-items: center;
       color: var(--muted);
       text-decoration: none;
       font-size: 0.9rem;
-      margin-left: 24px;
       transition: color 0.2s;
     }
     .nav-links a:hover { color: var(--text); }
+    .nav-toggle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      padding: 8px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #main-content:focus {
+      outline: 3px solid var(--blue);
+      outline-offset: -3px;
+    }
+    section[id] { scroll-margin-top: 24px; }
 
     /* Hero */
     .hero {
@@ -106,6 +169,7 @@ const LANDING_HTML = `<!DOCTYPE html>
       line-height: 1.1;
       margin-bottom: 16px;
     }
+    h1, h2, h3 { text-wrap: balance; }
     h1 .highlight {
       background: linear-gradient(135deg, var(--accent), #f97316);
       -webkit-background-clip: text;
@@ -131,7 +195,6 @@ const LANDING_HTML = `<!DOCTYPE html>
       grid-template-columns: 20px minmax(0, 1fr) auto;
       align-items: center;
       gap: 12px;
-      cursor: pointer;
       transition: border-color 0.2s, box-shadow 0.2s;
       position: relative;
       text-align: left;
@@ -159,11 +222,12 @@ const LANDING_HTML = `<!DOCTYPE html>
       border: none;
       color: var(--muted);
       padding: 8px 14px;
-      min-height: 40px;
+      min-height: 44px;
       border-radius: 6px;
       cursor: pointer;
       font-size: 0.85rem;
-      transition: all 0.2s;
+      touch-action: manipulation;
+      transition: background-color 0.2s, color 0.2s;
     }
     .copy-btn:hover {
       background: var(--accent);
@@ -279,7 +343,7 @@ const LANDING_HTML = `<!DOCTYPE html>
     .tui-section { padding-top: 0; }
     .tui-panel {
       display: grid;
-      grid-template-columns: 0.9fr 1.1fr;
+      grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
       gap: 24px;
       align-items: center;
       background: var(--surface);
@@ -305,6 +369,8 @@ const LANDING_HTML = `<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 18px;
+      min-width: 0;
+      max-width: 100%;
       overflow: auto;
       box-shadow: 0 18px 50px rgba(0,0,0,0.35);
     }
@@ -445,20 +511,38 @@ const LANDING_HTML = `<!DOCTYPE html>
     .footer-links {
       display: flex;
       justify-content: center;
-      gap: 24px;
+      flex-wrap: wrap;
+      gap: 12px 24px;
       margin-bottom: 12px;
     }
 
-    @media (max-width: 640px) {
+    @media (max-width: 720px) {
       h1 { font-size: 2rem; }
       .hero { padding: 40px 0 36px; }
-      .nav-optional { display: none; }
-      .nav-links a { margin-left: 16px; }
+      header .container { flex-wrap: wrap; }
+      .nav-toggle { display: inline-flex; margin-left: auto; }
+      .nav-links {
+        display: none;
+        flex: 1 0 100%;
+        width: 100%;
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+        padding-top: 12px;
+        justify-content: stretch;
+      }
+      .nav-links.is-open { display: grid; }
+      .nav-links a {
+        justify-content: center;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
       .status-row { gap: 8px; margin-bottom: 24px; }
       .status-pill { width: 100%; justify-content: center; }
-      .command-box { grid-template-columns: 14px minmax(0, 1fr) auto; gap: 8px; padding: 14px; }
-      .command-box code { font-size: 0.78rem; white-space: normal; overflow-wrap: normal; }
-      .command-box code span { white-space: nowrap; }
+      .command-box { grid-template-columns: auto minmax(0, 1fr); gap: 8px; padding: 14px; }
+      .command-box .copy-btn { grid-column: 1 / -1; justify-self: end; white-space: normal; }
+      .command-box code { font-size: 0.78rem; white-space: normal; overflow-wrap: anywhere; }
       .proof-row { align-items: stretch; flex-direction: column; }
       .proof-pill { border-radius: 8px; }
       .release-panel { padding: 24px 18px; }
@@ -470,24 +554,34 @@ const LANDING_HTML = `<!DOCTYPE html>
       .issues-grid { grid-template-columns: 1fr; }
       .sent-grid { grid-template-columns: 1fr !important; }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header>
     <div class="container">
       <a href="/" class="logo">🦞 Claw<span>Fix</span></a>
-      <nav class="nav-links">
+      <button type="button" class="nav-toggle" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      <nav class="nav-links" id="site-nav" aria-label="Primary navigation">
         <a href="#tui">Chat TUI</a>
         <a href="#release">v0.12.0</a>
-        <a href="#how" class="nav-optional">How It Works</a>
+        <a href="#how">How It Works</a>
         <a href="#security">Security</a>
-        <a href="#pricing" class="nav-optional">Hosted Service</a>
-        <a href="https://github.com/arcabotai/clawfix" class="nav-optional">GitHub</a>
+        <a href="#pricing">Hosted Service</a>
+        <a href="https://github.com/arcabotai/clawfix">GitHub</a>
       </nav>
     </div>
   </header>
 
-  <main>
+  <main id="main-content" tabindex="-1">
     <section class="hero">
       <div class="container">
         <span class="hero-emoji" aria-hidden="true">🦞</span>
@@ -499,7 +593,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="status-row" aria-label="Release status">
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/releases/tag/v0.12.0">
             <strong>Current release</strong>
-            <span>v0.12.0 · chat-first TUI + 5 repairs</span>
+            <span>v0.12.0 · chat-first TUI + 4 repairs</span>
           </a>
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/pull/20">
             <strong>Standalone binary</strong>
@@ -870,6 +964,17 @@ gateway-not-running repair. Want me to?
   </footer>
 
   <script>
+    function selectCommand(command) {
+      const view = typeof window === 'undefined' ? undefined : window;
+      const selection = view?.getSelection?.();
+      if (!command || !selection || typeof document.createRange !== 'function') return false;
+      const range = document.createRange();
+      range.selectNodeContents(command);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return selection.rangeCount > 0 && !selection.isCollapsed;
+    }
+
     function copyTextFallback(text) {
       const textarea = document.createElement('textarea');
       textarea.value = text;
@@ -909,9 +1014,52 @@ gateway-not-running repair. Want me to?
 
       if (!copied) copied = copyTextFallback(text);
 
-      btn.textContent = copied ? 'Copied!' : 'Copy failed';
-      setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
-      return copied;
+      if (copied) {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+        return true;
+      }
+
+      btn.textContent = selectCommand(command) ? 'Command selected' : 'Copy unavailable';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 3000);
+      return false;
+    }
+
+    function setNavOpen(open) {
+      const button = document.querySelector('.nav-toggle');
+      const nav = document.getElementById('site-nav');
+      if (!button || !nav) return;
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      button.textContent = open ? 'Close' : 'Menu';
+      nav.classList.toggle('is-open', open);
+    }
+
+    const skipLink = document.querySelector('.skip-link');
+    if (skipLink) {
+      skipLink.addEventListener('click', () => {
+        document.getElementById('main-content')?.focus();
+      });
+    }
+
+    const navToggle = document.querySelector('.nav-toggle');
+    if (navToggle) {
+      navToggle.addEventListener('click', () => {
+        setNavOpen(navToggle.getAttribute('aria-expanded') !== 'true');
+      });
+    }
+
+    document.querySelectorAll('#site-nav a').forEach((link) => {
+      link.addEventListener('click', () => setNavOpen(false));
+    });
+
+    if (typeof document.addEventListener === 'function') {
+      document.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        const button = document.querySelector('.nav-toggle');
+        if (!button || button.getAttribute('aria-expanded') !== 'true') return;
+        setNavOpen(false);
+        if (typeof button.focus === 'function') button.focus();
+      });
     }
 
     document.querySelectorAll('[data-copy-command]').forEach((button) => {
