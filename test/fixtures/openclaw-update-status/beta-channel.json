@@ -1,0 +1,30 @@
+{
+  "update": {
+    "root": "/opt/openclaw",
+    "installKind": "package",
+    "packageManager": "npm",
+    "deps": {
+      "manager": "npm",
+      "status": "ok",
+      "lockfilePath": "/opt/openclaw/npm-shrinkwrap.json",
+      "markerPath": "/opt/openclaw/node_modules"
+    },
+    "registry": {
+      "latestVersion": "2026.11.5-beta.2",
+      "tag": "beta"
+    }
+  },
+  "channel": {
+    "value": "beta",
+    "source": "config",
+    "label": "beta (config)",
+    "config": "beta"
+  },
+  "availability": {
+    "available": true,
+    "hasGitUpdate": false,
+    "hasRegistryUpdate": true,
+    "latestVersion": "2026.11.5-beta.2",
+    "gitBehind": null
+  }
+}

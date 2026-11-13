@@ -65,7 +65,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 51,
+    "deterministicCount": 52,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -106,6 +106,7 @@
       "no-memory-flush",
       "no-soul",
       "openclaw-node-engine-mismatch",
+      "openclaw-update-available",
       "orphan-tool-calls",
       "oversized-error-log",
       "pi-backed-openai-codex-route",

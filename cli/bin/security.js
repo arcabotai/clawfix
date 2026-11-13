@@ -314,6 +314,103 @@ export function describeIncompleteNpmInstall(detail) {
   return `A global npm install of OpenClaw${where} is incomplete (${missing.join(', ')}). Reinstall with ${reinstall}, or run openclaw update. Config and state are left unchanged.`;
 }
 
+// `openclaw update status --json` writes update, channel, and availability
+// (openclaw/openclaw src/cli/update-cli/status.ts). The running version is not
+// in that object; it is the CLI version `openclaw --version` already printed.
+// availability.latestVersion is set only when the registry copy for the
+// configured channel is newer (src/commands/status.update.ts). Beta may follow
+// the newer of the beta tag and npm latest (src/infra/update-channels.ts).
+// Dev, git/source, host, and immutable installs are not package-channel advice.
+// Duplicated in cli/core/diagnostics.js. The production image ships this file
+// and does not copy cli/core. Keep the two copies in sync.
+const UPDATE_PACKAGE_CHANNELS = new Set(['stable', 'beta', 'extended-stable']);
+
+function isUpdateRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function releaseFitsUpdateChannel(channel, version, tag) {
+  const parsed = parseOpenClawRelease(version);
+  if (!parsed || parsed.text !== version) return false;
+  const prerelease = parsed.channel === 'prerelease';
+  if (channel === 'stable') {
+    return (tag == null || tag === 'latest') && !prerelease && parsed.patch < 33;
+  }
+  if (channel === 'extended-stable') {
+    return tag === 'extended-stable' && !prerelease && parsed.patch >= 33;
+  }
+  if (channel !== 'beta' || tag == null || (parsed.patch >= 33 && !prerelease)) return false;
+  if (tag === 'latest') return !prerelease;
+  return tag === 'beta';
+}
+
+export function projectOpenClawUpdateStatus(parsed, currentVersion) {
+  if (!isUpdateRecord(parsed)) return null;
+  const update = parsed.update;
+  const channelInfo = parsed.channel;
+  const availability = parsed.availability;
+  if (!isUpdateRecord(update) || !isUpdateRecord(channelInfo) || !isUpdateRecord(availability)) {
+    return null;
+  }
+  if (update.error || update.installKind !== 'package') return null;
+  const registry = update.registry;
+  if (!isUpdateRecord(registry) || registry.error || registry.reason) return null;
+  const channel = channelInfo.value;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  if (channelInfo.config != null && channelInfo.config !== channel) return null;
+  const tag = registry.tag == null ? null : registry.tag;
+  if (tag != null && typeof tag !== 'string') return null;
+  const current = parseStoredOpenClawVersion(currentVersion)
+    ?? parsePrintedOpenClawVersion(currentVersion);
+  if (!current) return null;
+  const reportedAvailable = availability.available === true
+    && availability.hasRegistryUpdate === true
+    && availability.hasGitUpdate !== true;
+  if (availability.available !== true && availability.available !== false) return null;
+  const rawAvailable = reportedAvailable ? availability.latestVersion : registry.latestVersion;
+  const available = parseStoredOpenClawVersion(rawAvailable);
+  if (!available || !releaseFitsUpdateChannel(channel, available, tag)) return null;
+  const comparison = compareOpenClawVersions(current, available);
+  if (comparison === null) return null;
+  if (reportedAvailable) {
+    if (comparison >= 0) return null;
+    if (parseStoredOpenClawVersion(availability.latestVersion) !== available) return null;
+  } else if (comparison < 0) {
+    return null;
+  }
+  return {
+    currentVersion: current,
+    availableVersion: available,
+    channel,
+    updateAvailable: reportedAvailable,
+  };
+}
+
+export function openclawUpdateAvailable(record) {
+  if (!isUpdateRecord(record) || record.updateAvailable !== true) return null;
+  const channel = record.channel;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  const currentVersion = parseStoredOpenClawVersion(record.currentVersion);
+  const availableVersion = parseStoredOpenClawVersion(record.availableVersion);
+  if (!currentVersion || !availableVersion) return null;
+  if (!releaseFitsUpdateChannel(channel, availableVersion, channel === 'stable' ? 'latest' : channel)) {
+    return null;
+  }
+  const comparison = compareOpenClawVersions(currentVersion, availableVersion);
+  if (comparison === null || comparison >= 0) return null;
+  return { currentVersion, availableVersion, channel };
+}
+
+export function describeOpenClawUpdateAvailable(detail) {
+  const currentVersion = detail?.currentVersion;
+  const availableVersion = detail?.availableVersion;
+  const channel = detail?.channel;
+  if (parseStoredOpenClawVersion(currentVersion) !== currentVersion) return null;
+  if (parseStoredOpenClawVersion(availableVersion) !== availableVersion) return null;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  return `OpenClaw ${currentVersion} has ${availableVersion} available on the ${channel} channel. Run openclaw update. ClawFix does not apply the update.`;
+}
+
 function redactSensitiveValue(value) {
   // Keep OpenClaw's public sentinel distinguishable from ClawFix's own marker.
   // A real credential on the same key is still replaced with REDACTED.

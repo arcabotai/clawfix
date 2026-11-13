@@ -1,0 +1,30 @@
+{
+  "update": {
+    "root": "/opt/openclaw",
+    "installKind": "package",
+    "packageManager": "npm",
+    "deps": {
+      "manager": "npm",
+      "status": "ok",
+      "lockfilePath": "/opt/openclaw/npm-shrinkwrap.json",
+      "markerPath": "/opt/openclaw/node_modules"
+    },
+    "registry": {
+      "latestVersion": null,
+      "tag": "dev"
+    }
+  },
+  "channel": {
+    "value": "dev",
+    "source": "config",
+    "label": "dev (config)",
+    "config": "dev"
+  },
+  "availability": {
+    "available": false,
+    "hasGitUpdate": false,
+    "hasRegistryUpdate": false,
+    "latestVersion": null,
+    "gitBehind": null
+  }
+}

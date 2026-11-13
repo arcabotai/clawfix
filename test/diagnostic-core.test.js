@@ -456,6 +456,7 @@ function fakeDeps(overrides = {}) {
     collectNativeConfigValidation: 0,
     collectNativeStatus: 0,
     collectNativeSecurityAudit: 0,
+    collectOpenClawUpdateStatus: 0,
   };
 
   const fs = {
@@ -601,6 +602,12 @@ function fakeDeps(overrides = {}) {
         suppressedFindingCount: 0,
         secretDiagnosticCount: 0,
       };
+    },
+    collectOpenClawUpdateStatus(binary, currentVersion, runSync) {
+      calls.collectOpenClawUpdateStatus += 1;
+      return overrides.collectOpenClawUpdateStatus
+        ? overrides.collectOpenClawUpdateStatus(binary, currentVersion, runSync)
+        : null;
     },
   };
 
@@ -1292,6 +1299,7 @@ test('createDiagnosticsCore requires the newly-injected ports/native boundary me
     'collectNativeConfigValidation',
     'collectNativeStatus',
     'collectNativeSecurityAudit',
+    'collectOpenClawUpdateStatus',
   ]) {
     const nativeCollectors = { ...deps.nativeCollectors };
     delete nativeCollectors[method];
@@ -1453,6 +1461,7 @@ test('runDiagnostics native phase runs Doctor whenever a binary exists and runs 
     security: {
       available: true, critical: 1, warning: 2, info: 3,
     },
+    update: null,
   });
 });
 
@@ -1478,6 +1487,7 @@ test('runDiagnostics native phase reports the fail-closed defaults and calls no 
     security: {
       available: false, critical: 0, warning: 0, info: 0,
     },
+    update: null,
   });
 });
 

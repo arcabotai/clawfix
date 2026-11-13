@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { runProcessSync } from '../adapters/process.js';
-import { redactText } from './security.js';
+import { projectOpenClawUpdateStatus, redactText } from './security.js';
 
 const VERSION_STDOUT_BYTES = 1_200;
 const VERSION_STDERR_BYTES = 4_000;
@@ -392,6 +392,22 @@ export function collectNativeSecurityAudit(openclawBin, runSync = defaultRunSync
       ? parsed.secretDiagnostics.length
       : 0,
   };
+}
+
+// OpenClaw floors `update status` at 30 seconds (src/cli/update-cli/status.ts).
+// `--timeout 10` caps each registry check inside that budget. The spawn timeout
+// is the same 30s bound as `openclaw status --json`, so a stuck process is killed.
+const UPDATE_STATUS_TIMEOUT_MS = 30_000;
+
+export function collectOpenClawUpdateStatus(openclawBin, currentVersion, runSync = defaultRunSync) {
+  const { parsed } = runJsonCommand(
+    openclawBin,
+    ['update', 'status', '--json', '--timeout', '10'],
+    runSync,
+    UPDATE_STATUS_TIMEOUT_MS,
+  );
+  if (!isRecord(parsed)) return null;
+  return projectOpenClawUpdateStatus(parsed, currentVersion);
 }
 
 export function collectListeningPort(port, runSync = defaultRunSync) {

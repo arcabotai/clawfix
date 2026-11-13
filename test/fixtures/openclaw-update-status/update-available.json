@@ -1,0 +1,30 @@
+{
+  "update": {
+    "root": "/opt/openclaw",
+    "installKind": "package",
+    "packageManager": "npm",
+    "deps": {
+      "manager": "npm",
+      "status": "ok",
+      "lockfilePath": "/opt/openclaw/npm-shrinkwrap.json",
+      "markerPath": "/opt/openclaw/node_modules"
+    },
+    "registry": {
+      "latestVersion": "2026.11.3",
+      "tag": "latest"
+    }
+  },
+  "channel": {
+    "value": "stable",
+    "source": "default",
+    "label": "stable (default)",
+    "config": null
+  },
+  "availability": {
+    "available": true,
+    "hasGitUpdate": false,
+    "hasRegistryUpdate": true,
+    "latestVersion": "2026.11.3",
+    "gitBehind": null
+  }
+}

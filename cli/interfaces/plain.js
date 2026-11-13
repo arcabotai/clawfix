@@ -17,6 +17,7 @@ import {
   collectNativeDoctor,
   collectNativeSecurityAudit,
   collectNativeStatus,
+  collectOpenClawUpdateStatus,
   collectOpenClawVersion,
 } from '../bin/native-diagnostics.js';
 import { projectLocalIssuesForUpload, redactOutbound } from '../bin/security.js';
@@ -577,6 +578,7 @@ function createCliDiagnosticsCore() {
       collectNativeConfigValidation,
       collectNativeStatus,
       collectNativeSecurityAudit,
+      collectOpenClawUpdateStatus,
     },
   });
 }
