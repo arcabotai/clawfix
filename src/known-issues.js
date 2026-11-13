@@ -22,7 +22,6 @@ function collectActiveModelRefs(config) {
   add(defaults.model?.primary);
   add(defaults.model?.fallbacks);
   add(defaults.compaction?.model);
-  add(defaults.heartbeat?.model);
   add(defaults.subagents?.model);
 
   if (Array.isArray(config?.agents?.list)) {
@@ -136,6 +135,89 @@ function hasCompetingGatewayPortOwner(diag) {
 function hasAgentDefaultsTelemetry(diag) {
   return !!diag.config?.agents?.defaults
     && typeof diag.config.agents.defaults === 'object';
+}
+
+function isPlainRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasIsolatedBindingDmScope(config) {
+  const bindings = config?.bindings;
+  if (!Array.isArray(bindings)) return false;
+  return bindings.some((binding) => (
+    isPlainRecord(binding)
+    && isPlainRecord(binding.session)
+    && binding.session.dmScope !== undefined
+  ));
+}
+
+// Mirrors OpenClaw resolveRememberAcrossConversations for the shared memory.search
+// value. Unset defaults on for a personal install (no DM isolation) and off otherwise.
+function rememberAcrossConversationsEnabled(config) {
+  const search = isPlainRecord(config?.memory?.search) ? config.memory.search : null;
+  if (search && typeof search.rememberAcrossConversations === 'boolean') {
+    return search.rememberAcrossConversations;
+  }
+  const dmScope = config?.session?.dmScope;
+  return (dmScope === undefined || dmScope === 'main') && !hasIsolatedBindingDmScope(config);
+}
+
+function sessionTranscriptSources(search, rememberAcross) {
+  const sessionMemory = rememberAcross === true || search?.experimental?.sessionMemory === true;
+  const configured = Array.isArray(search?.sources) ? search.sources : null;
+  const base = configured && configured.length > 0 ? configured : ['memory'];
+  const searchSources = base.filter((source) => (
+    source === 'memory' || (source === 'sessions' && sessionMemory)
+  ));
+  const input = rememberAcross ? [...searchSources, 'sessions'] : base;
+  const normalized = [];
+  for (const source of input) {
+    if (source !== 'memory' && !(source === 'sessions' && sessionMemory)) continue;
+    if (!normalized.includes(source)) normalized.push(source);
+  }
+  return normalized.length > 0 ? normalized : ['memory'];
+}
+
+export function sessionTranscriptsIndexed(config) {
+  const search = isPlainRecord(config?.memory?.search) ? config.memory.search : null;
+  return sessionTranscriptSources(search, rememberAcrossConversationsEnabled(config)).includes('sessions');
+}
+
+export function applySessionTranscriptIndexing(config) {
+  const next = structuredClone(isPlainRecord(config) ? config : {});
+  if (!isPlainRecord(next.memory)) next.memory = {};
+  if (!isPlainRecord(next.memory.search)) next.memory.search = {};
+  const search = next.memory.search;
+  if (!isPlainRecord(search.experimental)) search.experimental = {};
+  search.experimental.sessionMemory = true;
+  const existing = Array.isArray(search.sources) ? search.sources : [];
+  const sources = [];
+  for (const source of ['memory', ...existing, 'sessions']) {
+    if ((source === 'memory' || source === 'sessions') && !sources.includes(source)) {
+      sources.push(source);
+    }
+  }
+  search.sources = sources;
+  delete search.sessionTranscripts;
+  if (isPlainRecord(search.query)) delete search.query.hybrid;
+  if (isPlainRecord(next.agents?.defaults)) delete next.agents.defaults.memorySearch;
+  return next;
+}
+
+export function hasLegacyHeartbeatConfig(config) {
+  if (isPlainRecord(config?.agents?.defaults?.heartbeat)) return true;
+  const entries = config?.agents?.entries;
+  if (isPlainRecord(entries)) {
+    for (const entry of Object.values(entries)) {
+      if (isPlainRecord(entry?.heartbeat)) return true;
+    }
+  }
+  if (Array.isArray(config?.agents?.list)) {
+    for (const entry of config.agents.list) {
+      if (isPlainRecord(entry?.heartbeat)) return true;
+    }
+  }
+  return false;
 }
 
 export const KNOWN_ISSUES = [
@@ -503,28 +585,6 @@ echo "✅ Browser ports cleared"`,
   },
 
   {
-    id: 'no-hybrid-search',
-    severity: 'medium',
-    title: 'Hybrid search not enabled',
-    description: 'Your memory search is using basic vector search only. Enabling hybrid search (vector + BM25) significantly improves recall, especially for exact matches like wallet addresses, error codes, and names.',
-    detect: (diag) => {
-      try {
-        if (!hasAgentDefaultsTelemetry(diag)) return false;
-        return !diag.config?.agents?.defaults?.memorySearch?.query?.hybrid?.enabled;
-      } catch { return false; }
-    },
-    fix: `# Fix: Enable hybrid search with recommended weights
-jq '.agents.defaults.memorySearch.query.hybrid = {
-  "enabled": true,
-  "vectorWeight": 0.6,
-  "textWeight": 0.4,
-  "temporalDecay": {"enabled": true, "halfLifeDays": 14}
-}' ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
-  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-echo "✅ Hybrid search enabled (vector 0.6 + BM25 0.4 + temporal decay)"`,
-  },
-
-  {
     id: 'no-context-pruning',
     severity: 'medium',
     title: 'No context pruning configured',
@@ -743,61 +803,66 @@ echo "✅ Created basic AGENTS.md at $WORKSPACE/AGENTS.md"`,
   {
     id: 'heartbeat-no-model-override',
     severity: 'low',
-    title: 'Heartbeat using expensive model',
-    description: 'Your heartbeat is not configured with a cheaper model override. Heartbeats run frequently and don\'t need the most powerful model — using a smaller model saves significant token costs.',
+    title: 'Legacy heartbeat config needs migration',
+    description: 'agents.defaults.heartbeat and per-agent heartbeat keys are not in the current OpenClaw config schema. Heartbeat monitors moved to ordinary automation jobs. Run openclaw doctor --fix, then edit the job in Automations. Writing heartbeat.model or heartbeat.every is rejected.',
     detect: (diag) => {
       try {
-        const hb = diag.config?.agents?.defaults?.heartbeat;
-        return hb?.every && !hb?.model;
+        return hasLegacyHeartbeatConfig(diag.config);
       } catch { return false; }
     },
-    fix: `# Fix: Set a cheaper model for heartbeats
-jq '.agents.defaults.heartbeat.model = "anthropic/claude-sonnet-4-6"' \\
-  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
-  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-echo "✅ Heartbeat model set to Sonnet (cheaper than default)"`,
+    fix: `# Advisory only. Current OpenClaw rejects agents.defaults.heartbeat.
+# Doctor migrates supported heartbeat settings into an automation job, then deletes the legacy key.
+echo "Heartbeat configuration moved to ordinary automation jobs."
+echo "Run: openclaw doctor --fix"
+echo "Then inspect the migrated job: openclaw automations list --all"
+echo "Edit that job's model and schedule in Automations. Do not write agents.defaults.heartbeat."`,
   },
 
   {
     id: 'session-transcript-not-indexed',
     severity: 'low',
     title: 'Session transcripts not indexed for search',
-    description: 'Enabling session transcript indexing improves memory recall by making past conversation content searchable.',
+    description: 'Session transcripts are not in the memory index. Current OpenClaw indexes them when memory.search.experimental.sessionMemory is true and sources includes "sessions", or when memory.search.rememberAcrossConversations is on (that also implies indexing). The legacy agents.defaults.memorySearch.sessionTranscripts key is ignored. Personal installs default rememberAcrossConversations on unless DM isolation is configured.',
     detect: (diag) => {
       try {
-        if (!hasAgentDefaultsTelemetry(diag)) return false;
-        return !diag.config?.agents?.defaults?.memorySearch?.sessionTranscripts?.enabled;
+        return !sessionTranscriptsIndexed(diag.config);
       } catch { return false; }
     },
-    fix: `# Fix: Enable session transcript indexing
-jq '.agents.defaults.memorySearch.sessionTranscripts.enabled = true' \\
-  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
+    fix: `# Index session transcripts on the current memory.search keys.
+# experimental.sessionMemory is the indexing gate. sources must include "sessions";
+# the resolver does not add that source unless rememberAcrossConversations is on.
+# This does not enable rememberAcrossConversations (private cross-conversation recall).
+jq '.memory.search.experimental.sessionMemory = true
+  | .memory.search.sources = (
+      (["memory"] + ([.memory.search.sources[]? | select(. == "memory" or . == "sessions")]) + ["sessions"])
+      | unique
+    )
+  | del(.agents.defaults.memorySearch)
+  | del(.memory.search.sessionTranscripts)
+  | del(.memory.search.query.hybrid)' ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
   mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-echo "✅ Session transcript indexing enabled"`,
+echo "Session transcript indexing enabled via memory.search.experimental.sessionMemory"`,
   },
 
   {
     id: 'high-token-usage',
     severity: 'medium',
     title: 'High token consumption detected',
-    description: 'Your configuration may be causing excessive token usage. Common causes: no context pruning, large workspace files being loaded every turn, or aggressive heartbeat intervals.',
+    description: 'A legacy heartbeat interval under 30 minutes is still present and context pruning is off. Current OpenClaw rejects agents.defaults.heartbeat.every and heartbeat.model. Migrate with openclaw doctor --fix, then lengthen the automation schedule. Context pruning remains agents.defaults.contextPruning.',
     detect: (diag) => {
       try {
         const heartbeat = diag.config?.agents?.defaults?.heartbeat;
         const pruning = diag.config?.agents?.defaults?.contextPruning;
-        // No pruning + frequent heartbeat = token burn
-        return !pruning && heartbeat?.every && /^\d+m$/.test(heartbeat.every) && parseInt(heartbeat.every) < 30;
+        // No pruning + frequent legacy heartbeat = token burn. The interval moves with the job.
+        return !pruning && heartbeat?.every && /^\d+m$/.test(heartbeat.every) && parseInt(heartbeat.every, 10) < 30;
       } catch { return false; }
     },
-    fix: `# Fix: Reduce token usage
-# 1. Enable context pruning (see fix above)
-# 2. Increase heartbeat interval to 30+ minutes
-jq '.agents.defaults.heartbeat.every = "30m"' ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
-  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-# 3. Use a cheaper model for heartbeats
-jq '.agents.defaults.heartbeat.model = "anthropic/claude-sonnet-4-6"' ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
-  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-echo "✅ Token usage optimized (30min heartbeat + Sonnet model)"`,
+    fix: `# Advisory only. Do not write agents.defaults.heartbeat.every or heartbeat.model.
+# Those keys are gone. A frequent legacy interval is migrated with the heartbeat job.
+echo "A short legacy heartbeat interval can burn tokens, and context pruning is off."
+echo "Run: openclaw doctor --fix"
+echo "Then lengthen the migrated automation schedule: openclaw automations list --all"
+echo "Context pruning, if you want it, is still agents.defaults.contextPruning (see no-context-pruning)."`,
   },
 
   // ─── New issues from production crash analysis (Feb 2026) ───
@@ -1397,25 +1462,31 @@ NUM=$(echo "$CANDS" | grep -c . || true)
 if [ "$NUM" != "1" ]; then
   echo "Could not uniquely determine correct prefix. Candidates:"
   echo "$CANDS"
-  echo "Re-run 'openclaw models list' and pick the right one, then set manually:"
-  echo "  openclaw config set agents.defaults.heartbeat.model '<correct>'"
+  echo "Re-run 'openclaw models list' and pick the right one."
+  echo "agents.defaults.heartbeat.model is retired. Run: openclaw doctor --fix"
+  echo "Then edit the migrated automation: openclaw automations list --all"
   exit 1
 fi
 GOOD="$CANDS"
 echo "Auto-detected correct prefix: $GOOD"
 echo ""
-read -r -p "Apply '$BAD' -> '$GOOD' everywhere it appears? [y/N] " ANS
+read -r -p "Apply '$BAD' -> '$GOOD' on supported model keys? [y/N] " ANS
 [ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
 
 TS=$(date +%Y%m%d-%H%M%S)
 /bin/cp -p ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-fix-$TS
 echo "Snapshot: ~/.openclaw/openclaw.json.pre-fix-$TS"
 
-for path in agents.defaults.heartbeat.model agents.defaults.subagents.model; do
-  if [ "$(openclaw config get "$path" 2>/dev/null)" = "$BAD" ]; then
-    openclaw config set "$path" "$GOOD" && echo "  updated $path"
-  fi
-done
+# Current OpenClaw rejects agents.defaults.heartbeat.model. Doctor migrates it.
+if jq -e --arg bad "$BAD" '.agents.defaults.heartbeat.model == $bad' ~/.openclaw/openclaw.json >/dev/null 2>&1; then
+  echo "agents.defaults.heartbeat.model still holds the unregistered prefix."
+  echo "That key is retired. Run: openclaw doctor --fix"
+  echo "Then edit the migrated automation: openclaw automations list --all"
+fi
+
+if [ "$(openclaw config get agents.defaults.subagents.model 2>/dev/null)" = "$BAD" ]; then
+  openclaw config set agents.defaults.subagents.model "$GOOD" && echo "  updated agents.defaults.subagents.model"
+fi
 
 # per-agent list
 N=$(jq '.agents.list | length' ~/.openclaw/openclaw.json 2>/dev/null || echo 0)
@@ -1672,12 +1743,10 @@ echo "  grep -c '^[A-Z_]' ~/.openclaw/.env"`,
 
 const OPTIMIZATION_ISSUE_IDS = new Set([
   'codex-service-tier-not-fast',
-  'no-hybrid-search',
   'no-context-pruning',
   'no-memory-flush',
   'no-soul',
   'no-memory-files',
-  'heartbeat-no-model-override',
   'gateway-watchdog-missing',
 ]);
 

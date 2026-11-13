@@ -261,7 +261,7 @@ test('mem0 graph finding requires an existing plugin entry and does not install 
 });
 
 test('optional tuning is classified separately from failures', () => {
-  assert.equal(classifyKnownIssue({ id: 'no-hybrid-search', severity: 'medium' }), 'optimization');
+  assert.equal(classifyKnownIssue({ id: 'no-memory-flush', severity: 'medium' }), 'optimization');
   assert.equal(classifyKnownIssue({ id: 'gateway-not-running', severity: 'critical' }), 'failure');
   assert.equal(classifyKnownIssue({ id: 'auto-update-enabled-warning', severity: 'medium' }), 'warning');
 
@@ -271,12 +271,13 @@ test('optional tuning is classified separately from failures', () => {
         defaults: {
           memorySearch: { query: { hybrid: { enabled: false } } },
           contextPruning: { mode: 'cache-ttl' },
-          compaction: { memoryFlush: { enabled: true } },
+          compaction: { memoryFlush: { enabled: false } },
         },
       },
     },
   });
-  assert.equal(detected.find(issue => issue.id === 'no-hybrid-search')?.kind, 'optimization');
+  assert.equal(detected.find(issue => issue.id === 'no-hybrid-search'), undefined);
+  assert.equal(detected.find(issue => issue.id === 'no-memory-flush')?.kind, 'optimization');
 });
 
 test('missing telemetry is not reported as a confirmed failure', () => {

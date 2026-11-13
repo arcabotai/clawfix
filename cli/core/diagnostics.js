@@ -248,7 +248,6 @@ export function deriveIssues(collected) {
   addActiveModelRef(defaults.model?.primary);
   addActiveModelRef(defaults.model?.fallbacks);
   addActiveModelRef(defaults.compaction?.model);
-  addActiveModelRef(defaults.heartbeat?.model);
   addActiveModelRef(defaults.subagents?.model);
   if (Array.isArray(config?.agents?.list)) {
     for (const agent of config.agents.list) {
@@ -365,9 +364,6 @@ export function deriveIssues(collected) {
 
   if (mem0PluginEntry(config)?.config?.enableGraph === true) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
-  }
-  if (config?.agents?.defaults && !config.agents.defaults.memorySearch?.query?.hybrid?.enabled) {
-    issues.push({ severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)' });
   }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
     issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });

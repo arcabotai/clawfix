@@ -1829,9 +1829,6 @@ test('deriveIssues golden: comprehensive representative facts produce the exact 
     { severity: 'low', text: 'Matrix sync timeouts spamming error log', kind: 'warning' },
     { severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)', kind: 'failure' },
     {
-      severity: 'medium', kind: 'optimization', text: 'Hybrid search not enabled (recommended)',
-    },
-    {
       severity: 'medium', kind: 'optimization', text: 'No context pruning configured',
     },
     {

@@ -451,11 +451,6 @@ if echo "\$SANITIZED_CONFIG" | jq -e '(.plugins.entries["openclaw-mem0"] | type 
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Mem0 enableGraph requires Pro plan (will silently fail)\${NC}\\n"
 fi
 
-if [ "\$CONFIG_EXISTS" = true ] && echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults' &>/dev/null && ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.memorySearch.query.hybrid.enabled == true' &>/dev/null; then
-  ISSUES=\$((ISSUES + 1))
-  ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  Hybrid search not enabled (recommended)\${NC}\\n"
-fi
-
 if [ "\$CONFIG_EXISTS" = true ] && echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults' &>/dev/null && ! echo "\$SANITIZED_CONFIG" | jq -e '.agents.defaults.contextPruning' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  No context pruning configured\${NC}\\n"

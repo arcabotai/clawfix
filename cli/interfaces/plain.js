@@ -230,27 +230,6 @@ export const BUILTIN_FIXES = {
     }
   },
 
-  'no-hybrid-search': {
-    description: 'Enable hybrid search for better memory recall',
-    risk: 'low',
-    needsConfig: true,
-    needsRestart: false,
-    informational: false,
-    apply: (config) => {
-      if (!config.agents) config.agents = {};
-      if (!config.agents.defaults) config.agents.defaults = {};
-      if (!config.agents.defaults.memorySearch) config.agents.defaults.memorySearch = {};
-      if (!config.agents.defaults.memorySearch.query) config.agents.defaults.memorySearch.query = {};
-      config.agents.defaults.memorySearch.query.hybrid = {
-        enabled: true,
-        vectorWeight: 0.6,
-        textWeight: 0.4,
-        temporalDecay: { enabled: true, halfLifeDays: 14 }
-      };
-      return { changes: ['Enabled hybrid search (vector 0.6 + BM25 0.4 + temporal decay)'] };
-    }
-  },
-
   'no-context-pruning': {
     description: 'Enable context pruning to reduce token waste',
     risk: 'low',
@@ -307,16 +286,12 @@ export const BUILTIN_FIXES = {
   },
 
   'heartbeat-no-model-override': {
-    description: 'Use a cheaper model for heartbeat checks',
+    description: 'Legacy heartbeat settings moved to automation jobs. Run openclaw doctor --fix, then edit the job. This does not write agents.defaults.heartbeat.',
     risk: 'low',
-    needsConfig: true,
+    needsConfig: false,
     needsRestart: false,
-    informational: false,
-    apply: (config) => {
-      if (!config.agents?.defaults?.heartbeat) return { changes: ['No heartbeat configured'] };
-      config.agents.defaults.heartbeat.model = 'anthropic/claude-sonnet-4-6';
-      return { changes: ['Set heartbeat model to Sonnet 4.6 (cheaper)'] };
-    }
+    informational: true,
+    apply: () => ({ changes: ['No config written. Run openclaw doctor --fix, then edit the automation job.'] }),
   },
 
   'state-dir-migration': {
