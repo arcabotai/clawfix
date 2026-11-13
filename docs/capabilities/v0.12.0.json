@@ -65,7 +65,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 48,
+    "deterministicCount": 49,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -110,6 +110,7 @@
       "plaintext-secrets-in-config",
       "port-conflict",
       "provider-prefix-unregistered",
+      "redacted-placeholder-corruption",
       "session-transcript-not-indexed",
       "stale-bundled-plugin-load-paths",
       "stale-plist-env-secrets",

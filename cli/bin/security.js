@@ -1,5 +1,10 @@
 import { homedir } from 'node:os';
 
+import {
+  isOpenClawRedactedPlaceholder,
+  OPENCLAW_REDACTED_PLACEHOLDER,
+} from '../core/diagnostics.js';
+
 export const FIX_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/;
 const REDACTED = '***REDACTED***';
 const SENSITIVE_KEY = /(?:^|_)(?:api[_-]?key|access[_-]?token|auth(?:orization)?|bearer|cookie|credential|jwt|password|private[_-]?key|secret|session[_-]?token|token)(?:$|_)/i;
@@ -39,19 +44,26 @@ export function redactText(value, { home = homedir() } = {}) {
   return text;
 }
 
+function redactSensitiveValue(value) {
+  // Keep OpenClaw's public sentinel distinguishable from ClawFix's own marker.
+  // A real credential on the same key is still replaced with REDACTED.
+  if (isOpenClawRedactedPlaceholder(value)) return OPENCLAW_REDACTED_PLACEHOLDER;
+  return REDACTED;
+}
+
 export function redactOutbound(value, options = {}) {
   const seen = new WeakSet();
   const walk = (item, key = '') => {
     if (item === null || item === undefined || typeof item === 'boolean' || typeof item === 'number') return item;
     if (typeof item === 'bigint') return item.toString();
-    if (typeof item === 'string') return isSensitiveKey(key) ? REDACTED : redactText(item, options);
+    if (typeof item === 'string') return isSensitiveKey(key) ? redactSensitiveValue(item) : redactText(item, options);
     if (typeof item !== 'object') return redactText(String(item), options);
     if (seen.has(item)) return '[Circular]';
     seen.add(item);
     if (Array.isArray(item)) return item.map(entry => walk(entry));
     const result = {};
     for (const [childKey, childValue] of Object.entries(item)) {
-      result[childKey] = isSensitiveKey(childKey) ? REDACTED : walk(childValue, childKey);
+      result[childKey] = isSensitiveKey(childKey) ? redactSensitiveValue(childValue) : walk(childValue, childKey);
     }
     return result;
   };

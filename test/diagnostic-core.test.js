@@ -12,11 +12,13 @@ import {
   scanWarning,
   SCAN_PHASES,
 } from '../cli/core/events.js';
+import { redactOutbound } from '../cli/bin/security.js';
 import {
   createDiagnosticsCore,
   deriveIssues,
   DiagnosticsAbortError,
   DiagnosticsTimeoutError,
+  OPENCLAW_REDACTED_PLACEHOLDER,
 } from '../cli/core/diagnostics.js';
 
 // ============================================================
@@ -2775,4 +2777,55 @@ test('a doctor finding that repeats an already-reported detail is not listed twi
     issue.text === parserMessage || issue.description === parserMessage);
   assert.equal(mentions.length, 1, 'the parser message must appear once');
   assert.equal(mentions[0].text, 'OpenClaw config schema validation failed');
+});
+
+test('runDiagnostics reports placeholder paths and does not upload the credential they replaced', async () => {
+  const providerSecret = 'sk-test-provider-secret-value';
+  const envSecret = 'env-secret-must-not-leak';
+  const config = {
+    gateway: { port: 18789, auth: { mode: 'token', token: OPENCLAW_REDACTED_PLACEHOLDER } },
+    models: {
+      providers: {
+        openai: { apiKey: OPENCLAW_REDACTED_PLACEHOLDER },
+        other: { apiKey: providerSecret },
+      },
+    },
+    channels: { discord: { token: ` ${OPENCLAW_REDACTED_PLACEHOLDER} ` } },
+    env: { OPENAI_API_KEY: OPENCLAW_REDACTED_PLACEHOLDER, UNRELATED: envSecret },
+    agents: {
+      defaults: {
+        contextPruning: { mode: 'cache-ttl' },
+        compaction: { memoryFlush: { enabled: true } },
+      },
+    },
+  };
+  const { deps } = fakeDeps({ config, redact: redactOutbound });
+  const events = [];
+  const result = await createDiagnosticsCore(deps).runDiagnostics({
+    revision: 'rev-placeholder',
+    emit: (event) => events.push(event),
+  });
+
+  const serialized = JSON.stringify({ diagnostic: result.diagnostic, events });
+  assert.equal(serialized.includes(providerSecret), false);
+  assert.equal(serialized.includes(envSecret), false);
+  assert.equal(config.models.providers.other.apiKey, providerSecret);
+  assert.equal(result.diagnostic.config.models.providers.openai.apiKey, OPENCLAW_REDACTED_PLACEHOLDER);
+  assert.equal(result.diagnostic.config.channels.discord.token, OPENCLAW_REDACTED_PLACEHOLDER);
+  assert.equal(result.diagnostic.config.gateway.auth, '***REDACTED***');
+  assert.equal('env' in result.diagnostic.config, false);
+  assert.deepEqual(result.diagnostic.openclaw.redactedPlaceholderPaths, [
+    'gateway.auth.token',
+    'models.providers.openai.apiKey',
+    'channels.discord.token',
+    'env.OPENAI_API_KEY',
+  ]);
+  const local = result.issues.find(issue => issue.knownIssueId === 'redacted-placeholder-corruption');
+  assert.ok(local);
+  assert.match(local.description, /gateway\.auth\.token/);
+  assert.match(local.description, /models\.providers\.openai\.apiKey/);
+  assert.match(local.description, /channels\.discord\.token/);
+  assert.match(local.description, /env\.OPENAI_API_KEY/);
+  assert.equal(local.description.includes(providerSecret), false);
+  assert.equal(events.some(event => event.type === 'scan.completed'), true);
 });

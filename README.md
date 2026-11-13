@@ -83,6 +83,7 @@ Failures and warnings are counted as issues. Performance and quality tuning is s
 - 🧵 Model provider prefix typos (`codex/gpt-5.4` vs `openai-codex/gpt-5.4` — silent 403 + fallback loop)
 - 🎣 Silently-dropped Discord group messages (`groupPolicy=allowlist` with empty `allowFrom`)
 - 🔒 Plaintext secrets in config (flags fields that should be SecretRefs pointing at `~/.openclaw/.env`)
+- 🩹 Persisted `__OPENCLAW_REDACTED__` placeholders (config paths only; re-enter credentials with `openclaw secrets` or `openclaw config set`; no automatic secret writes)
 - 🪪 Invalid `GH_TOKEN`/`GITHUB_TOKEN` env overrides masking a working `gh` login
 - 📡 Stale self-paired nodes producing endless `skills-remote` probe timeouts
 - 🌊 Session context overflow (>100 % window, auto-compaction failing)

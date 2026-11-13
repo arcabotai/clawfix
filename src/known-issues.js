@@ -4,6 +4,12 @@
  * These are issues we've personally encountered and solved.
  */
 
+import {
+  describeOpenClawRedactedPlaceholders,
+  isOpenClawRedactedPlaceholder,
+  placeholderPathsForDiagnostic,
+} from '../cli/core/diagnostics.js';
+
 function collectActiveModelRefs(config) {
   const refs = [];
   const add = (value) => {
@@ -1505,6 +1511,25 @@ echo "This fix is intentionally manual — choose based on your threat model."`,
   },
 
   {
+    id: 'redacted-placeholder-corruption',
+    severity: 'high',
+    title: 'Persisted OpenClaw redaction placeholders in config',
+    description: 'OpenClaw config stores the __OPENCLAW_REDACTED__ placeholder. Those stored values are not credentials. Re-enter each listed path with openclaw secrets or openclaw config set, and do not paste redacted config get output back into the file.',
+    detect: (diag) => placeholderPathsForDiagnostic(diag).length > 0,
+    describe: (diag) => describeOpenClawRedactedPlaceholders(placeholderPathsForDiagnostic(diag)),
+    fix: `# Advisory only. Persisted OpenClaw redaction placeholders are not credentials.
+# This script does not read, print, or write secret values.
+echo "OpenClaw stored the __OPENCLAW_REDACTED__ placeholder in place of a credential."
+echo "Upstream rejects that stored value. A placeholder with no usable existing entry exits 2."
+echo "The finding lists config paths only. Restore each path by re-entering the real credential."
+echo "Do not paste redacted output from openclaw config get back into the config."
+echo "Inspect with: openclaw secrets audit"
+echo "Re-enter a store entry with: openclaw secrets store set <NAME>"
+echo "Re-enter a config path with: openclaw config set <dot.path>"
+echo "No config changes were made."`,
+  },
+
+  {
     id: 'plaintext-secrets-in-config',
     severity: 'high',
     title: 'Plaintext secrets in openclaw.json (migrate to ~/.openclaw/.env + SecretRef)',
@@ -1513,7 +1538,9 @@ echo "This fix is intentionally manual — choose based on your threat model."`,
       // After sanitize, plaintext values become "***REDACTED***" strings;
       // SecretRef objects pass through unchanged as dicts.
       const cfg = diag.config || {};
-      const isPlain = (v) => typeof v === 'string' && v.length > 0;
+      // The OpenClaw placeholder is not a live credential. ClawFix's own "***REDACTED***"
+      // marker still counts: that is how a real plaintext secret looks after collection.
+      const isPlain = (v) => typeof v === 'string' && v.length > 0 && !isOpenClawRedactedPlaceholder(v);
       const candidates = [
         cfg.gateway?.auth?.token,
         cfg.channels?.discord?.token,
@@ -1762,6 +1789,20 @@ export function matchLocalKnownIssues(localIssues, existingIssues = []) {
 /**
  * Run all pattern detections against a diagnostic payload
  */
+function issueDescription(issue, diagnostic) {
+  if (typeof issue.describe !== 'function') return issue.description;
+  try {
+    const described = issue.describe(diagnostic);
+    if (typeof described === 'string') {
+      const singleLine = described.replace(/[\r\n\u0000-\u001F\u007F]+/g, ' ').trim();
+      if (singleLine) return singleLine;
+    }
+  } catch {
+    // Keep the static description when a path summary cannot be built.
+  }
+  return issue.description;
+}
+
 export function detectIssues(diagnostic) {
   return KNOWN_ISSUES
     .filter(issue => {
@@ -1776,7 +1817,7 @@ export function detectIssues(diagnostic) {
       severity: issue.severity,
       kind: classifyKnownIssue(issue),
       title: issue.title,
-      description: issue.description,
+      description: issueDescription(issue, diagnostic),
       fix: issue.fix,
     }));
 }
