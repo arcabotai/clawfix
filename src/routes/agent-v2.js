@@ -1,11 +1,16 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { getDiagnosis } from '../db.js';
+import { getDiagnosis, getPool } from '../db.js';
 import { getAIConfig, requestAI } from '../ai.js';
 import { redactOutbound, redactText } from '../../cli/bin/security.js';
+import { getRuntimeEnv } from '../runtime-env.js';
 import {
-  clientIp,
-  createRateLimiter,
+  acquireConcurrencyLease,
+  appendConversationMessage,
+  beginConversationTurn,
+} from '../shared-state.js';
+import {
+  consumeRouteRateLimit,
   isPaidAIEnabled,
   positiveEnvInteger,
   sharedAIRequestGuard,
@@ -20,14 +25,10 @@ import { createSseWriter, writeSseHeaders } from '../agent/stream.js';
 
 export const agentV2Router = Router();
 
-// Conversation history is in-process and keyed by a client-supplied id, so it needs both an
-// age limit and a hard cap — without them any client can grow server memory indefinitely with
-// fresh conversation ids, rate limits notwithstanding.
-const conversations = new Map();
-const CONVERSATION_TTL_MS = positiveEnvInteger(process.env.AGENT_CONVERSATION_TTL_MS, 30 * 60_000);
-const MAX_CONVERSATIONS = positiveEnvInteger(process.env.AGENT_MAX_CONVERSATIONS, 1000);
+const CONVERSATION_TTL_MS = 30 * 60_000;
+const MAX_CONVERSATIONS = 1000;
 
-export function pruneConversations(now = Date.now(), store = conversations) {
+export function pruneConversations(now = Date.now(), store = new Map()) {
   for (const [id, conv] of store) {
     const touchedAt = Number(conv?.lastSeenAt || conv?.createdAt || 0);
     if (!Number.isFinite(touchedAt) || now - touchedAt > CONVERSATION_TTL_MS) store.delete(id);
@@ -43,13 +44,7 @@ export function pruneConversations(now = Date.now(), store = conversations) {
   for (const [id] of overflow) store.delete(id);
   return store.size;
 }
-const AI_CONFIG = getAIConfig();
-const agentLimiter = createRateLimiter({
-  limit: positiveEnvInteger(process.env.CHAT_RATE_LIMIT, 30),
-  windowMs: positiveEnvInteger(process.env.RATE_LIMIT_WINDOW_MS, 60_000),
-});
-
-function isAgentV2Enabled(env = process.env) {
+function isAgentV2Enabled(env = getRuntimeEnv()) {
   // Additive endpoint. Default on; set CLAWFIX_AGENT_V2=0 to disable.
   return env.CLAWFIX_AGENT_V2 !== '0';
 }
@@ -67,10 +62,34 @@ function chunkText(text, size = 48) {
  */
 agentV2Router.post('/v2/agent/messages', async (req, res) => {
   let release = null;
+  let conversationRelease = null;
   let upstreamAbort = null;
   let closeHandler = null;
+  const releaseGuards = async () => {
+    const errors = [];
+    if (conversationRelease) {
+      try {
+        await conversationRelease();
+        conversationRelease = null;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (release) {
+      try {
+        await release();
+        release = null;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, 'Guard lease release failed');
+  };
   try {
-    if (!isAgentV2Enabled()) {
+    const env = getRuntimeEnv();
+    const db = getPool();
+    const aiConfig = getAIConfig(env);
+    if (!isAgentV2Enabled(env)) {
       return res.status(404).json({ error: 'Agent v2 is disabled' });
     }
 
@@ -79,41 +98,46 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       return res.status(400).json({ error: validated.error });
     }
 
-    if (!agentLimiter.consume(clientIp(req)).allowed) {
+    const rate = await consumeRouteRateLimit('agent-v2-ip', req, {
+      env,
+      db,
+      limit: positiveEnvInteger(env.CHAT_RATE_LIMIT, 30),
+    });
+    if (!rate.allowed) {
       return res.status(429).json({ error: 'Too many agent requests' });
     }
 
     const { conversationId, message, diagnosticId, availableRepairs } = validated.value;
     const safeMessage = redactText(message).slice(0, 4000);
-    const aiEnabled = isPaidAIEnabled(AI_CONFIG);
+    const aiEnabled = isPaidAIEnabled(aiConfig, env);
+    const conversationLease = await acquireConcurrencyLease({
+      scope: `conversation:agent-v2:${conversationId}`,
+      limit: 1,
+      ttlMs: aiConfig.timeoutMs + 30_000,
+      db,
+    });
+    if (!conversationLease.allowed) {
+      return res.status(409).json({ error: 'Conversation already has an active turn' });
+    }
+    conversationRelease = conversationLease.release;
 
     if (aiEnabled) {
-      const capacity = sharedAIRequestGuard.acquire(req);
-      if (!capacity.allowed) return res.status(capacity.status).json({ error: capacity.error });
+      const capacity = await sharedAIRequestGuard.acquire(req, { env, db });
+      if (!capacity.allowed) {
+        await releaseGuards();
+        return res.status(capacity.status).json({ error: capacity.error });
+      }
       release = capacity.release;
     }
 
-    const now = Date.now();
-    pruneConversations(now);
-    if (!conversations.has(conversationId)) {
-      conversations.set(conversationId, {
-        messages: [],
-        diagnosticId: diagnosticId || null,
-        createdAt: now,
-        lastSeenAt: now,
-      });
-      pruneConversations(now);
-    }
-    const conv = conversations.get(conversationId);
-    if (!conv) return res.status(503).json({ error: 'Conversation capacity unavailable' });
-    conv.lastSeenAt = now;
-    // Allow first message to bind diagnostic; later rescans may update intentionally.
-    if (diagnosticId && conv.diagnosticId && conv.diagnosticId !== diagnosticId) {
-      conv.diagnosticId = diagnosticId;
-      conv.messages = [];
-    } else if (diagnosticId && !conv.diagnosticId) {
-      conv.diagnosticId = diagnosticId;
-    }
+    const turn = await beginConversationTurn({
+      route: 'agent-v2',
+      id: conversationId,
+      diagnosticId,
+      message: { role: 'user', content: safeMessage },
+      db,
+    });
+    const conv = turn.conversation;
 
     let diagnosticContext = '';
     if (conv.diagnosticId) {
@@ -123,8 +147,6 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       }
     }
 
-    conv.messages.push({ role: 'user', content: safeMessage });
-    if (conv.messages.length > 12) conv.messages = conv.messages.slice(-12);
 
     writeSseHeaders(res);
     const sse = createSseWriter(res);
@@ -143,7 +165,11 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       for (const part of chunkText(fallback)) {
         sse.send('assistant.delta', { text: part });
       }
-      conv.messages.push({ role: 'assistant', content: fallback });
+      await appendConversationMessage({
+        route: 'agent-v2', id: conversationId,
+        message: { role: 'assistant', content: fallback }, db,
+      });
+      await releaseGuards();
       sse.send('agent.done', { conversationId, repairProposed: false });
       sse.end();
       return;
@@ -166,7 +192,7 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       stream: false,
       tools: tool ? [tool] : undefined,
       toolChoice: tool ? 'auto' : undefined,
-      config: AI_CONFIG,
+      config: aiConfig,
       signal: upstreamAbort.signal,
     });
 
@@ -203,7 +229,11 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
       });
     }
 
-    conv.messages.push({ role: 'assistant', content: assistantText });
+    await appendConversationMessage({
+      route: 'agent-v2', id: conversationId,
+      message: { role: 'assistant', content: assistantText }, db,
+    });
+    await releaseGuards();
     sse.send('agent.done', {
       conversationId,
       repairProposed: Boolean(repairProposed),
@@ -211,6 +241,10 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
     });
     sse.end();
   } catch (err) {
+    console.error('Agent v2 error:', redactText(err?.message || 'unknown error'));
+    await releaseGuards().catch(releaseError => {
+      console.error('Agent v2 lease release error:', redactText(releaseError?.message || 'unknown error'));
+    });
     if (!res.headersSent) {
       return res.status(500).json({ error: 'Agent request failed' });
     }
@@ -224,6 +258,8 @@ agentV2Router.post('/v2/agent/messages', async (req, res) => {
     if (!res.writableEnded) res.end();
   } finally {
     if (closeHandler) res.off('close', closeHandler);
-    if (typeof release === 'function') release();
+    await releaseGuards().catch(releaseError => {
+      console.error('Agent v2 final lease release error:', redactText(releaseError?.message || 'unknown error'));
+    });
   }
 });

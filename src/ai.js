@@ -1,3 +1,5 @@
+import { getRuntimeEnv } from './runtime-env.js';
+
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
 const DEFAULT_MAX_TOKENS = 3000;
@@ -43,7 +45,7 @@ function positiveInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function getAIConfig(env = process.env) {
+export function getAIConfig(env = getRuntimeEnv()) {
   return {
     provider: env.AI_PROVIDER || 'openrouter',
     model: env.AI_MODEL || DEFAULT_MODEL,

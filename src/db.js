@@ -1,8 +1,14 @@
 import pg from 'pg';
+import { createHyperdriveDatabase } from './database-connection.js';
+import { hasHyperdriveBinding, resolveDatabaseUrl } from './runtime-env.js';
 
-const { Pool } = pg;
+const { Client, Pool } = pg;
 
 let pool = null;
+let hyperdriveDatabase = null;
+let initialization = null;
+let readiness = null;
+let readinessCheckedAt = 0;
 
 const PUBLIC_DIAGNOSIS_FILTER = "source IS DISTINCT FROM 'canary'";
 
@@ -24,9 +30,16 @@ export function getPublicStatsQueries() {
 }
 
 export function getPool() {
-  if (!pool && process.env.DATABASE_URL) {
+  const connectionString = resolveDatabaseUrl();
+  if (hasHyperdriveBinding()) {
+    if (!hyperdriveDatabase) {
+      hyperdriveDatabase = createHyperdriveDatabase(Client, connectionString);
+    }
+    return hyperdriveDatabase;
+  }
+  if (!pool && connectionString) {
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
+      connectionString,
       max: 5,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -38,44 +51,129 @@ export function getPool() {
   return pool;
 }
 
+export function hasDatabase() {
+  return Boolean(resolveDatabaseUrl());
+}
+
+export function ensureDBInitialized() {
+  if (!getPool()) return Promise.resolve(false);
+  if (!initialization) initialization = initDB();
+  return initialization;
+}
+
+export async function ensureDBReady({ now = Date.now(), cacheMs = 30_000 } = {}) {
+  const db = getPool();
+  if (!db) return false;
+  if (!readiness || now - readinessCheckedAt >= cacheMs) {
+    readinessCheckedAt = now;
+    readiness = db.query(`
+      SELECT COUNT(*)::integer AS count
+      FROM pg_catalog.pg_class
+      WHERE oid IN (
+        to_regclass('public.diagnoses'),
+        to_regclass('public.patterns'),
+        to_regclass('public.ai_discoveries'),
+        to_regclass('public.feedback'),
+        to_regclass('public.webhook_deliveries'),
+        to_regclass('public.conversations'),
+        to_regclass('public.rate_limit_windows'),
+        to_regclass('public.concurrency_leases')
+      )
+    `).then(result => Number(result.rows[0]?.count) === 8).catch(error => {
+      console.error('DB readiness failed:', error.message);
+      return false;
+    });
+  }
+  const pending = readiness;
+  const ready = await pending;
+  if (!ready && readiness === pending) {
+    readiness = null;
+    readinessCheckedAt = 0;
+  }
+  return ready;
+}
+
 const memoryWebhookDeliveries = new Map();
 const WEBHOOK_MEMORY_TTL_MS = 10 * 60 * 1000;
 const WEBHOOK_MEMORY_MAX = 1000;
+const WEBHOOK_PENDING_STALE_MS = 5 * 60 * 1000;
 
 function validWebhookKey(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value);
 }
 
 export async function claimWebhookDelivery(provider, eventId, { db = getPool(), now = Date.now() } = {}) {
-  if (!validWebhookKey(provider) || !validWebhookKey(eventId)) return false;
+  if (!validWebhookKey(provider) || !validWebhookKey(eventId)) return { status: 'invalid' };
   if (db) {
     try {
-      const result = await db.query(`
-        INSERT INTO webhook_deliveries (provider, event_id)
-        VALUES ($1, $2)
+      const inserted = await db.query(`
+        INSERT INTO webhook_deliveries (
+          provider, event_id, status, claimed_at, completed_at, attempts
+        )
+        VALUES ($1, $2, 'pending', to_timestamp($3 / 1000.0), NULL, 1)
         ON CONFLICT DO NOTHING
         RETURNING event_id
+      `, [provider, eventId, now]);
+      if (inserted.rowCount === 1) return { status: 'claimed' };
+
+      const existing = await db.query(`
+        SELECT status, claimed_at FROM webhook_deliveries
+        WHERE provider = $1 AND event_id = $2
       `, [provider, eventId]);
-      void db.query("DELETE FROM webhook_deliveries WHERE created_at < NOW() - INTERVAL '7 days'")
-        .catch(err => console.warn('Webhook idempotency cleanup failed:', err.message));
-      return result.rowCount === 1;
+      const row = existing.rows[0];
+      if (row?.status === 'completed') return { status: 'duplicate' };
+
+      const reclaimed = await db.query(`
+        UPDATE webhook_deliveries
+        SET claimed_at = to_timestamp($3 / 1000.0), attempts = attempts + 1
+        WHERE provider = $1 AND event_id = $2
+          AND status = 'pending'
+          AND claimed_at < to_timestamp($4 / 1000.0)
+        RETURNING event_id
+      `, [provider, eventId, now, now - WEBHOOK_PENDING_STALE_MS]);
+      return reclaimed.rowCount === 1 ? { status: 'claimed' } : { status: 'pending' };
     } catch (err) {
       console.error('Webhook idempotency claim failed:', err.message);
-      return false;
+      return { status: 'storage_error' };
     }
   }
 
-  for (const [key, createdAt] of memoryWebhookDeliveries) {
-    if (now - createdAt > WEBHOOK_MEMORY_TTL_MS) memoryWebhookDeliveries.delete(key);
+  for (const [key, delivery] of memoryWebhookDeliveries) {
+    if (now - delivery.claimedAt > WEBHOOK_MEMORY_TTL_MS) memoryWebhookDeliveries.delete(key);
   }
   const key = `${provider}:${eventId}`;
-  if (memoryWebhookDeliveries.has(key)) return false;
-  memoryWebhookDeliveries.set(key, now);
+  const existing = memoryWebhookDeliveries.get(key);
+  if (existing?.status === 'completed') return { status: 'duplicate' };
+  if (existing && now - existing.claimedAt <= WEBHOOK_PENDING_STALE_MS) return { status: 'pending' };
+  memoryWebhookDeliveries.set(key, { status: 'pending', claimedAt: now });
   while (memoryWebhookDeliveries.size > WEBHOOK_MEMORY_MAX) {
     const oldest = memoryWebhookDeliveries.keys().next();
     if (oldest.done) break;
     memoryWebhookDeliveries.delete(oldest.value);
   }
+  return { status: 'claimed' };
+}
+
+export async function completeWebhookDelivery(provider, eventId, { db = getPool() } = {}) {
+  if (!validWebhookKey(provider) || !validWebhookKey(eventId)) return false;
+  if (db) {
+    try {
+      const result = await db.query(`
+        UPDATE webhook_deliveries
+        SET status = 'completed', completed_at = NOW()
+        WHERE provider = $1 AND event_id = $2 AND status = 'pending'
+      `, [provider, eventId]);
+      void db.query("DELETE FROM webhook_deliveries WHERE status = 'completed' AND completed_at < NOW() - INTERVAL '7 days'")
+        .catch(err => console.warn('Webhook idempotency cleanup failed:', err.message));
+      return result.rowCount === 1;
+    } catch (err) {
+      console.error('Webhook idempotency completion failed:', err.message);
+      return false;
+    }
+  }
+  const delivery = memoryWebhookDeliveries.get(`${provider}:${eventId}`);
+  if (!delivery) return false;
+  delivery.status = 'completed';
   return true;
 }
 
@@ -176,10 +274,48 @@ export async function initDB() {
         provider TEXT NOT NULL,
         event_id TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL DEFAULT 'completed',
+        claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        attempts INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (provider, event_id)
       );
 
+      ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'completed';
+      ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+      ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+      ALTER TABLE webhook_deliveries ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 1;
+
+      CREATE TABLE IF NOT EXISTS conversations (
+        route TEXT NOT NULL,
+        id TEXT NOT NULL,
+        diagnostic_id TEXT,
+        messages JSONB NOT NULL DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        touched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (route, id)
+      );
+
+      CREATE TABLE IF NOT EXISTS rate_limit_windows (
+        scope TEXT NOT NULL,
+        key TEXT NOT NULL,
+        window_start BIGINT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        expires_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (scope, key, window_start)
+      );
+
+      CREATE TABLE IF NOT EXISTS concurrency_leases (
+        scope TEXT NOT NULL,
+        lease_id UUID NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (scope, lease_id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at);
+      CREATE INDEX IF NOT EXISTS idx_conversations_touched ON conversations(touched_at);
+      CREATE INDEX IF NOT EXISTS idx_rate_limit_expires ON rate_limit_windows(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_concurrency_leases_expires ON concurrency_leases(expires_at);
 
       CREATE INDEX IF NOT EXISTS idx_diagnoses_created ON diagnoses(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_diagnoses_host ON diagnoses(host_hash);
@@ -349,16 +485,27 @@ export async function getStats() {
 
   try {
     const queries = getPublicStatsQueries();
-    const [total, today, topIssues, versions, outcomes, serviceManagers, sigterms, zombies] = await Promise.all([
-      db.query(queries.total),
-      db.query(queries.today),
-      db.query('SELECT id, title, severity, times_detected, success_rate FROM patterns ORDER BY times_detected DESC LIMIT 10'),
-      db.query(queries.versions),
-      db.query(queries.outcomes),
-      db.query(queries.serviceManagers),
-      db.query(queries.sigterms),
-      db.query(queries.zombies),
-    ]);
+    const client = await db.connect();
+    let total;
+    let today;
+    let topIssues;
+    let versions;
+    let outcomes;
+    let serviceManagers;
+    let sigterms;
+    let zombies;
+    try {
+      total = await client.query(queries.total);
+      today = await client.query(queries.today);
+      topIssues = await client.query('SELECT id, title, severity, times_detected, success_rate FROM patterns ORDER BY times_detected DESC LIMIT 10');
+      versions = await client.query(queries.versions);
+      outcomes = await client.query(queries.outcomes);
+      serviceManagers = await client.query(queries.serviceManagers);
+      sigterms = await client.query(queries.sigterms);
+      zombies = await client.query(queries.zombies);
+    } finally {
+      await client.release();
+    }
 
     return {
       totalDiagnoses: parseInt(total.rows[0].count),

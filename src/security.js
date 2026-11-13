@@ -1,4 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
+import { getPool } from './db.js';
+import { getRuntimeEnv } from './runtime-env.js';
+import { acquireConcurrencyLease, consumeFixedWindow } from './shared-state.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHORT_ID_PATTERN = /^[A-Za-z0-9_-]{10,64}$/;
@@ -73,7 +76,7 @@ export function positiveEnvInteger(value, fallback) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function isPaidAIEnabled(config, env = process.env) {
+export function isPaidAIEnabled(config, env = getRuntimeEnv()) {
   if (!config?.apiKey) return false;
   return Boolean(env.CLAWFIX_API_TOKEN) || env.ALLOW_PUBLIC_AI === '1';
 }
@@ -97,7 +100,7 @@ function tokensEqual(expected, received) {
  * Recognize an operational canary without turning its marker into an auth bypass.
  * Missing configuration, non-string headers, and any mismatch all fail closed.
  */
-export function isAuthorizedCanaryRequest(req, env = process.env) {
+export function isAuthorizedCanaryRequest(req, env = getRuntimeEnv()) {
   const expected = env?.CLAWFIX_CANARY_TOKEN;
   const received = req?.headers?.['x-clawfix-canary'];
   if (typeof expected !== 'string' || expected.length === 0) return false;
@@ -129,8 +132,54 @@ export function createAIRequestGuard({
   };
 }
 
-export const sharedAIRequestGuard = createAIRequestGuard({
-  token: process.env.CLAWFIX_API_TOKEN || '',
-  dailyLimit: positiveEnvInteger(process.env.AI_DAILY_REQUEST_LIMIT, 200),
-  concurrency: positiveEnvInteger(process.env.AI_MAX_CONCURRENCY, 4),
-});
+export async function consumeRouteRateLimit(scope, req, {
+  env = getRuntimeEnv(),
+  db = getPool(),
+  limit = positiveEnvInteger(env.CHAT_RATE_LIMIT, 30),
+  windowMs = positiveEnvInteger(env.RATE_LIMIT_WINDOW_MS, 60_000),
+} = {}) {
+  return consumeFixedWindow({ scope, key: clientIp(req), limit, windowMs, db });
+}
+
+export const sharedAIRequestGuard = {
+  async acquire(req, { env = getRuntimeEnv(), db = getPool() } = {}) {
+    const token = env.CLAWFIX_API_TOKEN || '';
+    if (token && !tokensEqual(token, bearerToken(req))) {
+      return { allowed: false, status: 401, error: 'Unauthorized' };
+    }
+    const lease = await acquireConcurrencyLease({
+      scope: 'ai-global',
+      limit: positiveEnvInteger(env.AI_MAX_CONCURRENCY, 4),
+      ttlMs: Math.max(
+        positiveEnvInteger(env.AI_LEASE_TTL_MS, 120_000),
+        positiveEnvInteger(env.AI_TIMEOUT_MS, 90_000) + 30_000,
+      ),
+      db,
+    });
+    if (!lease.allowed) return { allowed: false, status: 503, error: 'AI service is busy' };
+    let budget;
+    try {
+      budget = await consumeFixedWindow({
+        scope: 'ai-daily',
+        key: 'global',
+        limit: positiveEnvInteger(env.AI_DAILY_REQUEST_LIMIT, 200),
+        windowMs: 86_400_000,
+        db,
+      });
+    } catch (error) {
+      // Ownership is not transferred to the caller until the budget succeeds.
+      // A failed budget query must not strand already-acquired concurrency.
+      try {
+        await lease.release();
+      } catch (releaseError) {
+        throw new AggregateError([error, releaseError], 'AI budget and lease release failed');
+      }
+      throw error;
+    }
+    if (!budget.allowed) {
+      await lease.release();
+      return { allowed: false, status: 429, error: 'Daily AI request budget exhausted' };
+    }
+    return { allowed: true, release: lease.release };
+  },
+};

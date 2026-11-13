@@ -25,6 +25,13 @@
 - Preserve local-only behavior for `--dry-run`, `--no-send`, and `--json`.
 - Do not weaken consent, redaction, authentication, rate limits, or repair validation to make a test pass.
 
+## Website deployment
+
+- `main` is the production source for `clawfix.dev`; reviewed main changes publish only after the exact main CI succeeds.
+- Use the normal PR workflow. Do not deploy an old migration worktree, change DNS, edit runtime secrets, run production schema migrations, or re-enable paid AI to publish website changes.
+- See `docs/cloudflare-deployment.md` for checks, version receipts, boundaries, and authorized rollback.
+- Website/backend deployment does not publish a new npm package or standalone TUI release.
+
 ## Pull request handoff
 
 Summarize the reproduced failure, changed contract, tests run, and any remaining compatibility risk. Link the issue or redacted incident evidence that motivated a new diagnostic rule.

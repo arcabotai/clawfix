@@ -1,4 +1,8 @@
-import { spawnSync } from 'node:child_process';
+function defaultSpawn() {
+  const isWorker = globalThis.navigator?.userAgent === 'Cloudflare-Workers';
+  if (isWorker || typeof process.getBuiltinModule !== 'function') return null;
+  return process.getBuiltinModule('node:child_process')?.spawnSync || null;
+}
 
 function clean(value, maxLength = 2000) {
   return String(value || '')
@@ -8,7 +12,7 @@ function clean(value, maxLength = 2000) {
 }
 
 export function validateRepairScript(script, {
-  spawn = spawnSync,
+  spawn = defaultSpawn(),
   runShellCheck = true,
 } = {}) {
   const value = String(script || '').trim();
@@ -21,21 +25,26 @@ export function validateRepairScript(script, {
     };
   }
 
-  const syntaxResult = spawn('bash', ['-n'], {
-    encoding: 'utf8',
-    input: value,
-    timeout: 10_000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  const syntax = {
-    ok: syntaxResult.status === 0,
-    error: syntaxResult.status === 0
-      ? null
-      : clean(syntaxResult.stderr || syntaxResult.error?.message),
-  };
+  // Structural markers cannot establish Bash syntax validity. Workers cannot
+  // spawn Bash, so withhold executable repairs there rather than approve them.
+  let syntax = { ok: false, error: 'Bash syntax validation is unavailable in this runtime' };
+  if (spawn) {
+    const syntaxResult = spawn('bash', ['-n'], {
+      encoding: 'utf8',
+      input: value,
+      timeout: 10_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    syntax = {
+      ok: syntaxResult.status === 0,
+      error: syntaxResult.status === 0
+        ? null
+        : clean(syntaxResult.stderr || syntaxResult.error?.message),
+    };
+  }
 
   let shellcheck = { available: false, findings: [] };
-  if (runShellCheck) {
+  if (runShellCheck && spawn) {
     const result = spawn('shellcheck', ['--format=json', '--shell=bash', '-'], {
       encoding: 'utf8',
       input: value,

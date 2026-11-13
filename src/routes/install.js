@@ -6,10 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 export const installRouter = Router();
 
-const INSTALL_SCRIPT = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '../../scripts/install.sh'),
-  'utf8',
-);
+const isWorkerRuntime = typeof globalThis.WebSocketPair !== 'undefined'
+  || globalThis.navigator?.userAgent === 'Cloudflare-Workers';
+const INSTALL_SCRIPT = isWorkerRuntime
+  ? (await import('../../scripts/install.sh')).default
+  : readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../../scripts/install.sh'),
+      'utf8',
+    );
 
 const INSTALL_HASH = createHash('sha256').update(INSTALL_SCRIPT).digest('hex');
 
