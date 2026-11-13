@@ -466,6 +466,125 @@ export function describeIncompleteNpmInstall(detail) {
   return `A global npm install of OpenClaw${where} is incomplete (${missing.join(', ')}). Reinstall with ${reinstall}, or run openclaw update. Config and state are left unchanged.`;
 }
 
+// `openclaw update status --json` writes update, channel, and availability
+// (openclaw/openclaw src/cli/update-cli/status.ts). The running version is not
+// in that object; it is the CLI version `openclaw --version` already printed.
+// availability.latestVersion is set only when the registry copy for the
+// configured channel is newer (src/commands/status.update.ts). Beta may follow
+// the newer of the beta tag and npm latest (src/infra/update-channels.ts).
+// Dev, git/source, host, and immutable installs are not package-channel advice.
+// Duplicated in cli/bin/security.js. The production image ships that file
+// and does not copy cli/core. Keep the two copies in sync.
+const UPDATE_PACKAGE_CHANNELS = new Set(['stable', 'beta', 'extended-stable']);
+
+function isUpdateRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function releaseFitsUpdateChannel(channel, version, tag) {
+  const parsed = parseOpenClawRelease(version);
+  if (!parsed || parsed.text !== version) return false;
+  const prerelease = parsed.channel === 'prerelease';
+  if (channel === 'stable') {
+    return (tag == null || tag === 'latest') && !prerelease && parsed.patch < 33;
+  }
+  if (channel === 'extended-stable') {
+    return tag === 'extended-stable' && !prerelease && parsed.patch >= 33;
+  }
+  if (channel !== 'beta' || tag == null || (parsed.patch >= 33 && !prerelease)) return false;
+  if (tag === 'latest') return !prerelease;
+  return tag === 'beta';
+}
+
+export function projectOpenClawUpdateStatus(parsed, currentVersion) {
+  if (!isUpdateRecord(parsed)) return null;
+  const update = parsed.update;
+  const channelInfo = parsed.channel;
+  const availability = parsed.availability;
+  if (!isUpdateRecord(update) || !isUpdateRecord(channelInfo) || !isUpdateRecord(availability)) {
+    return null;
+  }
+  if (update.error || update.installKind !== 'package') return null;
+  const registry = update.registry;
+  if (!isUpdateRecord(registry) || registry.error || registry.reason) return null;
+  const channel = channelInfo.value;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  if (channelInfo.config != null && channelInfo.config !== channel) return null;
+  const tag = registry.tag == null ? null : registry.tag;
+  if (tag != null && typeof tag !== 'string') return null;
+  const current = parseStoredOpenClawVersion(currentVersion)
+    ?? parsePrintedOpenClawVersion(currentVersion);
+  if (!current) return null;
+  const reportedAvailable = availability.available === true
+    && availability.hasRegistryUpdate === true
+    && availability.hasGitUpdate !== true;
+  if (availability.available !== true && availability.available !== false) return null;
+  const rawAvailable = reportedAvailable ? availability.latestVersion : registry.latestVersion;
+  const available = parseStoredOpenClawVersion(rawAvailable);
+  if (!available || !releaseFitsUpdateChannel(channel, available, tag)) return null;
+  const comparison = compareOpenClawVersions(current, available);
+  if (comparison === null) return null;
+  if (reportedAvailable) {
+    if (comparison >= 0) return null;
+    if (parseStoredOpenClawVersion(availability.latestVersion) !== available) return null;
+  } else if (comparison < 0) {
+    return null;
+  }
+  return {
+    currentVersion: current,
+    availableVersion: available,
+    channel,
+    updateAvailable: reportedAvailable,
+  };
+}
+
+export function openclawUpdateAvailable(record) {
+  if (!isUpdateRecord(record) || record.updateAvailable !== true) return null;
+  const channel = record.channel;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  const currentVersion = parseStoredOpenClawVersion(record.currentVersion);
+  const availableVersion = parseStoredOpenClawVersion(record.availableVersion);
+  if (!currentVersion || !availableVersion) return null;
+  if (!releaseFitsUpdateChannel(channel, availableVersion, channel === 'stable' ? 'latest' : channel)) {
+    return null;
+  }
+  const comparison = compareOpenClawVersions(currentVersion, availableVersion);
+  if (comparison === null || comparison >= 0) return null;
+  return { currentVersion, availableVersion, channel };
+}
+
+export function narrowUploadedUpdate(record) {
+  if (!isUpdateRecord(record)) return null;
+  const narrow = {
+    currentVersion: parseStoredOpenClawVersion(record.currentVersion),
+    availableVersion: parseStoredOpenClawVersion(record.availableVersion),
+    channel: record.channel,
+    updateAvailable: record.updateAvailable === true,
+  };
+  if (!narrow.currentVersion || !narrow.availableVersion) return null;
+  if (!UPDATE_PACKAGE_CHANNELS.has(narrow.channel)) return null;
+  if (Object.keys(record).some(key => !Object.hasOwn(narrow, key))) return null;
+  if (narrow.updateAvailable) return openclawUpdateAvailable(narrow) ? narrow : null;
+  const comparison = compareOpenClawVersions(narrow.currentVersion, narrow.availableVersion);
+  if (comparison === null || comparison < 0) return null;
+  if (!releaseFitsUpdateChannel(
+    narrow.channel,
+    narrow.availableVersion,
+    narrow.channel === 'stable' ? 'latest' : narrow.channel,
+  )) return null;
+  return narrow;
+}
+
+export function describeOpenClawUpdateAvailable(detail) {
+  const currentVersion = detail?.currentVersion;
+  const availableVersion = detail?.availableVersion;
+  const channel = detail?.channel;
+  if (parseStoredOpenClawVersion(currentVersion) !== currentVersion) return null;
+  if (parseStoredOpenClawVersion(availableVersion) !== availableVersion) return null;
+  if (!UPDATE_PACKAGE_CHANNELS.has(channel)) return null;
+  return `OpenClaw ${currentVersion} has ${availableVersion} available on the ${channel} channel. Run openclaw update. ClawFix does not apply the update.`;
+}
+
 const NPM_PACKAGE_FILE_LIMIT = 2_000_000;
 const NPM_PATH_LIMIT = 64;
 const NPM_LINK_HOPS = 8;
@@ -971,6 +1090,15 @@ export function deriveIssues(collected) {
       description: describeIncompleteNpmInstall(incompleteInstall),
     });
   }
+  const availableUpdate = openclawUpdateAvailable(collected.updateAvailability);
+  if (availableUpdate) {
+    issues.push({
+      knownIssueId: 'openclaw-update-available',
+      severity: 'low',
+      text: 'OpenClaw update available',
+      description: describeOpenClawUpdateAvailable(availableUpdate),
+    });
+  }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
     issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
   }
@@ -1120,6 +1248,7 @@ export function createDiagnosticsCore({
     'collectNativeConfigValidation',
     'collectNativeStatus',
     'collectNativeSecurityAudit',
+    'collectOpenClawUpdateStatus',
   ]);
 
   async function discover(cancellation) {
@@ -1220,7 +1349,7 @@ export function createDiagnosticsCore({
     return projected;
   }
 
-  function collectNative(openclawBin, runtimeCompatible, cancellation) {
+  function collectNative(openclawBin, runtimeCompatible, cliVersion, cancellation) {
     // Native collectors are sync spawnSync boundaries with intrinsic timeouts. Cancellation cannot
     // interrupt a collector already executing, but is observed before and after each call.
     cancellation.checkCancelled();
@@ -1246,9 +1375,15 @@ export function createDiagnosticsCore({
       ? nativeCollectors.collectNativeSecurityAudit(openclawBin)
       : { available: false, findings: [] };
     cancellation.checkCancelled();
+    // Update status is its own OpenClaw command. An old CLI that does not have
+    // it, and a runtime that cannot start, both return no record.
+    const updateAvailability = openclawBin
+      ? nativeCollectors.collectOpenClawUpdateStatus(openclawBin, cliVersion)
+      : null;
+    cancellation.checkCancelled();
 
     return {
-      nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
+      nativeDoctor, nativeConfig, nativeStatus, nativeSecurity, updateAvailability,
     };
   }
 
@@ -1563,8 +1698,9 @@ export function createDiagnosticsCore({
       }));
 
       const {
-        nativeDoctor, nativeConfig, nativeStatus, nativeSecurity,
-      } = collectNative(openclawBin, system.runtimeCompatible, cancellation);
+        nativeDoctor, nativeConfig, nativeStatus, nativeSecurity, updateAvailability: collectedUpdate,
+      } = collectNative(openclawBin, system.runtimeCompatible, system.ocVersion, cancellation);
+      const updateAvailability = narrowUploadedUpdate(collectedUpdate);
       emit?.(scanStep({
         revision,
         phase: 'native',
@@ -1590,6 +1726,10 @@ export function createDiagnosticsCore({
             warning: nativeSecurity.available ? (nativeSecurity.summary?.warning ?? 0) : 0,
             info: nativeSecurity.available ? (nativeSecurity.summary?.info ?? 0) : 0,
           },
+          update: updateAvailability && typeof updateAvailability === 'object' ? {
+            channel: updateAvailability.channel,
+            updateAvailable: updateAvailability.updateAvailable === true,
+          } : null,
         },
       }));
 
@@ -1626,6 +1766,7 @@ export function createDiagnosticsCore({
         nativeStatus,
         nativeSecurity,
         install,
+        updateAvailability,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -1685,6 +1826,7 @@ export function createDiagnosticsCore({
           ...(cliVersion ? { cliVersion } : {}),
           ...(configLastTouchedVersion ? { configLastTouchedVersion } : {}),
           ...(install ? { install } : {}),
+          ...(updateAvailability ? { updateAvailability } : {}),
         },
         config: redactedConfig,
         nativeConfig,

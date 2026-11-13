@@ -9,8 +9,10 @@ import {
   describeConfigWrittenByNewerVersion,
   describeIncompleteNpmInstall,
   describeOpenClawRedactedPlaceholders,
+  describeOpenClawUpdateAvailable,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
+  openclawUpdateAvailable,
   placeholderPathsForDiagnostic,
 } from '../cli/bin/security.js';
 
@@ -1590,6 +1592,23 @@ echo "  npm install -g openclaw@<installed version>"
 echo "Or run the documented updater:"
 echo "  openclaw update"
 echo "No config or state was changed."`,
+  },
+
+  {
+    id: 'openclaw-update-available',
+    severity: 'low',
+    title: 'OpenClaw update available',
+    description: 'OpenClaw reports a newer release on the configured update channel. Run openclaw update. ClawFix does not apply the update.',
+    detect: (diag) => openclawUpdateAvailable(diag?.openclaw?.updateAvailability) !== null,
+    describe: (diag) => describeOpenClawUpdateAvailable(
+      openclawUpdateAvailable(diag?.openclaw?.updateAvailability),
+    ),
+    fix: `# Advisory only. An available OpenClaw update is not applied automatically.
+# This script does not run openclaw update and does not write config.
+echo "OpenClaw reports a newer release on the configured update channel."
+echo "Run the documented updater when you are ready:"
+echo "  openclaw update"
+echo "No update was applied."`,
   },
 
   {

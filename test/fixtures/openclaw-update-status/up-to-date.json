@@ -1,0 +1,43 @@
+{
+  "update": {
+    "root": "/opt/openclaw",
+    "installKind": "package",
+    "packageManager": "unknown",
+    "deps": {
+      "manager": "unknown",
+      "lockfilePath": null,
+      "markerPath": null,
+      "status": "unknown",
+      "reason": "unknown package manager"
+    },
+    "registry": {
+      "latestVersion": "2026.11.3",
+      "tag": "latest"
+    }
+  },
+  "channel": {
+    "value": "stable",
+    "source": "default",
+    "label": "stable (default)",
+    "config": null
+  },
+  "availability": {
+    "available": false,
+    "hasGitUpdate": false,
+    "hasRegistryUpdate": false,
+    "latestVersion": null,
+    "gitBehind": null
+  },
+  "runtimeFindings": [
+    {
+      "checkId": "core/doctor/node-runtime",
+      "severity": "error",
+      "source": "cli",
+      "message": "Node 24.11.1: node:sqlite truncates TEXT at embedded NUL (nodejs/node#61954); use 24.16+/26.1+ or a build with the fix",
+      "requirement": ">=24.16.0 <25, or >=26.1.0 (Node 26 recommended)",
+      "target": "/usr/bin/node",
+      "fixHint": "Node 24.11.1 is unsupported; OpenClaw requires >=24.16.0 <25, or >=26.1.0 (Node 26 recommended).\nnpm can finish installing OpenClaw without running its preinstall check; a successful install does not mean Node is supported.\nRe-run the installer: curl -fsSL https://openclaw.ai/install.sh | bash\nOn Windows: iwr -useb https://openclaw.ai/install.ps1 | iex\nOr with nvm: nvm install 26 && nvm use 26 && nvm alias default 26\nThen rerun openclaw update. See https://docs.openclaw.ai/install/node"
+    }
+  ],
+  "recoverySets": []
+}

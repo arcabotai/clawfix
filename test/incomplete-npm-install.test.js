@@ -493,6 +493,7 @@ test('runDiagnostics uploads the redacted install record and not package notes',
       },
       collectNativeStatus() { return { available: false }; },
       collectNativeSecurityAudit() { return { available: false, findings: [] }; },
+      collectOpenClawUpdateStatus() { return null; },
     },
   };
   const result = await createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-incomplete-npm' });

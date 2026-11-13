@@ -402,6 +402,194 @@ if [ -z "\$INSTALL_JSON" ]; then
   INSTALL_JSON=null
 fi
 
+# OpenClaw's own update status --json reports the configured channel.
+# Only the current version, the available version, the channel, and the boolean
+# are kept. Paths, git metadata, registry errors, and run history stay local.
+# The probe is killed after 30 seconds, the same bound as the other JSON checks.
+UPDATE_JSON=null
+if [ -n "\$OPENCLAW_BIN" ]; then
+  UPDATE_JSON=\$(node - "\$OPENCLAW_BIN" "\$OC_VERSION" <<'NODE'
+const { spawnSync } = require('node:child_process');
+
+const bin = process.argv[2] || '';
+const currentText = process.argv[3] || '';
+const channels = { stable: true, beta: true, 'extended-stable': true };
+const channelRank = { prerelease: 0, stable: 1, correction: 2 };
+const labelRank = { alpha: 0, beta: 1 };
+
+function decimal(text) {
+  if (typeof text !== 'string' || !/^(?:0|[1-9]\\d*)$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function parseStored(value) {
+  if (typeof value !== 'string') return null;
+  let trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64 || trimmed.indexOf('+') >= 0) return null;
+  const legacy = /^([vV]?[0-9]+\\.[0-9]+\\.[0-9]+)\\.beta(?:\\.([0-9A-Za-z.-]+))?$/.exec(trimmed);
+  if (legacy) {
+    const base = legacy[1].replace(/^[vV]/, '');
+    trimmed = legacy[2] ? base + '-beta.' + legacy[2] : base + '-beta';
+  }
+  if (trimmed.length > 64 || trimmed.indexOf('+') >= 0) return null;
+  const match = /^(?:[vV])?(\\d{4})\\.(\\d{1,2})\\.(\\d+)(?:-(alpha|beta)\\.(\\d+)|-(\\d+))?$/.exec(trimmed);
+  if (!match) return null;
+  const major = decimal(match[1]);
+  const minor = decimal(match[2]);
+  const patch = decimal(match[3]);
+  if (major === null || minor === null || patch === null) return null;
+  if (minor < 1 || minor > 12 || patch < 1) return null;
+  if (match[4]) {
+    const seq = decimal(match[5]);
+    if (seq === null || seq < 1) return null;
+    return {
+      major: major,
+      minor: minor,
+      patch: patch,
+      channel: 'prerelease',
+      label: match[4],
+      seq: seq,
+      text: major + '.' + minor + '.' + patch + '-' + match[4] + '.' + seq,
+    };
+  }
+  if (match[6]) {
+    const seq = decimal(match[6]);
+    if (seq === null || seq < 1) return null;
+    return {
+      major: major,
+      minor: minor,
+      patch: patch,
+      channel: 'correction',
+      label: null,
+      seq: seq,
+      text: major + '.' + minor + '.' + patch + '-' + seq,
+    };
+  }
+  return {
+    major: major,
+    minor: minor,
+    patch: patch,
+    channel: 'stable',
+    label: null,
+    seq: null,
+    text: major + '.' + minor + '.' + patch,
+  };
+}
+
+function parsePrinted(value) {
+  const direct = parseStored(value);
+  if (direct) return direct;
+  if (typeof value !== 'string') return null;
+  const line = value.trim().split(/\\r?\\n/, 1)[0].trim();
+  const printed = /^OpenClaw\\s+(\\S+?)(?:\\s+\\([^)\\s]+\\))?$/.exec(line);
+  return printed ? parseStored(printed[1]) : null;
+}
+
+function compare(left, right) {
+  if (left.major !== right.major) return left.major < right.major ? -1 : 1;
+  if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
+  if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
+  if (left.channel !== right.channel) {
+    return channelRank[left.channel] < channelRank[right.channel] ? -1 : 1;
+  }
+  if (left.channel === 'prerelease') {
+    if (left.label !== right.label) {
+      return labelRank[left.label] < labelRank[right.label] ? -1 : 1;
+    }
+    if (left.seq !== right.seq) return left.seq < right.seq ? -1 : 1;
+  } else if (left.channel === 'correction' && left.seq !== right.seq) {
+    return left.seq < right.seq ? -1 : 1;
+  }
+  return 0;
+}
+
+function fits(channel, version, tag) {
+  const parsed = parseStored(version);
+  if (!parsed || parsed.text !== version) return false;
+  const prerelease = parsed.channel === 'prerelease';
+  if (channel === 'stable') {
+    return (tag == null || tag === 'latest') && !prerelease && parsed.patch < 33;
+  }
+  if (channel === 'extended-stable') {
+    return tag === 'extended-stable' && !prerelease && parsed.patch >= 33;
+  }
+  if (channel !== 'beta' || tag == null || (parsed.patch >= 33 && !prerelease)) return false;
+  if (tag === 'latest') return !prerelease;
+  return tag === 'beta';
+}
+
+function isRecord(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function project(parsed, currentText) {
+  if (!isRecord(parsed)) return null;
+  const update = parsed.update;
+  const channelInfo = parsed.channel;
+  const availability = parsed.availability;
+  if (!isRecord(update) || !isRecord(channelInfo) || !isRecord(availability)) return null;
+  if (update.error || update.installKind !== 'package') return null;
+  const registry = update.registry;
+  if (!isRecord(registry) || registry.error || registry.reason) return null;
+  const channel = channelInfo.value;
+  if (!channels[channel]) return null;
+  if (channelInfo.config != null && channelInfo.config !== channel) return null;
+  const tag = registry.tag == null ? null : registry.tag;
+  if (tag != null && typeof tag !== 'string') return null;
+  const current = parsePrinted(currentText);
+  if (!current) return null;
+  const reportedAvailable = availability.available === true
+    && availability.hasRegistryUpdate === true
+    && availability.hasGitUpdate !== true;
+  if (availability.available !== true && availability.available !== false) return null;
+  const rawAvailable = reportedAvailable ? availability.latestVersion : registry.latestVersion;
+  const available = parseStored(rawAvailable);
+  if (!available || !fits(channel, available.text, tag)) return null;
+  const comparison = compare(current, available);
+  if (reportedAvailable) {
+    if (comparison >= 0) return null;
+    if (!parseStored(availability.latestVersion) || parseStored(availability.latestVersion).text !== available.text) {
+      return null;
+    }
+  } else if (comparison < 0) {
+    return null;
+  }
+  return {
+    currentVersion: current.text,
+    availableVersion: available.text,
+    channel: channel,
+    updateAvailable: reportedAvailable,
+  };
+}
+
+let parsed = null;
+if (bin) {
+  const result = spawnSync(bin, ['update', 'status', '--json', '--timeout', '10'], {
+    timeout: 30000,
+    encoding: 'utf8',
+    maxBuffer: 2000000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const status = result.status;
+  const failed = Boolean(result.error) || result.signal != null || (status !== 0 && status !== 1);
+  if (!failed && typeof result.stdout === 'string') {
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch (error) {
+      parsed = null;
+    }
+  }
+}
+const projected = project(parsed, currentText);
+process.stdout.write(projected ? JSON.stringify(projected) : 'null');
+NODE
+) || true
+fi
+if [ -z "\$UPDATE_JSON" ]; then
+  UPDATE_JSON=null
+fi
+
 # --- Sanitize Config (REDACT RECOGNIZED SECRETS) ---
 echo ""
 echo -e "\${BLUE}🔒 Reading config (recognized secrets will be redacted)...\${NC}"
@@ -654,6 +842,7 @@ DIAGNOSTIC=\$(cat <<EOF
   "openclaw": {
     "version": "\${OC_VERSION:-unknown}",
     "install": \$INSTALL_JSON,
+    "updateAvailability": \$UPDATE_JSON,
     "binary": "\${OPENCLAW_BIN:-not found}",
     "configDir": "\${OPENCLAW_DIR:-not found}",
     "configExists": \$CONFIG_EXISTS,
@@ -782,6 +971,7 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • Node/npm versions"
   echo "  • OpenClaw version and config (recognized secrets redacted; top-level env omitted)"
   echo "  • OpenClaw install layout (package manager, which required files are present, home-redacted package root)"
+  echo "  • OpenClaw update availability (current version, available version, channel, and whether an update is available)"
   echo "  • Recent logs (up to 30 matching gateway log lines and up to 50 recent stderr lines)"
   echo "  • Plugin status (enabled/disabled only)"
   echo "  • Gateway status"
@@ -793,6 +983,7 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • File contents (SOUL.md, AGENTS.md, etc.)"
   echo "  • Chat history or messages"
   echo "  • Real hostname (only an 8-character one-way hash is sent)"
+  echo "  • Update-status paths, git metadata, registry errors, or run history"
   echo ""
   echo -e "\${YELLOW}To inspect the full payload first:\${NC}"
   echo "  npx clawfix --dry-run"
