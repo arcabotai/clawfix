@@ -1,4 +1,6 @@
-import { join } from 'node:path';
+import {
+  dirname, isAbsolute, join, normalize, resolve, sep,
+} from 'node:path';
 
 import {
   scanCompleted, scanError, scanStarted, scanStep,
@@ -407,6 +409,356 @@ export function describeConfigWrittenByNewerVersion(versions) {
   return `OpenClaw config was written by ${configVersion}, which is newer than the installed CLI ${cliVersion}. An older CLI can misread or rewrite newer config. Upgrade the CLI to at least ${configVersion}, check which -a openclaw for a shadowing older install, or restore a matching backup. No config is written.`;
 }
 
+// A global npm install lives at {prefix}/lib/node_modules/openclaw and its bin
+// is {prefix}/bin/openclaw -> openclaw.mjs (package.json "bin" / "files").
+// The launcher then loads dist/entry.js or dist/entry.mjs. pnpm, yarn, bun,
+// source checkouts (.git, src/entry.ts, pnpm-lock.yaml), and any other layout
+// are not this install. Duplicated in cli/bin/security.js. The production
+// image ships that file and does not copy cli/core. Keep the two copies in sync.
+const NPM_INSTALL_MISSING = [
+  ['packageJson', false, 'package.json'],
+  ['binTarget', false, 'bin target'],
+  ['distEntry', false, 'dist entry'],
+  ['pluginPathMissing', true, 'bundled plugin path'],
+  ['lifecycleIncomplete', true, 'package lifecycle'],
+];
+const NPM_INSTALL_ROOT = /^~?(?:\/[A-Za-z0-9._@+-]+)+$/;
+
+function sanitizeNpmPackageRoot(value) {
+  if (typeof value !== 'string') return null;
+  let text = value.trim();
+  if (!text || text.length > 240) return null;
+  text = text.replace(/^\/(?:home|Users)\/[^/]+/, '~');
+  if (!NPM_INSTALL_ROOT.test(text)) return null;
+  const segments = text.split('/').filter(Boolean);
+  if (segments.some(segment => segment === '.' || segment === '..')) return null;
+  if (!text.endsWith('/lib/node_modules/openclaw')) return null;
+  return text;
+}
+
+export function incompleteNpmInstall(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+  if (record.manager !== 'npm') return null;
+  const missing = [];
+  for (const [key, expected, label] of NPM_INSTALL_MISSING) {
+    if (record[key] === expected) missing.push(label);
+  }
+  if (missing.length === 0) return null;
+  return {
+    missing,
+    packageRoot: sanitizeNpmPackageRoot(record.packageRoot),
+    version: parseStoredOpenClawVersion(record.version),
+  };
+}
+
+export function describeIncompleteNpmInstall(detail) {
+  const allowed = new Set(NPM_INSTALL_MISSING.map(([, , label]) => label));
+  const missing = Array.isArray(detail?.missing)
+    ? detail.missing.filter(label => allowed.has(label))
+    : [];
+  if (missing.length === 0) return null;
+  const packageRoot = sanitizeNpmPackageRoot(detail?.packageRoot);
+  const version = parseStoredOpenClawVersion(detail?.version);
+  const where = packageRoot ? ` at ${packageRoot}` : '';
+  const reinstall = version
+    ? `npm install -g openclaw@${version}`
+    : 'npm install -g openclaw@<installed version>';
+  return `A global npm install of OpenClaw${where} is incomplete (${missing.join(', ')}). Reinstall with ${reinstall}, or run openclaw update. Config and state are left unchanged.`;
+}
+
+const NPM_PACKAGE_FILE_LIMIT = 2_000_000;
+const NPM_PATH_LIMIT = 64;
+const NPM_LINK_HOPS = 8;
+const SOURCE_TREE_MARKERS = ['.git', 'src/entry.ts', 'pnpm-lock.yaml'];
+const PLUGIN_PATH_NOT_FOUND = /plugin path not found:\s*([^\s"'`]+)/g;
+const LIFECYCLE_INCOMPLETE = /openclaw: package lifecycle is incomplete\b/;
+
+function blankInstall(manager) {
+  return {
+    manager,
+    packageJson: false,
+    binTarget: false,
+    distEntry: false,
+    pluginPathMissing: false,
+    lifecycleIncomplete: false,
+    packageRoot: null,
+    version: null,
+  };
+}
+
+function missingFsError(error) {
+  return error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
+}
+
+function pathParts(filePath) {
+  return normalize(filePath).split(sep).filter(Boolean);
+}
+
+function foreignManager(filePath) {
+  for (const part of pathParts(filePath)) {
+    if (part === '.pnpm' || part === 'pnpm') return 'pnpm';
+    if (part === '.yarn' || part === 'yarn') return 'yarn';
+    if (part === '.bun' || part === 'bun') return 'bun';
+  }
+  return null;
+}
+
+function lastNpmPackageRoot(filePath) {
+  const normalized = normalize(filePath);
+  if (!isAbsolute(normalized)) return null;
+  const parts = pathParts(normalized);
+  let index = -1;
+  for (let i = 0; i <= parts.length - 3; i += 1) {
+    if (parts[i] === 'lib' && parts[i + 1] === 'node_modules' && parts[i + 2] === 'openclaw') {
+      index = i;
+    }
+  }
+  if (index < 0) return null;
+  return sep + parts.slice(0, index + 3).join(sep);
+}
+
+function isInsidePath(root, candidate) {
+  const rootNorm = normalize(root);
+  const cand = normalize(candidate);
+  return cand === rootNorm || cand.startsWith(`${rootNorm}${sep}`);
+}
+
+function redactInstallRoot(root, home) {
+  let text = normalize(root);
+  if (home && home !== '/' && (text === home || text.startsWith(`${normalize(home)}${sep}`))) {
+    text = `~${text.slice(normalize(home).length)}`;
+  }
+  return sanitizeNpmPackageRoot(text);
+}
+
+function safeRelative(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || text.length > 240 || isAbsolute(text) || text.includes('\0')) return null;
+  const parts = text.split(/[\\/]+/).filter(Boolean);
+  if (parts.length === 0 || parts.some(part => part === '.' || part === '..')) return null;
+  return parts.join(sep);
+}
+
+async function lstatOrMissing(fs, file) {
+  try {
+    return { info: await fs.lstat(file) };
+  } catch (error) {
+    if (missingFsError(error)) return { missing: true };
+    throw error;
+  }
+}
+
+async function regularFileState(fs, file) {
+  const state = await lstatOrMissing(fs, file);
+  if (state.missing) return state;
+  if (!state.info.isSymbolicLink()) return state;
+  let target;
+  try {
+    target = await fs.realpath(file);
+  } catch (error) {
+    if (missingFsError(error)) return { missing: true };
+    throw error;
+  }
+  const followed = await lstatOrMissing(fs, target);
+  if (followed.missing) return followed;
+  return { info: followed.info, target };
+}
+
+async function isSourceTree(fs, root) {
+  for (const marker of SOURCE_TREE_MARKERS) {
+    const state = await lstatOrMissing(fs, join(root, marker));
+    if (!state.missing) return true;
+  }
+  return false;
+}
+
+async function resolveBinLocation(fs, binPath, stat) {
+  let current = binPath;
+  let info = stat;
+  for (let hop = 0; hop < NPM_LINK_HOPS && info?.isSymbolicLink(); hop += 1) {
+    let target;
+    try {
+      target = await fs.readlink(current);
+    } catch (error) {
+      if (missingFsError(error)) return null;
+      throw error;
+    }
+    if (typeof target !== 'string' || !target || target.length > 1024 || target.includes('\0')) return null;
+    const next = normalize(isAbsolute(target) ? target : resolve(dirname(current), target));
+    const nextState = await lstatOrMissing(fs, next);
+    if (nextState.missing) return next;
+    current = next;
+    info = nextState.info;
+  }
+  return info?.isSymbolicLink() ? null : current;
+}
+
+async function firstOpenClawBin(fs, pathEnv, fallback) {
+  const directories = String(pathEnv || '').split(':').filter(Boolean).slice(0, NPM_PATH_LIMIT);
+  const candidates = directories.map(directory => join(directory, 'openclaw'));
+  if (fallback && !candidates.includes(fallback)) candidates.push(fallback);
+  for (const candidate of candidates) {
+    if (!candidate || candidate.length > 1024 || candidate.includes('\0')) continue;
+    const state = await lstatOrMissing(fs, candidate);
+    if (!state.missing) return { path: candidate, info: state.info };
+  }
+  return null;
+}
+
+function binRelativeFromPackage(pkg) {
+  const declared = typeof pkg?.bin === 'string' ? pkg.bin : pkg?.bin?.openclaw;
+  return safeRelative(declared) || 'openclaw.mjs';
+}
+
+function pluginPathInside(root, raw, home) {
+  if (typeof raw !== 'string') return null;
+  let text = raw.trim();
+  if (!text || text.length > 512 || /[\0\r\n]/.test(text)) return null;
+  if (text.startsWith('~')) {
+    if (!home || home === '/') return null;
+    text = `${normalize(home)}${text.slice(1)}`;
+  }
+  if (!isAbsolute(text)) return null;
+  const normalized = normalize(text);
+  if (!isInsidePath(root, normalized) || normalized === normalize(root)) return null;
+  return normalized;
+}
+
+async function bundledPluginMissing(fs, root, home, text) {
+  const pattern = new RegExp(PLUGIN_PATH_NOT_FOUND.source, 'g');
+  const paths = [];
+  for (const match of String(text || '').matchAll(pattern)) {
+    const pluginPath = pluginPathInside(root, match[1], home);
+    if (pluginPath) paths.push(pluginPath);
+  }
+  for (const pluginPath of paths) {
+    const state = await lstatOrMissing(fs, pluginPath);
+    if (state.missing) return true;
+  }
+  return false;
+}
+
+async function readOpenClawPackage(fs, root) {
+  const file = join(root, 'package.json');
+  const state = await regularFileState(fs, file);
+  if (state.missing) return { present: false };
+  if (!state.info.isFile() || !Number.isSafeInteger(state.info.size) || state.info.size > NPM_PACKAGE_FILE_LIMIT) {
+    return { present: false };
+  }
+  let rootReal = root;
+  try {
+    rootReal = await fs.realpath(root);
+  } catch (error) {
+    if (!missingFsError(error)) throw error;
+  }
+  const target = state.target || file;
+  if (!isInsidePath(rootReal, target)) return { present: false };
+  let text;
+  try {
+    text = await fs.readFile(target, 'utf8');
+  } catch (error) {
+    if (missingFsError(error)) return { present: false };
+    throw error;
+  }
+  if (typeof text !== 'string' || text.length > NPM_PACKAGE_FILE_LIMIT) return { present: false };
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { present: false };
+    if (parsed.name !== 'openclaw') return { present: true, named: false };
+    return {
+      present: true,
+      named: true,
+      version: parsed.version,
+      binRelative: binRelativeFromPackage(parsed),
+    };
+  } catch {
+    return { present: false };
+  }
+}
+
+async function classifyResolvedInstall(fs, binPath, location, home, versionText) {
+  const foreign = foreignManager(location) || foreignManager(binPath);
+  if (foreign) return blankInstall(foreign);
+  const lexicalRoot = lastNpmPackageRoot(location);
+  if (!lexicalRoot) {
+    const parent = dirname(location);
+    if (await isSourceTree(fs, parent) || await isSourceTree(fs, location)) return blankInstall('source');
+    return blankInstall('unknown');
+  }
+  const prefix = dirname(dirname(dirname(lexicalRoot)));
+  if (normalize(binPath) !== join(prefix, 'bin', 'openclaw')) return blankInstall('unknown');
+  const rootState = await lstatOrMissing(fs, lexicalRoot);
+  if (rootState.missing) {
+    const record = blankInstall('npm');
+    record.packageRoot = redactInstallRoot(lexicalRoot, home);
+    record.version = parsePrintedOpenClawVersion(versionText);
+    record.lifecycleIncomplete = LIFECYCLE_INCOMPLETE.test(String(versionText || ''));
+    return record;
+  }
+  let realRoot = lexicalRoot;
+  try {
+    realRoot = normalize(await fs.realpath(lexicalRoot));
+  } catch (error) {
+    if (!missingFsError(error)) throw error;
+  }
+  const realForeign = foreignManager(realRoot);
+  if (realForeign) return blankInstall(realForeign);
+  if (lastNpmPackageRoot(realRoot) !== realRoot) {
+    if (await isSourceTree(fs, realRoot)) return blankInstall('source');
+    return blankInstall('unknown');
+  }
+  if (await isSourceTree(fs, realRoot)) return blankInstall('source');
+
+  const pkg = await readOpenClawPackage(fs, realRoot);
+  if (pkg.named === false) return blankInstall('unknown');
+  const binRelative = pkg.binRelative || 'openclaw.mjs';
+  const binState = await regularFileState(fs, join(realRoot, binRelative));
+  const entryJs = await regularFileState(fs, join(realRoot, 'dist', 'entry.js'));
+  const entryMjs = await regularFileState(fs, join(realRoot, 'dist', 'entry.mjs'));
+  const record = blankInstall('npm');
+  record.packageJson = pkg.present === true && pkg.named === true;
+  record.binTarget = isRegularFile(binState);
+  record.distEntry = isRegularFile(entryJs) || isRegularFile(entryMjs);
+  record.pluginPathMissing = await bundledPluginMissing(fs, realRoot, home, versionText);
+  record.lifecycleIncomplete = LIFECYCLE_INCOMPLETE.test(String(versionText || ''));
+  record.packageRoot = redactInstallRoot(lexicalRoot, home);
+  record.version = parseStoredOpenClawVersion(pkg.version) ?? parsePrintedOpenClawVersion(versionText);
+  return record;
+}
+
+function isRegularFile(state) {
+  return state?.info?.isFile() === true;
+}
+
+// Local, offline look at the openclaw bin and its package directory. A broken
+// symlink is still a candidate: an interrupted npm install leaves the bin in
+// place and removes the file it points at. Anything that is not the Unix npm
+// global layout returns a non-npm manager so the detector does not fire.
+export async function inspectOpenClawInstall({
+  binPath = '',
+  pathEnv = '',
+  fs,
+  home = '',
+  platform = '',
+  versionText = '',
+} = {}) {
+  if (platform === 'win32') return blankInstall('unknown');
+  if (!fs || typeof fs.lstat !== 'function' || typeof fs.readlink !== 'function'
+    || typeof fs.realpath !== 'function' || typeof fs.readFile !== 'function') {
+    return null;
+  }
+  try {
+    const bin = await firstOpenClawBin(fs, pathEnv, binPath);
+    if (!bin) return null;
+    const location = await resolveBinLocation(fs, bin.path, bin.info);
+    if (!location) return blankInstall('unknown');
+    return await classifyResolvedInstall(fs, bin.path, location, home, versionText);
+  } catch {
+    return null;
+  }
+}
+
 // deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
 // Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
 // reasons about (config, per-band collection results) is read from the `collected` argument, and
@@ -610,6 +962,15 @@ export function deriveIssues(collected) {
       description: describeConfigWrittenByNewerVersion(newerConfig),
     });
   }
+  const incompleteInstall = incompleteNpmInstall(collected.install);
+  if (incompleteInstall) {
+    issues.push({
+      knownIssueId: 'incomplete-npm-install',
+      severity: 'high',
+      text: 'Incomplete global npm install of OpenClaw',
+      description: describeIncompleteNpmInstall(incompleteInstall),
+    });
+  }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
     issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
   }
@@ -810,6 +1171,9 @@ export function createDiagnosticsCore({
       npmVersion,
       hostHash,
       ocVersion: versionProbe.version,
+      // Kept off the uploaded system object. The install inspector reads it for the
+      // upstream incomplete-install strings and does not forward the raw text.
+      versionCommandText: [versionProbe.version, versionProbe.error].filter(Boolean).join('\n'),
       // Retained (not emitted in the system scan.step, which only surfaces ocVersion) for the
       // native band's runtime-compatibility gate below, and for later Task 4 slices' envelope.
       runtimeCompatible: versionProbe.runtimeCompatible,
@@ -1229,6 +1593,25 @@ export function createDiagnosticsCore({
         },
       }));
 
+      const commandText = [
+        system.versionCommandText,
+        nativeDoctor?.error,
+        ...(Array.isArray(nativeDoctor?.findings)
+          ? nativeDoctor.findings.map(finding => finding?.message)
+          : []),
+      ].filter(text => typeof text === 'string' && text).join('\n');
+      let install = null;
+      if (typeof fs.lstat === 'function' && typeof fs.readlink === 'function'
+        && typeof fs.realpath === 'function' && typeof fs.readFile === 'function') {
+        install = await cancellation.race(() => inspectOpenClawInstall({
+          binPath: openclawBin,
+          pathEnv: env.PATH || env.Path || '',
+          fs,
+          home,
+          platform: system.osName,
+          versionText: commandText,
+        }));
+      }
       cancellation.checkCancelled();
       const issues = deriveIssues({
         config,
@@ -1242,6 +1625,7 @@ export function createDiagnosticsCore({
         nativeConfig,
         nativeStatus,
         nativeSecurity,
+        install,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -1300,6 +1684,7 @@ export function createDiagnosticsCore({
           ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
           ...(cliVersion ? { cliVersion } : {}),
           ...(configLastTouchedVersion ? { configLastTouchedVersion } : {}),
+          ...(install ? { install } : {}),
         },
         config: redactedConfig,
         nativeConfig,

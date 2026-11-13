@@ -3,7 +3,9 @@
  * Renders session and scan events as plain terminal output (no OpenTUI).
  */
 
-import { readFile, writeFile, copyFile, rename, access, readdir, stat } from 'node:fs/promises';
+import {
+  readFile, writeFile, copyFile, rename, access, readdir, stat, lstat, readlink, realpath,
+} from 'node:fs/promises';
 import { execSync } from 'node:child_process';
 import { homedir, platform, arch, release, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -72,6 +74,16 @@ async function exists(p) {
 
 async function readJson(p) {
   try { return JSON.parse(await readFile(p, 'utf8')); } catch { return null; }
+}
+
+async function readBoundedFile(filePath) {
+  const info = await lstat(filePath);
+  const target = info.isSymbolicLink() ? await realpath(filePath) : filePath;
+  const followed = target === filePath ? info : await lstat(target);
+  if (!followed.isFile() || followed.size > 2_000_000) {
+    throw Object.assign(new Error('file exceeds the install inspection bound'), { code: 'EFBIG' });
+  }
+  return readFile(target, 'utf8');
 }
 
 function run(cmd) {
@@ -537,6 +549,10 @@ function createCliDiagnosticsCore() {
       stat,
       readdir,
       countMarkdownFiles,
+      lstat,
+      readlink,
+      realpath,
+      readFile: readBoundedFile,
     },
     openclaw: openClawAdapter,
     os: {

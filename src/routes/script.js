@@ -127,9 +127,18 @@ HOSTNAME_HASH=\$(hostname | shasum -a 256 | cut -c1-8)
 
 # OpenClaw version. Show the printed line locally. The payload keeps only the
 # version token from \`OpenClaw <version>\` or \`OpenClaw <version> (<commit>)\`.
+# stderr is kept so an incomplete package can be recognized without a network call.
 OC_VERSION_LINE=""
+OC_VERSION_STDERR=""
 if [ -n "\$OPENCLAW_BIN" ]; then
-  OC_VERSION_LINE=\$("\$OPENCLAW_BIN" --version 2>/dev/null || echo "unknown")
+  OC_VERSION_ERR_FILE=\$(mktemp 2>/dev/null || true)
+  if [ -n "\$OC_VERSION_ERR_FILE" ]; then
+    OC_VERSION_LINE=\$("\$OPENCLAW_BIN" --version 2>"\$OC_VERSION_ERR_FILE" || echo "unknown")
+    OC_VERSION_STDERR=\$(head -c 2000 "\$OC_VERSION_ERR_FILE" 2>/dev/null || true)
+    rm -f "\$OC_VERSION_ERR_FILE"
+  else
+    OC_VERSION_LINE=\$("\$OPENCLAW_BIN" --version 2>/dev/null || echo "unknown")
+  fi
 fi
 
 echo -e "   OS: \$OS_NAME \$OS_VERSION (\$OS_ARCH)"
@@ -144,6 +153,254 @@ case "\$OC_VERSION" in
     ;;
 esac
 OC_VERSION="\${OC_VERSION%%\$'\\n'*}"
+
+# Global npm installs are {prefix}/bin/openclaw -> {prefix}/lib/node_modules/openclaw.
+# pnpm, yarn, bun, source checkouts, and unknown layouts are recorded and not treated
+# as incomplete. Home directories are replaced with ~ before the payload is built.
+INSTALL_JSON=null
+INSTALL_JSON=\$(node - "\$OC_VERSION_LINE" "\$OC_VERSION_STDERR" "\$OPENCLAW_BIN" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const versionLine = process.argv[2] || '';
+const versionErr = process.argv[3] || '';
+const fallbackBin = process.argv[4] || '';
+const versionText = [versionLine, versionErr].filter(Boolean).join('\\n');
+const home = process.env.HOME || '';
+const pathEnv = process.env.PATH || '';
+
+function blank(manager) {
+  return {
+    manager: manager,
+    packageJson: false,
+    binTarget: false,
+    distEntry: false,
+    pluginPathMissing: false,
+    lifecycleIncomplete: false,
+    packageRoot: null,
+    version: null,
+  };
+}
+function partsOf(filePath) {
+  return path.normalize(filePath).split(path.sep).filter(Boolean);
+}
+function foreign(filePath) {
+  for (const part of partsOf(filePath)) {
+    if (part === '.pnpm' || part === 'pnpm') return 'pnpm';
+    if (part === '.yarn' || part === 'yarn') return 'yarn';
+    if (part === '.bun' || part === 'bun') return 'bun';
+  }
+  return null;
+}
+function lastRoot(filePath) {
+  const normalized = path.normalize(filePath);
+  if (!path.isAbsolute(normalized)) return null;
+  const list = partsOf(normalized);
+  let index = -1;
+  for (let i = 0; i <= list.length - 3; i += 1) {
+    if (list[i] === 'lib' && list[i + 1] === 'node_modules' && list[i + 2] === 'openclaw') index = i;
+  }
+  if (index < 0) return null;
+  return path.sep + list.slice(0, index + 3).join(path.sep);
+}
+function inside(root, candidate) {
+  const rootNorm = path.normalize(root);
+  const cand = path.normalize(candidate);
+  return cand === rootNorm || cand.startsWith(rootNorm + path.sep);
+}
+function redact(root) {
+  let text = path.normalize(root);
+  const homeNorm = home ? path.normalize(home) : '';
+  if (homeNorm && homeNorm !== path.sep && (text === homeNorm || text.startsWith(homeNorm + path.sep))) {
+    text = '~' + text.slice(homeNorm.length);
+  }
+  if (!/^~?(?:\\/[A-Za-z0-9._@+-]+)+$/.test(text)) return null;
+  if (text.split('/').filter(Boolean).some(function (segment) { return segment === '.' || segment === '..'; })) return null;
+  if (!text.endsWith('/lib/node_modules/openclaw')) return null;
+  return text;
+}
+function isMissing(error) {
+  return error && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
+}
+function lstat(file) {
+  try { return { info: fs.lstatSync(file) }; }
+  catch (error) { if (isMissing(error)) return { missing: true }; throw error; }
+}
+function regular(file) {
+  const state = lstat(file);
+  if (state.missing) return state;
+  if (!state.info.isSymbolicLink()) return state;
+  try {
+    const target = fs.realpathSync(file);
+    const followed = lstat(target);
+    if (followed.missing) return followed;
+    return { info: followed.info, target: target };
+  } catch (error) {
+    if (isMissing(error)) return { missing: true };
+    throw error;
+  }
+}
+function isFile(state) {
+  return Boolean(state && state.info && state.info.isFile());
+}
+function sourceTree(root) {
+  const markers = ['.git', 'src/entry.ts', 'pnpm-lock.yaml'];
+  for (let i = 0; i < markers.length; i += 1) {
+    if (!lstat(path.join(root, markers[i])).missing) return true;
+  }
+  return false;
+}
+function safeRelative(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text || text.length > 240 || path.isAbsolute(text) || text.indexOf('\\0') >= 0) return null;
+  const list = text.split(/[\\\\/]+/).filter(Boolean);
+  if (list.length === 0 || list.some(function (part) { return part === '.' || part === '..'; })) return null;
+  return list.join(path.sep);
+}
+function parseStored(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 64) return null;
+  const legacy = /^([vV]?[0-9]+\\.[0-9]+\\.[0-9]+)\\.beta(?:\\.([0-9A-Za-z.-]+))?$/.exec(trimmed);
+  const normalized = legacy ? (legacy[2] ? legacy[1].replace(/^[vV]/, '') + '-beta.' + legacy[2] : legacy[1].replace(/^[vV]/, '') + '-beta') : trimmed;
+  const match = /^(?:[vV])?(\\d{4})\\.(\\d{1,2})\\.(\\d+)(?:-(alpha|beta)\\.(\\d+)|-(\\d+))?$/.exec(normalized);
+  if (!match) return null;
+  const minor = Number(match[2]);
+  const patch = Number(match[3]);
+  if (minor < 1 || minor > 12 || patch < 1) return null;
+  if (match[4]) return match[1] + '.' + minor + '.' + patch + '-' + match[4] + '.' + match[5];
+  if (match[6]) return match[1] + '.' + minor + '.' + patch + '-' + match[6];
+  return match[1] + '.' + minor + '.' + patch;
+}
+function parsePrinted(value) {
+  if (typeof value !== 'string') return null;
+  const line = value.trim().split(/\\r?\\n/, 1)[0].trim();
+  const stored = parseStored(line);
+  if (stored) return stored;
+  const printed = /^OpenClaw\\s+(\\S+?)(?:\\s+\\([^)\\s]+\\))?$/.exec(line);
+  return printed ? parseStored(printed[1]) : null;
+}
+function resolveBin(binPath, stat) {
+  let current = binPath;
+  let info = stat;
+  for (let hop = 0; hop < 8 && info && info.isSymbolicLink(); hop += 1) {
+    const target = fs.readlinkSync(current);
+    if (typeof target !== 'string' || !target || target.length > 1024) return null;
+    const next = path.normalize(path.isAbsolute(target) ? target : path.resolve(path.dirname(current), target));
+    const nextState = lstat(next);
+    if (nextState.missing) return next;
+    current = next;
+    info = nextState.info;
+  }
+  return info && info.isSymbolicLink() ? null : current;
+}
+function firstBin() {
+  const dirs = String(pathEnv).split(':').filter(Boolean).slice(0, 64);
+  const candidates = dirs.map(function (dir) { return path.join(dir, 'openclaw'); });
+  if (fallbackBin && candidates.indexOf(fallbackBin) < 0) candidates.push(fallbackBin);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidate = candidates[i];
+    if (!candidate || candidate.length > 1024) continue;
+    const state = lstat(candidate);
+    if (!state.missing) return { path: candidate, info: state.info };
+  }
+  return null;
+}
+function readPackage(root) {
+  const file = path.join(root, 'package.json');
+  const state = regular(file);
+  if (state.missing || !state.info.isFile() || state.info.size > 2000000) return { present: false };
+  let rootReal = root;
+  try { rootReal = fs.realpathSync(root); } catch (error) { if (!isMissing(error)) throw error; }
+  const target = state.target || file;
+  if (!inside(rootReal, target)) return { present: false };
+  const text = fs.readFileSync(target, 'utf8');
+  if (text.length > 2000000) return { present: false };
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { present: false };
+    if (parsed.name !== 'openclaw') return { present: true, named: false };
+    const declared = typeof parsed.bin === 'string' ? parsed.bin : parsed.bin && parsed.bin.openclaw;
+    return { present: true, named: true, version: parsed.version, binRelative: safeRelative(declared) || 'openclaw.mjs' };
+  } catch (error) {
+    return { present: false };
+  }
+}
+function pluginMissing(root) {
+  const pattern = /plugin path not found:\\s*([^\\s"'\`]+)/g;
+  const found = [];
+  let match = pattern.exec(versionText);
+  while (match) {
+    let text = match[1].trim();
+    if (text.charAt(0) === '~' && home && home !== '/') text = path.normalize(home) + text.slice(1);
+    if (path.isAbsolute(text)) {
+      const normalized = path.normalize(text);
+      if (inside(root, normalized) && normalized !== path.normalize(root)) found.push(normalized);
+    }
+    match = pattern.exec(versionText);
+  }
+  for (let i = 0; i < found.length; i += 1) {
+    if (lstat(found[i]).missing) return true;
+  }
+  return false;
+}
+let record = null;
+try {
+  if (process.platform === 'win32') record = blank('unknown');
+  else {
+    const bin = firstBin();
+    if (!bin) record = null;
+    else {
+      const location = resolveBin(bin.path, bin.info);
+      if (!location) record = blank('unknown');
+      else {
+        const other = foreign(location) || foreign(bin.path);
+        if (other) record = blank(other);
+        else {
+          const lexical = lastRoot(location);
+          if (!lexical) record = (sourceTree(path.dirname(location)) || sourceTree(location)) ? blank('source') : blank('unknown');
+          else if (path.normalize(bin.path) !== path.join(path.dirname(path.dirname(path.dirname(lexical))), 'bin', 'openclaw')) record = blank('unknown');
+          else if (lstat(lexical).missing) {
+            record = blank('npm');
+            record.packageRoot = redact(lexical);
+            record.version = parsePrinted(versionText);
+            record.lifecycleIncomplete = /openclaw: package lifecycle is incomplete\\b/.test(versionText);
+          } else {
+            let realRoot = lexical;
+            try { realRoot = path.normalize(fs.realpathSync(lexical)); } catch (error) { if (!isMissing(error)) throw error; }
+            const realForeign = foreign(realRoot);
+            if (realForeign) record = blank(realForeign);
+            else if (lastRoot(realRoot) !== realRoot) record = sourceTree(realRoot) ? blank('source') : blank('unknown');
+            else if (sourceTree(realRoot)) record = blank('source');
+            else {
+              const pkg = readPackage(realRoot);
+              if (pkg.named === false) record = blank('unknown');
+              else {
+                const binRelative = pkg.binRelative || 'openclaw.mjs';
+                record = blank('npm');
+                record.packageJson = pkg.present === true && pkg.named === true;
+                record.binTarget = isFile(regular(path.join(realRoot, binRelative)));
+                record.distEntry = isFile(regular(path.join(realRoot, 'dist', 'entry.js'))) || isFile(regular(path.join(realRoot, 'dist', 'entry.mjs')));
+                record.pluginPathMissing = pluginMissing(realRoot);
+                record.lifecycleIncomplete = /openclaw: package lifecycle is incomplete\\b/.test(versionText);
+                record.packageRoot = redact(lexical);
+                record.version = parseStored(pkg.version) || parsePrinted(versionText);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+} catch (error) {
+  record = null;
+}
+process.stdout.write(record ? JSON.stringify(record) : 'null');
+NODE
+) || true
+if [ -z "\$INSTALL_JSON" ]; then
+  INSTALL_JSON=null
+fi
 
 # --- Sanitize Config (REDACT RECOGNIZED SECRETS) ---
 echo ""
@@ -396,6 +653,7 @@ DIAGNOSTIC=\$(cat <<EOF
   },
   "openclaw": {
     "version": "\${OC_VERSION:-unknown}",
+    "install": \$INSTALL_JSON,
     "binary": "\${OPENCLAW_BIN:-not found}",
     "configDir": "\${OPENCLAW_DIR:-not found}",
     "configExists": \$CONFIG_EXISTS,
@@ -523,6 +781,7 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • OS type, version, architecture"
   echo "  • Node/npm versions"
   echo "  • OpenClaw version and config (recognized secrets redacted; top-level env omitted)"
+  echo "  • OpenClaw install layout (package manager, which required files are present, home-redacted package root)"
   echo "  • Recent logs (up to 30 matching gateway log lines and up to 50 recent stderr lines)"
   echo "  • Plugin status (enabled/disabled only)"
   echo "  • Gateway status"

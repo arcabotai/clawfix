@@ -7,7 +7,9 @@
 import {
   configWrittenByNewerVersion,
   describeConfigWrittenByNewerVersion,
+  describeIncompleteNpmInstall,
   describeOpenClawRedactedPlaceholders,
+  incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
   placeholderPathsForDiagnostic,
 } from '../cli/bin/security.js';
@@ -1571,6 +1573,23 @@ echo "Upgrade the CLI to at least that version."
 echo "Check for a shadowing older install with: which -a openclaw"
 echo "Or restore a matching backup and its matching OpenClaw release."
 echo "No config changes were made."`,
+  },
+
+  {
+    id: 'incomplete-npm-install',
+    severity: 'high',
+    title: 'Incomplete global npm install of OpenClaw',
+    description: 'A global npm install of OpenClaw is missing package.json, the bin target, the dist entry, or a bundled plugin file the launcher needs. Reinstall with npm install -g openclaw@<installed version>, or run openclaw update. Config and state are left unchanged.',
+    detect: (diag) => incompleteNpmInstall(diag?.openclaw?.install) !== null,
+    describe: (diag) => describeIncompleteNpmInstall(incompleteNpmInstall(diag?.openclaw?.install)),
+    fix: `# Advisory only. An incomplete global npm install is not repaired in place.
+# This script does not delete config, state, or package files.
+echo "A global npm install of OpenClaw is missing files the CLI or bundled plugins need."
+echo "Reinstall the installed version. That replaces the package and leaves config and state in place:"
+echo "  npm install -g openclaw@<installed version>"
+echo "Or run the documented updater:"
+echo "  openclaw update"
+echo "No config or state was changed."`,
   },
 
   {
