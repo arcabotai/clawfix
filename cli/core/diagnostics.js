@@ -269,6 +269,144 @@ export function describeOpenClawRedactedPlaceholders(paths) {
   return `OpenClaw config stores the ${OPENCLAW_REDACTED_PLACEHOLDER} placeholder${where}. Those stored values are not credentials. Re-enter each listed path with openclaw secrets or openclaw config set, and do not paste redacted config get output back into the file.`;
 }
 
+// OpenClaw stamps meta.lastTouchedVersion with the version of the binary that
+// wrote the config (openclaw/openclaw src/config/io.meta.ts). Releases are
+// YYYY.M.P, optional -alpha.N/-beta.N prereleases, or a numeric correction,
+// ordered the way src/config/version.ts and src/infra/semver.ts compare them.
+// `openclaw --version` prints `OpenClaw <version>` or `OpenClaw <version> (<commit>)`
+// (src/cli/program/help.ts). Only the version token is kept.
+// Duplicated in cli/bin/security.js. The production image ships that file
+// and does not copy cli/core. Keep the two copies in sync.
+const OPENCLAW_VERSION_LIMIT = 64;
+const LEGACY_DOT_BETA_VERSION = /^([vV]?[0-9]+\.[0-9]+\.[0-9]+)\.beta(?:\.([0-9A-Za-z.-]+))?$/;
+const OPENCLAW_RELEASE_VERSION = /^(?:[vV])?(\d{4})\.(\d{1,2})\.(\d+)(?:-(alpha|beta)\.(\d+)|-(\d+))?$/;
+const PRINTED_OPENCLAW_VERSION = /^OpenClaw\s+(\S+?)(?:\s+\([^)\s]+\))?$/;
+const OPENCLAW_CHANNEL_RANK = { prerelease: 0, stable: 1, correction: 2 };
+const OPENCLAW_PRERELEASE_RANK = { alpha: 0, beta: 1 };
+
+function normalizeLegacyDotBetaVersion(version) {
+  const match = LEGACY_DOT_BETA_VERSION.exec(version);
+  if (!match) return version;
+  return match[2] ? `${match[1]}-beta.${match[2]}` : `${match[1]}-beta`;
+}
+
+function openClawDecimal(text) {
+  if (typeof text !== 'string' || !/^(?:0|[1-9]\d*)$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function parseOpenClawRelease(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > OPENCLAW_VERSION_LIMIT || trimmed.includes('+')) return null;
+  const normalized = normalizeLegacyDotBetaVersion(trimmed);
+  if (normalized.length > OPENCLAW_VERSION_LIMIT || normalized.includes('+')) return null;
+  const match = OPENCLAW_RELEASE_VERSION.exec(normalized);
+  if (!match) return null;
+  const major = openClawDecimal(match[1]);
+  const minor = openClawDecimal(match[2]);
+  const patch = openClawDecimal(match[3]);
+  if (major === null || minor === null || patch === null) return null;
+  if (minor < 1 || minor > 12 || patch < 1) return null;
+  const label = match[4];
+  if (label) {
+    const seq = openClawDecimal(match[5]);
+    if (seq === null || seq < 1) return null;
+    return {
+      major,
+      minor,
+      patch,
+      channel: 'prerelease',
+      label,
+      seq,
+      text: `${major}.${minor}.${patch}-${label}.${seq}`,
+    };
+  }
+  if (match[6]) {
+    const seq = openClawDecimal(match[6]);
+    if (seq === null || seq < 1) return null;
+    return {
+      major,
+      minor,
+      patch,
+      channel: 'correction',
+      label: null,
+      seq,
+      text: `${major}.${minor}.${patch}-${seq}`,
+    };
+  }
+  return {
+    major,
+    minor,
+    patch,
+    channel: 'stable',
+    label: null,
+    seq: null,
+    text: `${major}.${minor}.${patch}`,
+  };
+}
+
+function compareParsedOpenClawVersions(left, right) {
+  if (left.major !== right.major) return left.major < right.major ? -1 : 1;
+  if (left.minor !== right.minor) return left.minor < right.minor ? -1 : 1;
+  if (left.patch !== right.patch) return left.patch < right.patch ? -1 : 1;
+  if (left.channel !== right.channel) {
+    return OPENCLAW_CHANNEL_RANK[left.channel] < OPENCLAW_CHANNEL_RANK[right.channel] ? -1 : 1;
+  }
+  if (left.channel === 'prerelease') {
+    if (left.label !== right.label) {
+      return OPENCLAW_PRERELEASE_RANK[left.label] < OPENCLAW_PRERELEASE_RANK[right.label] ? -1 : 1;
+    }
+    if (left.seq !== right.seq) return left.seq < right.seq ? -1 : 1;
+  } else if (left.channel === 'correction' && left.seq !== right.seq) {
+    return left.seq < right.seq ? -1 : 1;
+  }
+  return 0;
+}
+
+export function parseStoredOpenClawVersion(value) {
+  return parseOpenClawRelease(value)?.text ?? null;
+}
+
+export function parsePrintedOpenClawVersion(value) {
+  if (typeof value !== 'string') return null;
+  const line = value.trim().split(/\r?\n/, 1)[0]?.trim() ?? '';
+  if (!line) return null;
+  const stored = parseOpenClawRelease(line);
+  if (stored) return stored.text;
+  const printed = PRINTED_OPENCLAW_VERSION.exec(line);
+  if (!printed) return null;
+  return parseOpenClawRelease(printed[1])?.text ?? null;
+}
+
+export function compareOpenClawVersions(left, right) {
+  const parsedLeft = parseOpenClawRelease(left);
+  const parsedRight = parseOpenClawRelease(right);
+  if (!parsedLeft || !parsedRight) return null;
+  return compareParsedOpenClawVersions(parsedLeft, parsedRight);
+}
+
+export function configWrittenByNewerVersion(diagnostic) {
+  const openclaw = diagnostic?.openclaw;
+  const cliVersion = parseStoredOpenClawVersion(openclaw?.cliVersion)
+    ?? parsePrintedOpenClawVersion(openclaw?.version);
+  const configVersion = parseStoredOpenClawVersion(openclaw?.configLastTouchedVersion)
+    ?? parseStoredOpenClawVersion(diagnostic?.config?.meta?.lastTouchedVersion);
+  if (!cliVersion || !configVersion) return null;
+  const comparison = compareOpenClawVersions(cliVersion, configVersion);
+  if (comparison === null || comparison >= 0) return null;
+  return { cliVersion, configVersion };
+}
+
+export function describeConfigWrittenByNewerVersion(versions) {
+  const cliVersion = versions?.cliVersion;
+  const configVersion = versions?.configVersion;
+  if (parseStoredOpenClawVersion(cliVersion) !== cliVersion) return null;
+  if (parseStoredOpenClawVersion(configVersion) !== configVersion) return null;
+  return `OpenClaw config was written by ${configVersion}, which is newer than the installed CLI ${cliVersion}. An older CLI can misread or rewrite newer config. Upgrade the CLI to at least ${configVersion}, check which -a openclaw for a shadowing older install, or restore a matching backup. No config is written.`;
+}
+
 // deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
 // Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
 // reasons about (config, per-band collection results) is read from the `collected` argument, and
@@ -458,6 +596,18 @@ export function deriveIssues(collected) {
       text: 'Persisted OpenClaw redaction placeholders in config',
       description: describeOpenClawRedactedPlaceholders(placeholderPaths),
       path: placeholderPaths.join(', '),
+    });
+  }
+  const newerConfig = configWrittenByNewerVersion({
+    openclaw: { version: system?.ocVersion },
+    config,
+  });
+  if (newerConfig) {
+    issues.push({
+      knownIssueId: 'config-written-by-newer-version',
+      severity: 'medium',
+      text: 'Config written by a newer OpenClaw version',
+      description: describeConfigWrittenByNewerVersion(newerConfig),
     });
   }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
@@ -960,6 +1110,8 @@ export function createDiagnosticsCore({
 
       const { config, redactedConfig } = await readConfig(openclawDir, cancellation);
       const redactedPlaceholderPaths = collectOpenClawRedactedPlaceholderPaths(config);
+      const cliVersion = parsePrintedOpenClawVersion(system.ocVersion);
+      const configLastTouchedVersion = parseStoredOpenClawVersion(config?.meta?.lastTouchedVersion);
       emit?.(scanStep({
         revision,
         phase: 'config',
@@ -1133,7 +1285,7 @@ export function createDiagnosticsCore({
           npmVersion: system.npmVersion,
         },
         openclaw: {
-          version: system.ocVersion || 'unknown',
+          version: cliVersion || system.ocVersion || 'unknown',
           binary: openclawBin || 'not found',
           configDir: openclawDir || 'not found',
           configExists: config !== null,
@@ -1146,6 +1298,8 @@ export function createDiagnosticsCore({
           runtimeRequired: system.runtimeRequired,
           runtimeCurrent: system.runtimeCurrent,
           ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
+          ...(cliVersion ? { cliVersion } : {}),
+          ...(configLastTouchedVersion ? { configLastTouchedVersion } : {}),
         },
         config: redactedConfig,
         nativeConfig,

@@ -65,7 +65,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 49,
+    "deterministicCount": 50,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -78,6 +78,7 @@
       "codex-session-store-permission",
       "codex-shell-home-mismatch",
       "config-reload-sigterm-cascade",
+      "config-written-by-newer-version",
       "context-overflow",
       "discord-allowlist-empty",
       "duplicate-plugin",
