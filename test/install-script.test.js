@@ -52,6 +52,27 @@ test('install route is mounted and serves scripts/install.sh with sha256 metadat
   assert.equal(INSTALL_HASH, expectedHash);
 });
 
+test('hosted diagnostics flag mem0 graph mode only for an existing plugin entry', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { DIAGNOSTIC_SCRIPT } = await import(new URL('../src/routes/script.js', import.meta.url).href);
+  const match = DIAGNOSTIC_SCRIPT.match(/jq -e '([^']*openclaw-mem0[^']*)'/);
+  assert.ok(match, 'expected the hosted script to keep an openclaw-mem0 jq check');
+  const filter = match[1];
+  assert.match(filter, /type == "object"/);
+  assert.equal(DIAGNOSTIC_SCRIPT.includes('channels status --deep'), false);
+  assert.doesNotMatch(DIAGNOSTIC_SCRIPT, /install openclaw-mem0|plugins enable openclaw-mem0/i);
+
+  const probe = (config) => spawnSync('jq', ['-e', filter], {
+    input: JSON.stringify(config),
+    encoding: 'utf8',
+  }).status === 0;
+
+  assert.equal(probe({ plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: true } } } } }), true);
+  assert.equal(probe({}), false);
+  assert.equal(probe({ plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: false } } } } }), false);
+  assert.equal(probe({ plugins: { entries: { 'other-memory': { config: { enableGraph: true } } } } }), false);
+});
+
 test('the committed SCRIPT_HASH matches the diagnostic script actually served', async () => {
   // /fix/sha256 directs users to compare against blob/main/SCRIPT_HASH, so drift between the
   // file and the served script silently breaks the documented verification step.

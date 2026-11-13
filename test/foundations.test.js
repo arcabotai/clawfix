@@ -165,6 +165,101 @@ test('known-issue detection remains deterministic', () => {
   assert.ok(issues.some(issue => issue.id === 'mem0-graph-free'));
 });
 
+function codexTierConfig(serviceTier, { includeTier = true } = {}) {
+  const appServer = includeTier ? { serviceTier } : {};
+  return {
+    plugins: {
+      entries: {
+        codex: { enabled: true, config: { appServer } },
+      },
+    },
+    agents: {
+      defaults: {
+        agentRuntime: { id: 'codex' },
+        model: 'openai/gpt-5.5',
+      },
+    },
+  };
+}
+
+test('codex service tier treats priority and legacy fast as healthy and repairs write priority', () => {
+  for (const serviceTier of ['priority', 'fast', ' Priority ', 'FAST']) {
+    const issues = detectIssues({ config: codexTierConfig(serviceTier) });
+    assert.equal(
+      issues.some(issue => issue.id === 'codex-service-tier-not-fast'),
+      false,
+      serviceTier,
+    );
+  }
+
+  for (const serviceTier of ['flex', 'slow', 'ultrafast']) {
+    const issues = detectIssues({ config: codexTierConfig(serviceTier) });
+    assert.equal(
+      issues.some(issue => issue.id === 'codex-service-tier-not-fast'),
+      true,
+      serviceTier,
+    );
+  }
+
+  const unset = detectIssues({ config: codexTierConfig(undefined, { includeTier: false }) });
+  assert.equal(unset.some(issue => issue.id === 'codex-service-tier-not-fast'), true);
+
+  const disabled = detectIssues({
+    config: {
+      plugins: { entries: { codex: { enabled: false, config: { appServer: { serviceTier: 'flex' } } } } },
+      agents: { defaults: { agentRuntime: { id: 'codex' }, model: 'openai/gpt-5.5' } },
+    },
+  });
+  assert.equal(disabled.some(issue => issue.id === 'codex-service-tier-not-fast'), false);
+
+  const tierRepair = KNOWN_ISSUES.find(issue => issue.id === 'codex-service-tier-not-fast');
+  const routeRepair = KNOWN_ISSUES.find(issue => issue.id === 'pi-backed-openai-codex-route');
+  assert.match(tierRepair.fix, /serviceTier priority/);
+  assert.equal(tierRepair.fix.includes('serviceTier fast'), false);
+  assert.match(routeRepair.fix, /serviceTier = 'priority'/);
+  assert.equal(routeRepair.fix.includes("serviceTier = 'fast'"), false);
+});
+
+test('channel verify steps use channels status --probe', () => {
+  const timeout = KNOWN_ISSUES.find(issue => issue.id === 'native-codex-timeout-boundary');
+  assert.match(timeout.fix, /openclaw channels status --probe/);
+  assert.equal(timeout.fix.includes('openclaw channels status --deep'), false);
+  assert.match(timeout.fix, /openclaw gateway status --deep/);
+  for (const issue of KNOWN_ISSUES) {
+    assert.equal(issue.fix.includes('channels status --deep'), false, issue.id);
+  }
+});
+
+test('mem0 graph finding requires an existing plugin entry and does not install one', () => {
+  const present = detectIssues({
+    config: { plugins: { entries: { 'openclaw-mem0': { enabled: true, config: { enableGraph: true } } } } },
+  });
+  assert.equal(present.some(issue => issue.id === 'mem0-graph-free'), true);
+
+  const disabledButConfigured = detectIssues({
+    config: { plugins: { entries: { 'openclaw-mem0': { enabled: false, config: { enableGraph: true } } } } },
+  });
+  assert.equal(disabledButConfigured.some(issue => issue.id === 'mem0-graph-free'), true);
+
+  const absentCases = [
+    {},
+    { plugins: { entries: {} } },
+    { plugins: { entries: { 'openclaw-mem0': { enabled: true, config: { enableGraph: false } } } } },
+    { plugins: { entries: { 'other-memory': { config: { enableGraph: true } } } } },
+    { plugins: { entries: { 'openclaw-mem0': 'leftover' } } },
+  ];
+  for (const config of absentCases) {
+    const issues = detectIssues({ config });
+    assert.equal(issues.some(issue => issue.id === 'mem0-graph-free'), false, JSON.stringify(config));
+  }
+
+  const repair = KNOWN_ISSUES.find(issue => issue.id === 'mem0-graph-free');
+  assert.match(repair.fix, /type == "object"/);
+  assert.match(repair.description, /third-party or leftover/);
+  assert.equal(/plugins install|plugins enable|openclaw plugins add/i.test(repair.fix), false);
+  assert.equal(/install openclaw-mem0|enable openclaw-mem0/i.test(`${repair.description}\n${repair.fix}`), false);
+});
+
 test('optional tuning is classified separately from failures', () => {
   assert.equal(classifyKnownIssue({ id: 'no-hybrid-search', severity: 'medium' }), 'optimization');
   assert.equal(classifyKnownIssue({ id: 'gateway-not-running', severity: 'critical' }), 'failure');

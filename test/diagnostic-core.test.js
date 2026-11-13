@@ -18,6 +18,7 @@ import {
   DiagnosticsAbortError,
   DiagnosticsTimeoutError,
 } from '../cli/core/diagnostics.js';
+import { BUILTIN_FIXES } from '../cli/interfaces/plain.js';
 
 // ============================================================
 // Slice 1 — event contracts (cli/core/events.js)
@@ -1882,6 +1883,79 @@ test('deriveIssues golden: comprehensive representative facts produce the exact 
       kind: 'failure',
     },
   ]);
+});
+
+function codexCollected(serviceTier, { includeTier = true } = {}) {
+  const appServer = includeTier ? { serviceTier } : {};
+  return fakeCollected({
+    config: {
+      plugins: { entries: { codex: { enabled: true, config: { appServer } } } },
+      agents: { defaults: { agentRuntime: { id: 'codex' }, model: 'openai/gpt-5.5' } },
+    },
+  });
+}
+
+test('deriveIssues treats Codex priority and legacy fast as healthy', () => {
+  for (const serviceTier of ['priority', 'fast', ' Priority ', 'FAST']) {
+    const issues = deriveIssues(codexCollected(serviceTier));
+    assert.equal(
+      issues.some(issue => issue.knownIssueId === 'codex-service-tier-not-fast'),
+      false,
+      serviceTier,
+    );
+  }
+
+  for (const serviceTier of ['flex', 'slow']) {
+    const issues = deriveIssues(codexCollected(serviceTier));
+    assert.equal(
+      issues.some(issue => issue.knownIssueId === 'codex-service-tier-not-fast'),
+      true,
+      serviceTier,
+    );
+  }
+
+  const unset = deriveIssues(codexCollected(undefined, { includeTier: false }));
+  assert.equal(unset.some(issue => issue.knownIssueId === 'codex-service-tier-not-fast'), true);
+});
+
+test('deriveIssues reports mem0 graph mode only for an existing openclaw-mem0 entry', () => {
+  const present = deriveIssues(fakeCollected({
+    config: { plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: true } } } } },
+  }));
+  assert.equal(
+    present.some(issue => issue.text === 'Mem0 enableGraph requires Pro plan (will silently fail)'),
+    true,
+  );
+
+  for (const config of [
+    {},
+    { plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: false } } } } },
+    { plugins: { entries: { 'other-memory': { config: { enableGraph: true } } } } },
+  ]) {
+    const issues = deriveIssues(fakeCollected({ config }));
+    assert.equal(
+      issues.some(issue => issue.text === 'Mem0 enableGraph requires Pro plan (will silently fail)'),
+      false,
+      JSON.stringify(config),
+    );
+  }
+});
+
+test('mem0 builtin repair edits an existing entry and leaves a missing entry uncreated', () => {
+  const repair = BUILTIN_FIXES['mem0-graph-free'];
+  const present = { plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: true, mode: 'platform' } } } } };
+  const applied = repair.apply(present);
+  assert.deepEqual(applied.changes, ['Set Mem0 enableGraph = false (Pro plan required for graph)']);
+  assert.equal(present.plugins.entries['openclaw-mem0'].config.enableGraph, false);
+  assert.equal(present.plugins.entries['openclaw-mem0'].config.mode, 'platform');
+
+  const absent = { plugins: { entries: {} } };
+  const skipped = repair.apply(absent);
+  assert.deepEqual(skipped.changes, ['No openclaw-mem0 plugin entry is configured']);
+  assert.equal('openclaw-mem0' in absent.plugins.entries, false);
+
+  const alreadyOff = { plugins: { entries: { 'openclaw-mem0': { config: { enableGraph: false } } } } };
+  assert.deepEqual(repair.apply(alreadyOff).changes, ['Mem0 graph already disabled']);
 });
 
 test('deriveIssues: port schema finding is reported verbatim with its checkId/path, independent of other bands', () => {
