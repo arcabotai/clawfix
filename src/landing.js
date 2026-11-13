@@ -533,7 +533,7 @@ const LANDING_HTML = `<!DOCTYPE html>
             <div>
               <div class="eyebrow">Release 0.12.0</div>
               <h2>Evidence before repair.</h2>
-              <p>One end-to-end release: bash installer, 21-file CLI with plain interface and remote analyzer, constrained agent v2 on the host, a chat-first OpenTUI standalone binary (glibc + musl), and five reviewed guarded repairs. The npm package is registry-signed and provenance-attested; TUI tarballs carry SHA-256 checksums and GitHub build attestations.</p>
+              <p>One end-to-end release: bash installer, 21-file CLI with plain interface and remote analyzer, constrained agent v2 on the host, a chat-first OpenTUI standalone binary (glibc + musl), and four reviewed guarded repairs. The npm package is registry-signed and provenance-attested; TUI tarballs carry SHA-256 checksums and GitHub build attestations.</p>
             </div>
             <a class="release-link" href="https://github.com/arcabotai/clawfix/releases/tag/v0.12.0">Release notes →</a>
           </div>
@@ -607,12 +607,12 @@ gateway-not-running repair. Want me to?
           <div class="step">
             <div class="step-num">2</div>
             <h3>Deterministic Checks First</h3>
-            <p>49 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
+            <p>48 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
             <h3>Review & Apply</h3>
-            <p>Five reviewed catalog repairs show a plan, require explicit approval, apply locally, verify the result, and report rollback. Legacy hosted findings provide reviewable script guidance. Everything else ClawFix detects remains diagnosis and guidance.</p>
+            <p>Four reviewed catalog repairs show a plan, require explicit approval, apply locally, verify the result, and report rollback. Legacy hosted findings provide reviewable script guidance. Everything else ClawFix detects remains diagnosis and guidance.</p>
           </div>
         </div>
       </div>

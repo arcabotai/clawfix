@@ -238,17 +238,6 @@ const autoUpdateEnabled = configToggleRepair({
   blockedReason: 'auto_update_already_disabled',
 });
 
-const hybridSearchDisabled = configToggleRepair({
-  id: 'no-hybrid-search',
-  key: 'agents.defaults.memorySearch.query.hybrid.enabled',
-  target: true,
-  title: 'Enable hybrid memory search',
-  description:
-    'Hybrid search combines keyword and semantic matching when the agent searches memory. '
-    + 'OpenClaw recommends it; without it recall is keyword-only.',
-  blockedReason: 'hybrid_search_already_enabled',
-});
-
 const memoryFlushDisabled = configToggleRepair({
   id: 'no-memory-flush',
   key: 'agents.defaults.compaction.memoryFlush.enabled',
@@ -459,6 +448,5 @@ export const repairCatalog = Object.freeze({
   'gateway-not-running': gatewayNotRunning,
   'auto-update-enabled-warning': autoUpdateEnabled,
   'gateway-loopback-no-auth': gatewayLoopbackNoAuth,
-  'no-hybrid-search': hybridSearchDisabled,
   'no-memory-flush': memoryFlushDisabled,
 });
