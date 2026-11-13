@@ -1,0 +1,58 @@
+name: Deploy Cloudflare
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clawfix-cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.repository == 'arcabotai/clawfix' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == 'arcabotai/clawfix'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact CI source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Setup Node 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install pinned deployment toolchain
+        run: npm ci
+      - name: Deploy exact checked main and verify production
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          CLOUDFLARE_ACCOUNT_ID: e320a5a80611f9a30148d452929b1fb1
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          WRANGLER_SEND_METRICS: 'false'
+          CI: 'true'
+        run: node scripts/deploy-cloudflare.mjs
+      - name: Retain deployment receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-deployment-${{ github.run_id }}
+          path: deployment-result.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -4,3 +4,7 @@ node_modules/
 .DS_Store
 .npmrc
 dist/
+.wrangler/
+.worker-build/
+.dev.vars*
+deployment-result.json

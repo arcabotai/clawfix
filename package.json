@@ -35,7 +35,9 @@
     "verify:tui": "node scripts/verify-tui-artifact.mjs",
     "smoke:tui": "node scripts/smoke-tui-binary.mjs",
     "smoke:tui:interactive": "node scripts/smoke-tui-interactive.mjs",
-    "verify:production": "node scripts/verify-production.mjs"
+    "verify:production": "node scripts/verify-production.mjs",
+    "worker:bundle": "wrangler versions upload --dry-run --outdir .worker-build",
+    "worker:smoke": "node scripts/verify-worker-runtime.mjs"
   },
   "dependencies": {
     "express": "^5.3.0",
@@ -47,6 +49,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
-    "@blaxel/core": "^0.3.3"
+    "@blaxel/core": "^0.3.3",
+    "wrangler": "4.162.0"
   }
 }

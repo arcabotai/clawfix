@@ -90,6 +90,40 @@ jobs:
         working-directory: cli/tui
         run: bunx tsc --noEmit
 
+  worker:
+    name: Cloudflare Worker runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: clawfix-ci-only
+          POSTGRES_DB: clawfix_worker_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Bundle the exact Worker without credentials
+        run: npm run worker:bundle
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+      - name: Exercise real workerd and isolated PostgreSQL
+        run: npm run worker:smoke
+        env:
+          TEST_DATABASE_URL: postgres://postgres:clawfix-ci-only@127.0.0.1:5432/clawfix_worker_ci
+          WRANGLER_SEND_METRICS: 'false'
+
   container:
     name: Production container
     runs-on: ubuntu-latest
