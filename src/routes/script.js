@@ -125,15 +125,25 @@ NODE_VERSION=\$(node --version 2>/dev/null || echo "unknown")
 NPM_VERSION=\$(npm --version 2>/dev/null || echo "unknown")
 HOSTNAME_HASH=\$(hostname | shasum -a 256 | cut -c1-8)
 
-# OpenClaw version
-OC_VERSION=""
+# OpenClaw version. Show the printed line locally. The payload keeps only the
+# version token from \`OpenClaw <version>\` or \`OpenClaw <version> (<commit>)\`.
+OC_VERSION_LINE=""
 if [ -n "\$OPENCLAW_BIN" ]; then
-  OC_VERSION=\$("\$OPENCLAW_BIN" --version 2>/dev/null || echo "unknown")
+  OC_VERSION_LINE=\$("\$OPENCLAW_BIN" --version 2>/dev/null || echo "unknown")
 fi
 
 echo -e "   OS: \$OS_NAME \$OS_VERSION (\$OS_ARCH)"
 echo -e "   Node: \$NODE_VERSION"
-echo -e "   OpenClaw: \${OC_VERSION:-not found}"
+echo -e "   OpenClaw: \${OC_VERSION_LINE:-not found}"
+
+OC_VERSION="\$OC_VERSION_LINE"
+case "\$OC_VERSION" in
+  "OpenClaw "*)
+    OC_VERSION="\${OC_VERSION#OpenClaw }"
+    OC_VERSION="\${OC_VERSION%% (*}"
+    ;;
+esac
+OC_VERSION="\${OC_VERSION%%\$'\\n'*}"
 
 # --- Sanitize Config (REDACT RECOGNIZED SECRETS) ---
 echo ""

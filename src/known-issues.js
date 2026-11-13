@@ -5,6 +5,8 @@
  */
 
 import {
+  configWrittenByNewerVersion,
+  describeConfigWrittenByNewerVersion,
   describeOpenClawRedactedPlaceholders,
   isOpenClawRedactedPlaceholder,
   placeholderPathsForDiagnostic,
@@ -1551,6 +1553,23 @@ echo "Do not paste redacted output from openclaw config get back into the config
 echo "Inspect with: openclaw secrets audit"
 echo "Re-enter a store entry with: openclaw secrets store set <NAME>"
 echo "Re-enter a config path with: openclaw config set <dot.path>"
+echo "No config changes were made."`,
+  },
+
+  {
+    id: 'config-written-by-newer-version',
+    severity: 'medium',
+    title: 'Config written by a newer OpenClaw version',
+    description: 'OpenClaw config meta.lastTouchedVersion is newer than the installed CLI. An older CLI can misread or rewrite newer config. Upgrade the CLI to at least that version, check which -a openclaw for a shadowing older install, or restore a matching backup. No config is written.',
+    detect: (diag) => configWrittenByNewerVersion(diag) !== null,
+    describe: (diag) => describeConfigWrittenByNewerVersion(configWrittenByNewerVersion(diag)),
+    fix: `# Advisory only. A newer config writer does not authorize a config edit.
+# This script does not read, print, or write OpenClaw config.
+echo "OpenClaw config meta.lastTouchedVersion is newer than the installed CLI."
+echo "An older CLI can misread or rewrite newer config."
+echo "Upgrade the CLI to at least that version."
+echo "Check for a shadowing older install with: which -a openclaw"
+echo "Or restore a matching backup and its matching OpenClaw release."
 echo "No config changes were made."`,
   },
 

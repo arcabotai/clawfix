@@ -2903,3 +2903,53 @@ test('runDiagnostics reports placeholder paths and does not upload the credentia
   assert.equal(local.description.includes(providerSecret), false);
   assert.equal(events.some(event => event.type === 'scan.completed'), true);
 });
+
+test('runDiagnostics uploads only the two OpenClaw versions for a newer config writer', async () => {
+  const providerSecret = 'sk-test-provider-secret-value';
+  const commit = 'abc123def';
+  const migrationMarker = 'migration-marker-not-a-version';
+  const config = {
+    meta: {
+      lastTouchedVersion: ' 2026.11.5 ',
+      migrations: { modelPolicyAllowlist: true, note: migrationMarker },
+    },
+    gateway: { port: 18789, auth: { mode: 'token', token: providerSecret } },
+    agents: {
+      defaults: {
+        contextPruning: { mode: 'cache-ttl' },
+        compaction: { memoryFlush: { enabled: true } },
+      },
+    },
+  };
+  const { deps } = fakeDeps({
+    config,
+    redact: redactOutbound,
+    collectOpenClawVersion: () => ({
+      version: `OpenClaw 2026.11.3 (${commit})`,
+      runtimeCompatible: true,
+      runtimeRequired: '',
+      runtimeCurrent: '',
+      error: '',
+    }),
+  });
+  const result = await createDiagnosticsCore(deps).runDiagnostics({ revision: 'rev-newer-config' });
+  const serialized = JSON.stringify(result.diagnostic);
+  assert.equal(serialized.includes(providerSecret), false);
+  assert.equal(serialized.includes(commit), false);
+  assert.equal(result.diagnostic.openclaw.version, '2026.11.3');
+  assert.equal(result.diagnostic.openclaw.cliVersion, '2026.11.3');
+  assert.equal(result.diagnostic.openclaw.configLastTouchedVersion, '2026.11.5');
+  assert.equal(result.diagnostic.config.meta.lastTouchedVersion, ' 2026.11.5 ');
+  assert.equal(result.diagnostic.config.meta.migrations.note, migrationMarker);
+  const local = result.issues.find(issue => issue.knownIssueId === 'config-written-by-newer-version');
+  assert.ok(local);
+  assert.equal(local.severity, 'medium');
+  assert.match(local.description, /2026\.11\.5/);
+  assert.match(local.description, /2026\.11\.3/);
+  assert.match(local.description, /which -a openclaw/);
+  assert.match(local.description, /matching backup/);
+  assert.equal(local.description.includes(commit), false);
+  assert.equal(local.description.includes(migrationMarker), false);
+  assert.equal(local.description.includes(providerSecret), false);
+  assert.equal(local.description.includes('meta.migrations'), false);
+});
