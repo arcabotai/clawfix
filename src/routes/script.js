@@ -453,7 +453,7 @@ if echo "\$GATEWAY_LOG" | grep -qi "EADDRINUSE"; then
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Port conflict detected\${NC}\\n"
 fi
 
-if echo "\$SANITIZED_CONFIG" | jq -e '.plugins.entries["openclaw-mem0"].config.enableGraph == true' &>/dev/null; then
+if echo "\$SANITIZED_CONFIG" | jq -e '(.plugins.entries["openclaw-mem0"] | type == "object") and .plugins.entries["openclaw-mem0"].config.enableGraph == true' &>/dev/null; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Mem0 enableGraph requires Pro plan (will silently fail)\${NC}\\n"
 fi

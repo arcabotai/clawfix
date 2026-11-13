@@ -274,6 +274,18 @@ export function describeOpenClawRedactedPlaceholders(paths) {
 // It also never mutates its input — every pushed issue is a freshly-constructed object, and the
 // trailing `kind` defaulting loop below mutates only those freshly-constructed local objects, not
 // anything reachable from `collected`.
+function codexServiceTierIsHealthy(value) {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'priority' || normalized === 'fast';
+}
+
+function mem0PluginEntry(config) {
+  const entry = config?.plugins?.entries?.['openclaw-mem0'];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  return entry;
+}
+
 export function deriveIssues(collected) {
   const {
     config,
@@ -386,7 +398,7 @@ export function deriveIssues(collected) {
   }
   if (codexPluginEnabled
       && (hasNativeCodexRuntime || activeModelRefs.some((ref) => String(ref).startsWith('openai/')))
-      && codexAppServer.serviceTier !== 'fast') {
+      && !codexServiceTierIsHealthy(codexAppServer.serviceTier)) {
     issues.push({ knownIssueId: 'codex-service-tier-not-fast', severity: 'low', kind: 'optimization', text: 'Codex app-server fast tier is not enabled' });
   }
   const codexRequestTimeoutMs = Number(codexAppServer.requestTimeoutMs ?? 60000);
@@ -433,7 +445,7 @@ export function deriveIssues(collected) {
     issues.push({ severity: 'low', text: 'Matrix sync timeouts spamming error log' });
   }
 
-  if (config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true) {
+  if (mem0PluginEntry(config)?.config?.enableGraph === true) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
   }
   const placeholderPaths = collectOpenClawRedactedPlaceholderPaths(config);
