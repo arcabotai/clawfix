@@ -187,6 +187,8 @@ function toSafeErrorMessage(error) {
 // OpenClaw's public display marker. Upstream matches the whole stored value, not a substring
 // (openclaw/openclaw src/config/redact-sentinel.ts). ClawFix's own collector marker is
 // "***REDACTED***" and must never be treated as this sentinel.
+// The same matcher is duplicated in cli/bin/security.js because the production image
+// ships that file and does not copy cli/core. Keep the two copies in sync.
 export const OPENCLAW_REDACTED_PLACEHOLDER = '__OPENCLAW_REDACTED__';
 const PLACEHOLDER_PATH_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 const PLACEHOLDER_PATH_LIMIT = 32;

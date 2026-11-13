@@ -8,7 +8,7 @@ import {
   describeOpenClawRedactedPlaceholders,
   isOpenClawRedactedPlaceholder,
   placeholderPathsForDiagnostic,
-} from '../cli/core/diagnostics.js';
+} from '../cli/bin/security.js';
 
 function collectActiveModelRefs(config) {
   const refs = [];

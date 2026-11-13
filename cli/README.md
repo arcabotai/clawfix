@@ -27,7 +27,7 @@ npx clawfix@0.12.0
 ## What it does
 
 1. **Scans** your OpenClaw installation (config, gateway, plugins, workspace, logs)
-2. **Detects** issues using 49 deterministic issue detectors, including persisted OpenClaw `__OPENCLAW_REDACTED__` placeholders
+2. **Detects** issues using 49 deterministic issue detectors
 3. **Analyzes** novel problems with AI (optional, with your consent)
 4. **Builds** a fix script from reviewed deterministic repair snippets; AI never contributes shell
 

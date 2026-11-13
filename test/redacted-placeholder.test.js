@@ -2,10 +2,24 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-import { redactOutbound } from '../cli/bin/security.js';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
 import {
+  collectOpenClawRedactedPlaceholderPaths as collectFromSecurity,
+  describeOpenClawRedactedPlaceholders as describeFromSecurity,
+  isOpenClawRedactedPlaceholder as isFromSecurity,
+  OPENCLAW_REDACTED_PLACEHOLDER as sentinelFromSecurity,
+  placeholderPathsForDiagnostic as pathsFromSecurity,
+  redactOutbound,
+} from '../cli/bin/security.js';
+import {
+  collectOpenClawRedactedPlaceholderPaths as collectFromCore,
   deriveIssues,
+  describeOpenClawRedactedPlaceholders as describeFromCore,
+  isOpenClawRedactedPlaceholder as isFromCore,
   OPENCLAW_REDACTED_PLACEHOLDER,
+  placeholderPathsForDiagnostic as pathsFromCore,
 } from '../cli/core/diagnostics.js';
 import { normalizeFindings } from '../cli/core/findings.js';
 import { detectIssues, KNOWN_ISSUES } from '../src/known-issues.js';
@@ -234,6 +248,52 @@ test('the hosted curl collector keeps the OpenClaw placeholder and still redacts
   assert.match(afterServiceRedaction.description, /models\.providers\.openai\.apiKey/);
   assert.equal(afterServiceRedaction.description.includes('channels.discord.accessToken'), false);
   assert.equal(afterServiceRedaction.description.includes(CHANNEL_SECRET), false);
+});
+
+test('the server sentinel matcher stays identical to the CLI core copy', async () => {
+  assert.equal(sentinelFromSecurity, OPENCLAW_REDACTED_PLACEHOLDER);
+  const samples = [
+    PLACEHOLDER,
+    `  ${PLACEHOLDER}  `,
+    `${PLACEHOLDER}-suffix`,
+    '***REDACTED***',
+    '__openclaw_redacted__',
+    '',
+    null,
+    { source: 'env', id: 'OPENAI_API_KEY' },
+  ];
+  for (const sample of samples) {
+    assert.equal(isFromSecurity(sample), isFromCore(sample));
+  }
+
+  const cycle = { token: PLACEHOLDER };
+  cycle.self = cycle;
+  const config = {
+    models: { providers: { openai: { apiKey: ` ${PLACEHOLDER} ` } } },
+    channels: { slack: { accounts: [{ botToken: PLACEHOLDER }] } },
+    gateway: { auth: { token: 'real-secret-value' } },
+    env: { OPENAI_API_KEY: PLACEHOLDER },
+    notes: `see ${PLACEHOLDER} in the docs`,
+    cycle,
+  };
+  assert.deepEqual(collectFromSecurity(config), collectFromCore(config));
+  const diagnostic = {
+    config,
+    openclaw: {
+      redactedPlaceholderPaths: ['env.OPENAI_API_KEY', '$(rm)', 'models.providers.openai.apiKey'],
+    },
+  };
+  const securityPaths = pathsFromSecurity(diagnostic);
+  const corePaths = pathsFromCore(diagnostic);
+  assert.deepEqual(securityPaths, corePaths);
+  assert.equal(describeFromSecurity(securityPaths), describeFromCore(corePaths));
+
+  const serverFiles = await readdir(new URL('../src', import.meta.url), { recursive: true });
+  for (const relative of serverFiles) {
+    if (!relative.endsWith('.js')) continue;
+    const source = await readFile(join(new URL('../src', import.meta.url).pathname, relative), 'utf8');
+    assert.equal(source.includes('cli/core/'), false, `${relative} imports cli/core`);
+  }
 });
 
 test('the placeholder repair stays out of the executable catalog', () => {
