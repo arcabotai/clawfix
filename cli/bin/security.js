@@ -257,6 +257,63 @@ export function describeConfigWrittenByNewerVersion(versions) {
   return `OpenClaw config was written by ${configVersion}, which is newer than the installed CLI ${cliVersion}. An older CLI can misread or rewrite newer config. Upgrade the CLI to at least ${configVersion}, check which -a openclaw for a shadowing older install, or restore a matching backup. No config is written.`;
 }
 
+// A global npm install lives at {prefix}/lib/node_modules/openclaw and its bin
+// is {prefix}/bin/openclaw -> openclaw.mjs (package.json "bin" / "files").
+// The launcher then loads dist/entry.js or dist/entry.mjs. pnpm, yarn, bun,
+// source checkouts (.git, src/entry.ts, pnpm-lock.yaml), and any other layout
+// are not this install. Duplicated in cli/core/diagnostics.js. The production
+// image ships this file and does not copy cli/core. Keep the two copies in sync.
+const NPM_INSTALL_MISSING = [
+  ['packageJson', false, 'package.json'],
+  ['binTarget', false, 'bin target'],
+  ['distEntry', false, 'dist entry'],
+  ['pluginPathMissing', true, 'bundled plugin path'],
+  ['lifecycleIncomplete', true, 'package lifecycle'],
+];
+const NPM_INSTALL_ROOT = /^~?(?:\/[A-Za-z0-9._@+-]+)+$/;
+
+function sanitizeNpmPackageRoot(value) {
+  if (typeof value !== 'string') return null;
+  let text = value.trim();
+  if (!text || text.length > 240) return null;
+  text = text.replace(/^\/(?:home|Users)\/[^/]+/, '~');
+  if (!NPM_INSTALL_ROOT.test(text)) return null;
+  const segments = text.split('/').filter(Boolean);
+  if (segments.some(segment => segment === '.' || segment === '..')) return null;
+  if (!text.endsWith('/lib/node_modules/openclaw')) return null;
+  return text;
+}
+
+export function incompleteNpmInstall(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+  if (record.manager !== 'npm') return null;
+  const missing = [];
+  for (const [key, expected, label] of NPM_INSTALL_MISSING) {
+    if (record[key] === expected) missing.push(label);
+  }
+  if (missing.length === 0) return null;
+  return {
+    missing,
+    packageRoot: sanitizeNpmPackageRoot(record.packageRoot),
+    version: parseStoredOpenClawVersion(record.version),
+  };
+}
+
+export function describeIncompleteNpmInstall(detail) {
+  const allowed = new Set(NPM_INSTALL_MISSING.map(([, , label]) => label));
+  const missing = Array.isArray(detail?.missing)
+    ? detail.missing.filter(label => allowed.has(label))
+    : [];
+  if (missing.length === 0) return null;
+  const packageRoot = sanitizeNpmPackageRoot(detail?.packageRoot);
+  const version = parseStoredOpenClawVersion(detail?.version);
+  const where = packageRoot ? ` at ${packageRoot}` : '';
+  const reinstall = version
+    ? `npm install -g openclaw@${version}`
+    : 'npm install -g openclaw@<installed version>';
+  return `A global npm install of OpenClaw${where} is incomplete (${missing.join(', ')}). Reinstall with ${reinstall}, or run openclaw update. Config and state are left unchanged.`;
+}
+
 function redactSensitiveValue(value) {
   // Keep OpenClaw's public sentinel distinguishable from ClawFix's own marker.
   // A real credential on the same key is still replaced with REDACTED.
