@@ -143,11 +143,18 @@ SANITIZED_CONFIG="{}"
 CONFIG_EXISTS=false
 if [ -n "\$OPENCLAW_CONFIG" ]; then
   CONFIG_EXISTS=true
-  # Redact anything that looks like a key, token, secret, or password
+  # Redact recognized secrets. Keep OpenClaw's public __OPENCLAW_REDACTED__
+  # placeholder so a persisted marker stays distinguishable from ClawFix's
+  # own ***REDACTED*** replacement.
   SANITIZED_CONFIG=\$(jq '
+    def clawfix_redact:
+      if . == "__OPENCLAW_REDACTED__" then .
+      else "***REDACTED***"
+      end;
     walk(
       if type == "string" then
-        if (length > 20 and (test("^(sk-|xai-|eyJ|ghp_|gho_|npm_|m0-|AIza|ntn_)") or test("^[A-Za-z0-9+/=]{40,}$"))) then
+        if . == "__OPENCLAW_REDACTED__" then .
+        elif (length > 20 and (test("^(sk-|xai-|eyJ|ghp_|gho_|npm_|m0-|AIza|ntn_)") or test("^[A-Za-z0-9+/=]{40,}$"))) then
           "***REDACTED***"
         elif (length > 8 and test("(key|token|secret|password|jwt|apiKey|accessToken)"; "i")) then
           "***REDACTED***"
@@ -157,8 +164,8 @@ if [ -n "\$OPENCLAW_CONFIG" ]; then
       end
     )
     | del(.env)
-    | if .gateway.auth then .gateway.auth.token = "***REDACTED***" else . end
-    | if .channels then (.channels | to_entries | map(.value.accessToken = "***REDACTED***" | .value.apiKey = "***REDACTED***") | from_entries) as \$ch | .channels = \$ch else . end
+    | if .gateway.auth then .gateway.auth.token |= clawfix_redact else . end
+    | if .channels then (.channels | to_entries | map(.value.accessToken |= clawfix_redact | .value.apiKey |= clawfix_redact) | from_entries) as \$ch | .channels = \$ch else . end
   ' "\$OPENCLAW_CONFIG" 2>/dev/null || echo '{"error": "could not parse config"}')
   
   echo -e "\${GREEN}   ✅ Config read and sanitized\${NC}"

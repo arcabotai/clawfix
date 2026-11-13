@@ -184,6 +184,91 @@ function toSafeErrorMessage(error) {
   return typeof message === 'string' && message.length > 0 ? message : 'Unknown internal error';
 }
 
+// OpenClaw's public display marker. Upstream matches the whole stored value, not a substring
+// (openclaw/openclaw src/config/redact-sentinel.ts). ClawFix's own collector marker is
+// "***REDACTED***" and must never be treated as this sentinel.
+// The same matcher is duplicated in cli/bin/security.js because the production image
+// ships that file and does not copy cli/core. Keep the two copies in sync.
+export const OPENCLAW_REDACTED_PLACEHOLDER = '__OPENCLAW_REDACTED__';
+const PLACEHOLDER_PATH_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
+const PLACEHOLDER_PATH_LIMIT = 32;
+const PLACEHOLDER_PATH_DEPTH = 24;
+const PLACEHOLDER_PATH_LENGTH = 512;
+const REPORTED_PLACEHOLDER_PATH = /^(?:[A-Za-z0-9_-]{1,128})(?:\.[A-Za-z0-9_-]{1,128}){0,23}$/;
+
+export function isOpenClawRedactedPlaceholder(value) {
+  return typeof value === 'string' && value.trim() === OPENCLAW_REDACTED_PLACEHOLDER;
+}
+
+function placeholderChildPath(path, segment) {
+  const depth = path ? path.split('.').length : 0;
+  if (depth >= PLACEHOLDER_PATH_DEPTH) return null;
+  const next = path ? `${path}.${segment}` : segment;
+  if (next.length > PLACEHOLDER_PATH_LENGTH) return null;
+  return next;
+}
+
+// Paths only. Values are never copied into the result.
+export function collectOpenClawRedactedPlaceholderPaths(value) {
+  const paths = [];
+  const seen = new WeakSet();
+  const visit = (node, path) => {
+    if (paths.length >= PLACEHOLDER_PATH_LIMIT) return;
+    if (typeof node === 'string') {
+      if (path && isOpenClawRedactedPlaceholder(node)) paths.push(path);
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    if (seen.has(node)) return;
+    seen.add(node);
+    if (Array.isArray(node)) {
+      for (let index = 0; index < node.length; index += 1) {
+        if (paths.length >= PLACEHOLDER_PATH_LIMIT) return;
+        const segment = String(index);
+        if (!PLACEHOLDER_PATH_SEGMENT.test(segment)) continue;
+        const next = placeholderChildPath(path, segment);
+        if (next) visit(node[index], next);
+      }
+      return;
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (paths.length >= PLACEHOLDER_PATH_LIMIT) return;
+      if (!PLACEHOLDER_PATH_SEGMENT.test(key)) continue;
+      const next = placeholderChildPath(path, key);
+      if (next) visit(child, next);
+    }
+  };
+  visit(value, '');
+  return paths;
+}
+
+export function placeholderPathsForDiagnostic(diagnostic) {
+  const fromConfig = collectOpenClawRedactedPlaceholderPaths(diagnostic?.config);
+  const reported = diagnostic?.openclaw?.redactedPlaceholderPaths;
+  if (!Array.isArray(reported)) return fromConfig;
+  const seen = new Set(fromConfig);
+  const merged = fromConfig.slice(0, PLACEHOLDER_PATH_LIMIT);
+  for (const path of reported) {
+    if (merged.length >= PLACEHOLDER_PATH_LIMIT) break;
+    if (typeof path !== 'string' || !REPORTED_PLACEHOLDER_PATH.test(path) || seen.has(path)) continue;
+    seen.add(path);
+    merged.push(path);
+  }
+  return merged;
+}
+
+export function describeOpenClawRedactedPlaceholders(paths) {
+  const list = Array.isArray(paths)
+    ? paths.filter(path => typeof path === 'string' && REPORTED_PLACEHOLDER_PATH.test(path))
+    : [];
+  const shown = list.slice(0, PLACEHOLDER_PATH_LIMIT);
+  const extra = list.length - shown.length;
+  const where = shown.length > 0
+    ? ` at ${shown.join(', ')}${extra > 0 ? `, and ${extra} more` : ''}`
+    : '';
+  return `OpenClaw config stores the ${OPENCLAW_REDACTED_PLACEHOLDER} placeholder${where}. Those stored values are not credentials. Re-enter each listed path with openclaw secrets or openclaw config set, and do not paste redacted config get output back into the file.`;
+}
+
 // deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
 // Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
 // reasons about (config, per-band collection results) is read from the `collected` argument, and
@@ -364,6 +449,16 @@ export function deriveIssues(collected) {
 
   if (mem0PluginEntry(config)?.config?.enableGraph === true) {
     issues.push({ severity: 'high', text: 'Mem0 enableGraph requires Pro plan (will silently fail)' });
+  }
+  const placeholderPaths = collectOpenClawRedactedPlaceholderPaths(config);
+  if (placeholderPaths.length > 0) {
+    issues.push({
+      knownIssueId: 'redacted-placeholder-corruption',
+      severity: 'high',
+      text: 'Persisted OpenClaw redaction placeholders in config',
+      description: describeOpenClawRedactedPlaceholders(placeholderPaths),
+      path: placeholderPaths.join(', '),
+    });
   }
   if (config?.agents?.defaults && !config.agents.defaults.contextPruning) {
     issues.push({ severity: 'medium', kind: 'optimization', text: 'No context pruning configured' });
@@ -864,6 +959,7 @@ export function createDiagnosticsCore({
       }));
 
       const { config, redactedConfig } = await readConfig(openclawDir, cancellation);
+      const redactedPlaceholderPaths = collectOpenClawRedactedPlaceholderPaths(config);
       emit?.(scanStep({
         revision,
         phase: 'config',
@@ -1049,6 +1145,7 @@ export function createDiagnosticsCore({
           runtimeCompatible: system.runtimeCompatible,
           runtimeRequired: system.runtimeRequired,
           runtimeCurrent: system.runtimeCurrent,
+          ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
         },
         config: redactedConfig,
         nativeConfig,
