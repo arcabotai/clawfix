@@ -128,7 +128,7 @@ function tryGatewayRestart() {
  * Each fix modifies the config object in-place and returns { changes: string[] }.
  * All config changes are handled atomically: backup → modify → write → restart → verify.
  */
-const BUILTIN_FIXES = {
+export const BUILTIN_FIXES = {
   'duplicate-plugin': {
     description: 'Set explicit plugin allowlist to prevent duplicate loading',
     risk: 'low',
@@ -211,13 +211,17 @@ const BUILTIN_FIXES = {
   },
 
   'mem0-graph-free': {
-    description: 'Disable Mem0 graph mode (requires Pro plan)',
+    description: 'Disable graph mode on an existing openclaw-mem0 entry',
     risk: 'low',
     needsConfig: true,
     needsRestart: true,
     informational: false,
     apply: (config) => {
-      const mem0 = config?.plugins?.entries?.['openclaw-mem0']?.config;
+      const entry = config?.plugins?.entries?.['openclaw-mem0'];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return { changes: ['No openclaw-mem0 plugin entry is configured'] };
+      }
+      const mem0 = entry.config;
       if (mem0 && mem0.enableGraph === true) {
         mem0.enableGraph = false;
         return { changes: ['Set Mem0 enableGraph = false (Pro plan required for graph)'] };

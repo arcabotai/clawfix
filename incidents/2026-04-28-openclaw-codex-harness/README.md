@@ -32,8 +32,8 @@ back toward the default `~/.codex` state.
   native-Codex-plus-`workspace-write` sandbox combination.
 - Detect shell `CODEX_HOME` mismatch for manual `openclaw agent` tests after a
   gateway wrapper migration.
-- Detect missing Codex app-server `serviceTier = "fast"` when native Codex is
-  active.
+- Detect a Codex app-server service tier other than `priority` when native
+  Codex is active. Legacy `fast` is already healthy. Repairs write `priority`.
 
 ## Verification pattern
 

@@ -75,6 +75,19 @@ function codexAppServer(config) {
   return codexPluginEntry(config)?.config?.appServer || {};
 }
 
+// OpenClaw normalizes legacy "fast" to "priority". Both are the healthy low-latency tier.
+function codexServiceTierIsHealthy(value) {
+  if (typeof value !== 'string') return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === 'priority' || normalized === 'fast';
+}
+
+function mem0PluginEntry(config) {
+  const entry = config?.plugins?.entries?.['openclaw-mem0'];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  return entry;
+}
+
 function activeMemoryConfig(config) {
   return config?.plugins?.entries?.['active-memory']?.config || {};
 }
@@ -232,17 +245,23 @@ echo "No runtime changes were made automatically because Node installation metho
     id: 'mem0-graph-free',
     severity: 'critical',
     title: 'Mem0 enableGraph on Free plan',
-    description: 'Mem0 plugin has enableGraph: true but this requires the Pro plan ($99/mo). Every autoCapture and autoRecall call silently fails, meaning zero memories are stored.',
+    description: 'An existing openclaw-mem0 plugin entry has enableGraph set to true. Graph mode requires the Mem0 Pro plan, and autoCapture and autoRecall can fail silently while it is on. OpenClaw no longer ships this plugin. The finding applies only to a third-party or leftover entry already present in config, and the repair only turns graph mode off on that entry.',
     detect: (diag) => {
       try {
-        return diag.config?.plugins?.entries?.['openclaw-mem0']?.config?.enableGraph === true;
+        return mem0PluginEntry(diag.config)?.config?.enableGraph === true;
       } catch { return false; }
     },
-    fix: `# Fix: Disable Mem0 graph (requires Pro plan)
-jq '.plugins.entries["openclaw-mem0"].config.enableGraph = false' \\
-  ~/.openclaw/openclaw.json > /tmp/oc-fix.json && \\
-  mv /tmp/oc-fix.json ~/.openclaw/openclaw.json
-echo "✅ Mem0 graph disabled — autoCapture will now work on Free plan"`,
+    fix: `# Disable graph mode on an existing openclaw-mem0 entry.
+# OpenClaw no longer ships a bundled mem0 plugin. This repair edits only an entry that is already configured.
+CONFIG="$HOME/.openclaw/openclaw.json"
+if [ -f "$CONFIG" ] && jq -e '.plugins.entries["openclaw-mem0"] | type == "object"' "$CONFIG" >/dev/null; then
+  jq '.plugins.entries["openclaw-mem0"].config.enableGraph = false' \\
+    "$CONFIG" > /tmp/oc-fix.json && \\
+    mv /tmp/oc-fix.json "$CONFIG"
+  echo "Disabled enableGraph on the existing openclaw-mem0 entry."
+else
+  echo "No openclaw-mem0 plugin entry is configured. Left the config unchanged."
+fi`,
   },
 
   {
@@ -329,7 +348,7 @@ config.plugins.entries = config.plugins.entries || {};
 config.plugins.entries.codex = config.plugins.entries.codex || {};
 config.plugins.entries.codex.config = config.plugins.entries.codex.config || {};
 config.plugins.entries.codex.config.appServer = config.plugins.entries.codex.config.appServer || {};
-config.plugins.entries.codex.config.appServer.serviceTier = 'fast';
+config.plugins.entries.codex.config.appServer.serviceTier = 'priority';
 
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\\n');
 
@@ -431,22 +450,22 @@ echo "Expected: $CODEX_HOME_DIR"`,
     id: 'codex-service-tier-not-fast',
     severity: 'low',
     title: 'Codex app-server fast tier is not enabled',
-    description: 'OpenClaw can pass a fast service tier to the Codex app-server. If this is missing, native Codex traffic may not use the lower-latency path expected after the latest update.',
+    description: 'OpenClaw can pass a service tier to the Codex app-server. The current low-latency value is "priority". Legacy "fast" is already healthy because OpenClaw normalizes it to "priority". Any other value, including an unset tier or documented "flex", is not that path.',
     detect: (diag) => {
       return hasCodexPluginEnabled(diag.config) &&
              (hasNativeCodexRoute(diag.config) || collectActiveModelRefs(diag.config).some(ref => ref.startsWith('openai/'))) &&
-             codexAppServer(diag.config).serviceTier !== 'fast';
+             !codexServiceTierIsHealthy(codexAppServer(diag.config).serviceTier);
     },
-    fix: `# Fix: Enable the Codex app-server fast tier
+    fix: `# Fix: Set the Codex app-server service tier to priority
 CONFIG="$HOME/.openclaw/openclaw.json"
 TS=$(date +%Y%m%d-%H%M%S)
 cp "$CONFIG" "$CONFIG.pre-codex-fast-tier-$TS"
 
-openclaw config set plugins.entries.codex.config.appServer.serviceTier fast
+openclaw config set plugins.entries.codex.config.appServer.serviceTier priority
 openclaw config validate
 openclaw gateway restart
 
-echo "Codex fast service tier enabled."
+echo "Codex priority service tier enabled."
 echo "Verify with: openclaw gateway status --deep"`,
   },
 
@@ -485,7 +504,7 @@ openclaw gateway restart
 echo "Native Codex timeout headroom increased."
 echo "Verify:"
 echo "  openclaw gateway status --deep"
-echo "  openclaw channels status --deep"
+echo "  openclaw channels status --probe"
 echo "  openclaw agent --agent main --message 'reply exactly OK' --thinking low --timeout 180 --json"
 echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
   },
@@ -1443,25 +1462,31 @@ NUM=$(echo "$CANDS" | grep -c . || true)
 if [ "$NUM" != "1" ]; then
   echo "Could not uniquely determine correct prefix. Candidates:"
   echo "$CANDS"
-  echo "Re-run 'openclaw models list' and pick the right one, then set manually:"
-  echo "  openclaw config set agents.defaults.heartbeat.model '<correct>'"
+  echo "Re-run 'openclaw models list' and pick the right one."
+  echo "agents.defaults.heartbeat.model is retired. Run: openclaw doctor --fix"
+  echo "Then edit the migrated automation: openclaw automations list --all"
   exit 1
 fi
 GOOD="$CANDS"
 echo "Auto-detected correct prefix: $GOOD"
 echo ""
-read -r -p "Apply '$BAD' -> '$GOOD' everywhere it appears? [y/N] " ANS
+read -r -p "Apply '$BAD' -> '$GOOD' on supported model keys? [y/N] " ANS
 [ "$ANS" = "y" ] || [ "$ANS" = "Y" ] || { echo "skipped"; exit 0; }
 
 TS=$(date +%Y%m%d-%H%M%S)
 /bin/cp -p ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.pre-fix-$TS
 echo "Snapshot: ~/.openclaw/openclaw.json.pre-fix-$TS"
 
-for path in agents.defaults.heartbeat.model agents.defaults.subagents.model; do
-  if [ "$(openclaw config get "$path" 2>/dev/null)" = "$BAD" ]; then
-    openclaw config set "$path" "$GOOD" && echo "  updated $path"
-  fi
-done
+# Current OpenClaw rejects agents.defaults.heartbeat.model. Doctor migrates it.
+if jq -e --arg bad "$BAD" '.agents.defaults.heartbeat.model == $bad' ~/.openclaw/openclaw.json >/dev/null 2>&1; then
+  echo "agents.defaults.heartbeat.model still holds the unregistered prefix."
+  echo "That key is retired. Run: openclaw doctor --fix"
+  echo "Then edit the migrated automation: openclaw automations list --all"
+fi
+
+if [ "$(openclaw config get agents.defaults.subagents.model 2>/dev/null)" = "$BAD" ]; then
+  openclaw config set agents.defaults.subagents.model "$GOOD" && echo "  updated agents.defaults.subagents.model"
+fi
 
 # per-agent list
 N=$(jq '.agents.list | length' ~/.openclaw/openclaw.json 2>/dev/null || echo 0)

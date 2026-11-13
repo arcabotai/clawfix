@@ -235,6 +235,16 @@ test('legacy heartbeat is advisory and does not write heartbeat keys', () => {
   }
 });
 
+test('provider prefix repair leaves the retired heartbeat model key for doctor', () => {
+  const fix = issueById('provider-prefix-unregistered').fix;
+  assert.doesNotMatch(fix, /config set[^\n]*heartbeat\.model/);
+  assert.doesNotMatch(fix, /heartbeat\.model agents\.defaults\.subagents/);
+  assert.match(fix, /openclaw doctor --fix/);
+  assert.match(fix, /openclaw automations list --all/);
+  assert.match(fix, /agents\.defaults\.subagents\.model/);
+  assert.match(fix, /agents\.list\.\$i\.model/);
+});
+
 test('a retired heartbeat model is not treated as an active model route', () => {
   const config = {
     plugins: {
