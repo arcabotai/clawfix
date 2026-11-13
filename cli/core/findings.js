@@ -17,7 +17,6 @@ const LOCAL_ISSUE_TEXT_REPAIR_MAP = new Map([
   ['Auto-update causing gateway restart loop', 'auto-update-restart-loop'],
   ['Auto-update enabled (risk of restart loops)', 'auto-update-enabled-warning'],
   ['Mem0 enableGraph requires Pro plan (will silently fail)', 'mem0-graph-free'],
-  ['Hybrid search not enabled (recommended)', 'no-hybrid-search'],
   ['No context pruning configured', 'no-context-pruning'],
   ['Memory flush not enabled (data loss on compaction)', 'no-memory-flush'],
   ['No SOUL.md found (agent has no personality)', 'no-soul'],

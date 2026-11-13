@@ -629,9 +629,17 @@ test('the catalog exposes exactly the repairs the findings map can authorize', a
 
 const TOGGLES = [
   { id: 'auto-update-enabled-warning', key: 'update.auto.enabled', from: 'true', to: 'false' },
-  { id: 'no-hybrid-search', key: 'agents.defaults.memorySearch.query.hybrid.enabled', from: 'false', to: 'true' },
   { id: 'no-memory-flush', key: 'agents.defaults.compaction.memoryFlush.enabled', from: 'false', to: 'true' },
 ];
+
+test('the catalog does not write retired memorySearch or heartbeat keys', () => {
+  assert.equal(repairCatalog['no-hybrid-search'], undefined);
+  for (const entry of Object.values(repairCatalog)) {
+    const key = typeof entry.key === 'string' ? entry.key : '';
+    assert.equal(key.includes('memorySearch'), false, entry.id);
+    assert.equal(key.includes('heartbeat'), false, entry.id);
+  }
+});
 
 for (const toggle of TOGGLES) {
   test(`${toggle.id}: flips ${toggle.key} and verifies by reading it back`, async () => {

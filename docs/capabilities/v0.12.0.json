@@ -65,7 +65,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 49,
+    "deterministicCount": 48,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -100,7 +100,6 @@
       "native-codex-timeout-boundary",
       "no-compaction-config",
       "no-context-pruning",
-      "no-hybrid-search",
       "no-memory-files",
       "no-memory-flush",
       "no-soul",
@@ -119,7 +118,7 @@
     ]
   },
   "executableRepairs": {
-    "count": 5,
+    "count": 4,
     "items": [
       {
         "id": "auto-update-enabled-warning",
@@ -134,11 +133,6 @@
       {
         "id": "gateway-not-running",
         "title": "Restart the OpenClaw gateway",
-        "risk": "low"
-      },
-      {
-        "id": "no-hybrid-search",
-        "title": "Enable hybrid memory search",
         "risk": "low"
       },
       {
