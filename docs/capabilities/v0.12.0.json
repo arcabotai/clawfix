@@ -65,7 +65,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 50,
+    "deterministicCount": 51,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -91,6 +91,7 @@
       "ggml-metal-crash",
       "heartbeat-no-model-override",
       "high-token-usage",
+      "incomplete-npm-install",
       "invalid-gh-token-override",
       "large-workspace-files",
       "launchd-corrupted-state",
