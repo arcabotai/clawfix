@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "checksRun": 1,
+  "checksSkipped": 69,
+  "findings": [
+    {
+      "checkId": "core/doctor/heartbeat-scratch-migration",
+      "severity": "error",
+      "message": "Agent \"main\" HEARTBEAT.md cannot be migrated: HEARTBEAT.md is not valid UTF-8",
+      "path": "~/.openclaw/workspace-bad/HEARTBEAT.md",
+      "target": "main",
+      "requirement": "heartbeat-file-migration-blocked",
+      "fixHint": "Run openclaw doctor --fix to migrate HEARTBEAT.md into cron scratch."
+    }
+  ]
+}

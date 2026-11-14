@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 52,
+    "deterministicCount": 53,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -88,6 +88,7 @@
       "gateway-watchdog-missing",
       "gateway-zombie",
       "ggml-metal-crash",
+      "heartbeat-file-blocks-scratch",
       "heartbeat-no-model-override",
       "high-token-usage",
       "incomplete-npm-install",

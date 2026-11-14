@@ -943,6 +943,72 @@ function doctorRepairAlias(finding) {
   return doctorSecurityAlias(finding);
 }
 
+// Kept in sync with cli/bin/security.js. The server imports that copy;
+// this core must not import cli/bin.
+export const HEARTBEAT_SCRATCH_MAX_BYTES = 256 * 1024;
+
+export function classifyHeartbeatScratchFile({ bytes, utf8 } = {}) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
+  if (bytes > HEARTBEAT_SCRATCH_MAX_BYTES) return 'too-large';
+  if (utf8 === false) return 'invalid-utf8';
+  return null;
+}
+
+function heartbeatBytesAreUtf8(buffer) {
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readHeartbeatScratchFile(fs, workspaceDir, cancellation) {
+  const heartbeatPath = join(workspaceDir, 'HEARTBEAT.md');
+  if (!await cancellation.race(() => fs.exists(heartbeatPath))) return null;
+  try {
+    const info = await cancellation.race(() => fs.stat(heartbeatPath));
+    if (typeof info?.isFile === 'function' && !info.isFile()) return null;
+    const bytes = info?.size;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
+    let utf8 = null;
+    if (bytes <= HEARTBEAT_SCRATCH_MAX_BYTES && typeof fs.readFileBuffer === 'function') {
+      const buffer = await cancellation.race(() => fs.readFileBuffer(
+        heartbeatPath,
+        HEARTBEAT_SCRATCH_MAX_BYTES,
+      ));
+      if (Buffer.isBuffer(buffer)) utf8 = heartbeatBytesAreUtf8(buffer);
+    }
+    return { bytes, utf8 };
+  } catch (error) {
+    if (error === CANCELLED) throw error;
+    return null;
+  }
+}
+
+function heartbeatScratchIssue(file) {
+  const problem = classifyHeartbeatScratchFile(file);
+  if (problem === 'too-large') {
+    return {
+      knownIssueId: 'heartbeat-file-blocks-scratch',
+      severity: 'high',
+      kind: 'failure',
+      text: 'HEARTBEAT.md exceeds the cron scratch limit',
+      description: `HEARTBEAT.md is ${file.bytes} bytes. OpenClaw accepts at most ${HEARTBEAT_SCRATCH_MAX_BYTES} bytes of cron scratch. templates validate can still pass; adding the template or migrating the file fails.`,
+    };
+  }
+  if (problem === 'invalid-utf8') {
+    return {
+      knownIssueId: 'heartbeat-file-blocks-scratch',
+      severity: 'high',
+      kind: 'failure',
+      text: 'HEARTBEAT.md is not valid UTF-8',
+      description: 'OpenClaw reads HEARTBEAT.md as UTF-8 before it can become cron scratch. templates validate can still pass; adding the template or migrating the file fails.',
+    };
+  }
+  return null;
+}
+
 export function deriveIssues(collected) {
   const {
     config,
@@ -1152,6 +1218,8 @@ export function deriveIssues(collected) {
   if (config?.agents?.defaults && !config.agents.defaults.compaction?.memoryFlush?.enabled) {
     issues.push({ severity: 'medium', kind: 'optimization', text: 'Memory flush not enabled (data loss on compaction)' });
   }
+  const heartbeatIssue = heartbeatScratchIssue(workspace.heartbeatFile);
+  if (heartbeatIssue) issues.push(heartbeatIssue);
   if (!workspace.hasSoul && workspace.workspaceDir) {
     issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
   }
@@ -1226,6 +1294,13 @@ export function deriveIssues(collected) {
   // A lint process killed for its time budget is not an OpenClaw finding, even
   // when the killed process had already written a partial JSON envelope.
   if (nativeDoctor?.timedOut !== true) for (const finding of nativeDoctor.findings) {
+    // The local scratch check already names this file. Doctor's blocked migration
+    // is the same limit, so it is not listed a second time.
+    if (heartbeatIssue
+      && finding.checkId === 'core/doctor/heartbeat-scratch-migration'
+      && finding.requirement === 'heartbeat-file-migration-blocked') {
+      continue;
+    }
     // Match on the detail too, not just the headline. Findings that carry an upstream message as
     // their detail (config/schema-invalid holds the validator's text) would otherwise be
     // reported twice — once with an actionable title, once as the raw parser output.
@@ -1548,6 +1623,7 @@ export function createDiagnosticsCore({
     let hasSoul = false;
     let hasAgents = false;
     let workspaceExists = false;
+    let heartbeatFile = null;
 
     if (workspaceDir && await cancellation.race(() => fs.exists(workspaceDir))) {
       workspaceExists = true;
@@ -1561,6 +1637,7 @@ export function createDiagnosticsCore({
         // fail-open
       }
 
+      heartbeatFile = await readHeartbeatScratchFile(fs, workspaceDir, cancellation);
       const memDir = join(workspaceDir, 'memory');
       if (await cancellation.race(() => fs.exists(memDir))) {
         try {
@@ -1589,6 +1666,7 @@ export function createDiagnosticsCore({
       memoryFiles,
       hasSoul,
       hasAgents,
+      ...(heartbeatFile ? { heartbeatFile } : {}),
       plugins,
       codexHome: {
         expected: expectedCodexHome,
@@ -1930,6 +2008,7 @@ export function createDiagnosticsCore({
           memoryFiles: workspace.memoryFiles,
           hasSoul: workspace.hasSoul,
           hasAgents: workspace.hasAgents,
+          ...(workspace.heartbeatFile ? { heartbeatFile: workspace.heartbeatFile } : {}),
         },
         browser: {
           status: browserConfigured ? 'configured' : 'not configured',

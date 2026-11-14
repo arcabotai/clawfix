@@ -822,6 +822,41 @@ if [ -n "\$WORKSPACE_DIR" ] && [ -d "\$WORKSPACE_DIR" ]; then
   echo -e "   AGENTS.md: \$AGENTS_EXISTS"
 fi
 
+# HEARTBEAT.md is copied into cron scratch, which refuses more than 262144 bytes
+# and invalid UTF-8 (openclaw src/cron/scratch-contract.ts:2 and :93-99).
+HEARTBEAT_FILE_JSON=null
+if [ -n "\$WORKSPACE_DIR" ] && [ -f "\$WORKSPACE_DIR/HEARTBEAT.md" ]; then
+  HEARTBEAT_FILE_JSON=\$(node - "\$WORKSPACE_DIR/HEARTBEAT.md" <<'NODE'
+const fs = require('node:fs');
+const file = process.argv[2];
+const MAX_BYTES = 262144;
+try {
+  const info = fs.lstatSync(file);
+  if (!info.isFile()) {
+    process.stdout.write('null');
+  } else {
+    const bytes = info.size;
+    let utf8 = null;
+    if (Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= MAX_BYTES) {
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
+        utf8 = true;
+      } catch (error) {
+        utf8 = false;
+      }
+    }
+    process.stdout.write(JSON.stringify({ bytes: bytes, utf8: utf8 }));
+  }
+} catch (error) {
+  process.stdout.write('null');
+}
+NODE
+) || true
+fi
+if [ -z "\$HEARTBEAT_FILE_JSON" ]; then
+  HEARTBEAT_FILE_JSON=null
+fi
+
 # --- Check Ports ---
 echo ""
 echo -e "\${BLUE}🔗 Checking port availability...\${NC}"
@@ -1045,7 +1080,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "mdFiles": \$WORKSPACE_FILES,
     "memoryFiles": \$MEMORY_FILES,
     "hasSoul": \$SOUL_EXISTS,
-    "hasAgents": \$AGENTS_EXISTS
+    "hasAgents": \$AGENTS_EXISTS,
+    "heartbeatFile": \$HEARTBEAT_FILE_JSON
   },
   "browser": {
     "status": "\$BROWSER_STATUS"
