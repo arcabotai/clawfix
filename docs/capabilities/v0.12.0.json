@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 53,
+    "deterministicCount": 54,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -118,7 +118,8 @@
       "stale-bundled-plugin-load-paths",
       "stale-plist-env-secrets",
       "stale-self-paired-node",
-      "state-dir-migration"
+      "state-dir-migration",
+      "stuck-invalid-session-window"
     ]
   },
   "executableRepairs": {

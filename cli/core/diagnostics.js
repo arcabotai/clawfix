@@ -1223,6 +1223,20 @@ export function deriveIssues(collected) {
   if (!workspace.hasSoul && workspace.workspaceDir) {
     issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
   }
+  if (Number.isSafeInteger(collected.stuckSessionWindows?.count) && collected.stuckSessionWindows.count > 0) {
+    const agents = Array.isArray(collected.stuckSessionWindows.agents)
+      ? collected.stuckSessionWindows.agents.filter(agent => typeof agent === 'string' && agent.length > 0)
+      : [];
+    issues.push({
+      knownIssueId: 'stuck-invalid-session-window',
+      severity: 'medium',
+      kind: 'warning',
+      text: 'Invalid session window is still marked running',
+      description: agents.length > 0
+        ? `${collected.stuckSessionWindows.count} session window(s) still have status running on an empty invalid session entry (${agents.join(', ')}). sessions list and doctor --session-sqlite inspect do not report them. No automatic delete is available.`
+        : `${collected.stuckSessionWindows.count} session window(s) still have status running on an empty invalid session entry. sessions list and doctor --session-sqlite inspect do not report them. No automatic delete is available.`,
+    });
+  }
   if (workspace.memoryFiles === 0 && workspace.workspaceDir) {
     issues.push({ severity: 'low', kind: 'optimization', text: 'No memory files found' });
   }
@@ -1359,6 +1373,7 @@ export function createDiagnosticsCore({
   createHash,
   nativeCollectors,
   timers,
+  collectStuckSessionWindows,
 } = {}) {
   requireNonEmptyString(version, 'version');
   requireFunction(redact, 'redact');
@@ -1912,6 +1927,15 @@ export function createDiagnosticsCore({
         }));
       }
       cancellation.checkCancelled();
+          let stuckSessionWindows = null;
+      if (typeof collectStuckSessionWindows === 'function' && openclawDir) {
+        try {
+          stuckSessionWindows = await cancellation.race(() => collectStuckSessionWindows(openclawDir));
+        } catch (error) {
+          if (error === CANCELLED) throw error;
+          stuckSessionWindows = null;
+        }
+      }
       const issues = deriveIssues({
         config,
         system,
@@ -1926,6 +1950,7 @@ export function createDiagnosticsCore({
         nativeSecurity,
         install,
         updateAvailability,
+        stuckSessionWindows,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -1986,6 +2011,12 @@ export function createDiagnosticsCore({
           ...(configLastTouchedVersion ? { configLastTouchedVersion } : {}),
           ...(install ? { install } : {}),
           ...(updateAvailability ? { updateAvailability } : {}),
+          ...(Number.isSafeInteger(stuckSessionWindows?.count) && stuckSessionWindows.count > 0
+            ? { stuckSessionWindows: {
+              count: stuckSessionWindows.count,
+              agents: Array.isArray(stuckSessionWindows.agents) ? stuckSessionWindows.agents.slice(0, 8) : [],
+            } }
+            : {}),
         },
         config: redactedConfig,
         nativeConfig,

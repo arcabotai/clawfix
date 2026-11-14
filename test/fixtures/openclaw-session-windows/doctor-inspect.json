@@ -1,0 +1,44 @@
+{
+  "mode": "inspect",
+  "targets": [
+    {
+      "archivedTranscriptFiles": [],
+      "archivedUnreferencedJsonlFiles": [],
+      "importedEntries": 0,
+      "importedTranscriptEvents": 0,
+      "issues": [],
+      "legacyEntries": 0,
+      "referencedTranscriptFiles": 0,
+      "sqliteEntries": 0,
+      "unreferencedJsonlFiles": [],
+      "validatedEntries": 0,
+      "validatedTranscriptEvents": 0,
+      "agentId": "main",
+      "storePath": "~/.openclaw/agents/main/sessions/sessions.json",
+      "sqlitePath": "~/.openclaw/agents/main/agent/openclaw-agent.sqlite",
+      "archivedLegacyStoreFiles": [],
+      "dbStats": {
+        "dbSizeBytes": 671744,
+        "integrityCheck": "ok",
+        "largestSessions": [],
+        "totalTranscriptRowBytes": 0,
+        "walSizeBytes": 0
+      }
+    }
+  ],
+  "totals": {
+    "archivedLegacyStoreFiles": 0,
+    "archivedTranscriptFiles": 0,
+    "archivedUnreferencedJsonlFiles": 0,
+    "importedEntries": 0,
+    "importedTranscriptEvents": 0,
+    "issues": 0,
+    "legacyEntries": 0,
+    "reclaimedBytes": 0,
+    "sqliteEntries": 0,
+    "targets": 1,
+    "unreferencedJsonlFiles": 0,
+    "validatedEntries": 0,
+    "validatedTranscriptEvents": 0
+  }
+}

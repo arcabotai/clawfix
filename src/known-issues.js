@@ -14,6 +14,7 @@ import {
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
   openclawUpdateAvailable,
+  stuckSessionWindowCount,
   placeholderPathsForDiagnostic,
 } from '../cli/bin/security.js';
 
@@ -861,6 +862,26 @@ echo "Heartbeat configuration moved to ordinary automation jobs."
 echo "Run: openclaw doctor --fix"
 echo "Then inspect the migrated job: openclaw automations list --all"
 echo "Edit that job's model and schedule in Automations. Do not write agents.defaults.heartbeat."`,
+  },
+
+  {
+    id: 'stuck-invalid-session-window',
+    severity: 'medium',
+    title: 'Invalid session window is still marked running',
+    description: 'A session_windows row can stay status running when its session_nodes entry is empty and entry_valid is -1. sessions list omits it, and doctor --session-sqlite inspect can report zero issues. There is no documented delete for that row. This check only counts them.',
+    detect: (diag) => stuckSessionWindowCount(diag.openclaw?.stuckSessionWindows) > 0,
+    describe: (diag) => {
+      const count = stuckSessionWindowCount(diag.openclaw?.stuckSessionWindows);
+      const agents = Array.isArray(diag.openclaw?.stuckSessionWindows?.agents)
+        ? diag.openclaw.stuckSessionWindows.agents.filter(agent => typeof agent === 'string')
+        : [];
+      const where = agents.length > 0 ? ` in ${agents.join(', ')}` : '';
+      return `${count} session window(s)${where} are still marked running on an empty invalid session entry. sessions list and doctor --session-sqlite inspect do not report them.`;
+    },
+    fix: `# Advisory only. Do not DELETE rows from the agent SQLite database.
+echo "A session window is still marked running on an empty invalid session entry."
+echo "openclaw sessions list and openclaw doctor --session-sqlite inspect can both miss it."
+echo "There is no documented repair. Do not delete the row by hand from this script."`,
   },
 
   {
