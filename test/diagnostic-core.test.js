@@ -1455,7 +1455,7 @@ test('runDiagnostics native phase runs Doctor whenever a binary exists and runs 
   assert.equal(nativeStep.label, 'Running OpenClaw native health checks');
   assert.deepEqual(nativeStep.data, {
     doctor: {
-      available: true, checksRun: 7, checksSkipped: 2, findingCount: 1,
+      available: true, timedOut: false, checksRun: 7, checksSkipped: 2, findingCount: 1,
     },
     config: { available: true, valid: true },
     status: { available: true, reachable: true },
@@ -1481,7 +1481,7 @@ test('runDiagnostics native phase reports the fail-closed defaults and calls no 
   const nativeStep = findStep(events, 'native');
   assert.deepEqual(nativeStep.data, {
     doctor: {
-      available: false, checksRun: 0, checksSkipped: 0, findingCount: 0,
+      available: false, timedOut: false, checksRun: 0, checksSkipped: 0, findingCount: 0,
     },
     config: { available: false, valid: null },
     status: { available: false, reachable: null },
@@ -1514,13 +1514,82 @@ test('runDiagnostics native phase runs Doctor but gates config/status/security t
   assert.equal(calls.collectNativeSecurityAudit, 0);
   const nativeStep = findStep(events, 'native');
   assert.deepEqual(nativeStep.data.doctor, {
-    available: true, checksRun: 3, checksSkipped: 0, findingCount: 0,
+    available: true, timedOut: false, checksRun: 3, checksSkipped: 0, findingCount: 0,
   });
   assert.deepEqual(nativeStep.data.config, { available: false, valid: null });
   assert.deepEqual(nativeStep.data.status, { available: false, reachable: null });
   assert.deepEqual(nativeStep.data.security, {
     available: false, critical: 0, warning: 0, info: 0,
   });
+});
+
+test('a timed-out doctor stays a collector state and a real doctor finding is still reported', async () => {
+  const timedOut = fakeDeps({
+    nativeDoctor: {
+      available: false,
+      timedOut: true,
+      error: 'Process timed out after 30000ms',
+      checksRun: 0,
+      checksSkipped: 0,
+      findings: [{
+        checkId: 'core/doctor/gateway-config',
+        severity: 'error',
+        message: 'timeout',
+        path: 'gateway.mode',
+        fixHint: 'Set gateway.mode local',
+      }],
+    },
+  });
+  const timedEvents = [];
+  const timedResult = await createDiagnosticsCore(timedOut.deps).runDiagnostics({
+    revision: 'rev-doctor-timeout',
+    emit: (event) => timedEvents.push(event),
+  });
+  assert.equal(timedResult.issues.some((issue) => (
+    issue.text === 'timeout'
+    || issue.nativeCheckId === 'core/doctor/gateway-config'
+    || /timed out/i.test(issue.text || '')
+  )), false);
+  assert.deepEqual(timedResult.diagnostic.nativeDoctor, {
+    available: false,
+    timedOut: true,
+    state: 'timed out',
+    exitCode: null,
+    error: 'OpenClaw Doctor timed out',
+    checksRun: 0,
+    checksSkipped: 0,
+    findings: [],
+  });
+  const timedStep = findStep(timedEvents, 'native');
+  assert.equal(timedStep.data.doctor.timedOut, true);
+  assert.equal(timedStep.data.doctor.state, 'timed out');
+  assert.equal(timedStep.data.doctor.findingCount, 0);
+  assert.equal(JSON.stringify(timedResult.diagnostic).includes('gateway.mode'), false);
+
+  const completed = fakeDeps({
+    nativeDoctor: {
+      available: true,
+      timedOut: false,
+      exitCode: 1,
+      ok: false,
+      checksRun: 4,
+      checksSkipped: 1,
+      findings: [{
+        checkId: 'core/doctor/gateway-config',
+        severity: 'warning',
+        message: 'gateway.mode is unset',
+        path: 'gateway.mode',
+        fixHint: 'Set gateway.mode local',
+      }],
+    },
+  });
+  const completedResult = await createDiagnosticsCore(completed.deps).runDiagnostics({
+    revision: 'rev-doctor-finding',
+  });
+  const finding = completedResult.issues.find((issue) => issue.nativeCheckId === 'core/doctor/gateway-config');
+  assert.ok(finding);
+  assert.equal(finding.text, 'gateway.mode is unset');
+  assert.equal(finding.source, 'openclaw-doctor');
 });
 
 test('runDiagnostics ports/native step data are frozen, JSON-safe, and never leak raw finding messages or command error text', async () => {
@@ -2627,6 +2696,7 @@ test('success and OpenClaw-not-found outcomes each clear their one deadline time
   const successResult = await createDiagnosticsCore(success.deps).runDiagnostics({ revision: 'rev-timer-success' });
   assert.deepEqual(Object.keys(successResult), ['revision', 'diagnostic', 'issues', 'summary']);
   assert.equal(successTimers.handles.length, 1);
+  assert.equal(successTimers.handles[0].ms, 180_000);
   assert.equal(successTimers.clearCalls.length, 1);
 
   const absentTimers = manualTimers();
