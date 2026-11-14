@@ -843,6 +843,58 @@ function clean(value, maxLength) {
     .slice(0, maxLength);
 }
 
+function cleanErrorCode(value) {
+  const text = clean(value, 80);
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(text) ? text : '';
+}
+
+function cleanLine(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1000000 ? value : null;
+}
+
+function projectFinding(finding) {
+  if (!finding || typeof finding !== 'object' || Array.isArray(finding)) return null;
+  const severity = finding.severity === 'info' || finding.severity === 'warning' || finding.severity === 'error'
+    ? finding.severity
+    : 'warning';
+  const requirement = redact(clean(finding.requirement, 200));
+  const errorCode = cleanErrorCode(finding.errorCode);
+  const line = cleanLine(finding.line);
+  const projected = {
+    checkId: clean(finding.checkId, 200),
+    severity: severity,
+    message: redact(finding.message),
+    path: redact(finding.path) || null,
+    fixHint: redact(finding.fixHint || finding.remediation) || null,
+  };
+  if (requirement) projected.requirement = requirement;
+  if (errorCode) projected.errorCode = errorCode;
+  if (line !== null) projected.line = line;
+  return projected;
+}
+
+function isEnvelope(parsed) {
+  return parsed
+    && typeof parsed === 'object'
+    && !Array.isArray(parsed)
+    && typeof parsed.ok === 'boolean'
+    && Number.isSafeInteger(parsed.checksRun)
+    && parsed.checksRun >= 0
+    && Number.isSafeInteger(parsed.checksSkipped)
+    && parsed.checksSkipped >= 0
+    && Array.isArray(parsed.findings);
+}
+
+function isFailureEnvelope(parsed) {
+  if (!isEnvelope(parsed) || parsed.ok !== false || parsed.status !== 'blocked') return false;
+  if (parsed.checksRun !== 0 || parsed.checksSkipped !== 0 || parsed.findings.length !== 1) return false;
+  const finding = parsed.findings[0];
+  return finding
+    && typeof finding === 'object'
+    && finding.checkId === 'core/doctor/lint-inspection'
+    && finding.severity === 'error';
+}
+
 function redact(value) {
   let text = clean(value, 2000);
   text = text
@@ -882,24 +934,22 @@ if (result.error && result.error.code === 'ETIMEDOUT') {
     findings: [],
   };
 } else {
-  const failed = Boolean(result.error) || result.signal != null || (result.status !== 0 && result.status !== 1);
   let parsed = null;
-  if (!failed && typeof result.stdout === 'string' && result.stdout.trim()) {
+  if (typeof result.stdout === 'string' && result.stdout.trim()) {
     try {
       parsed = JSON.parse(result.stdout);
     } catch (error) {
       parsed = null;
     }
   }
-  const findings = parsed && Array.isArray(parsed.findings) ? parsed.findings : null;
-  const envelope = parsed
-    && typeof parsed.ok === 'boolean'
-    && Number.isSafeInteger(parsed.checksRun)
-    && parsed.checksRun >= 0
-    && Number.isSafeInteger(parsed.checksSkipped)
-    && parsed.checksSkipped >= 0
-    && findings;
-  if (!envelope) {
+  const failureEnvelope = isFailureEnvelope(parsed);
+  const failed = Boolean(result.error)
+    || result.signal != null
+    || !((result.status === 0 || result.status === 1) || (result.status === 2 && failureEnvelope));
+  const findings = isEnvelope(parsed)
+    ? parsed.findings.slice(0, 100).map(projectFinding)
+    : null;
+  if (failed || !findings || findings.some(function (finding) { return !finding; })) {
     projected = {
       available: false,
       timedOut: false,
@@ -914,20 +964,7 @@ if (result.error && result.error.code === 'ETIMEDOUT') {
       ok: parsed.ok === true,
       checksRun: parsed.checksRun,
       checksSkipped: parsed.checksSkipped,
-      findings: findings.slice(0, 100).map(function (finding) {
-        const severity = finding && (finding.severity === 'info' || finding.severity === 'warning' || finding.severity === 'error')
-          ? finding.severity
-          : 'warning';
-        const path = redact(finding && finding.path);
-        const fixHint = redact(finding && (finding.fixHint || finding.remediation));
-        return {
-          checkId: clean(finding && finding.checkId, 200),
-          severity: severity,
-          message: redact(finding && finding.message),
-          path: path || null,
-          fixHint: fixHint || null,
-        };
-      }),
+      findings: findings,
     };
   }
 }

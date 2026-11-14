@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -220,6 +220,83 @@ test('native collectors reject runtime exit code 2 even with plausible JSON', ()
   assert.equal(collectNativeSecurityAudit('/usr/local/bin/openclaw', failed({ summary: {}, findings: [] })).available, false);
 });
 
+test('native doctor keeps a real 2026.11.3 lint report, including requirement', async () => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    signal: null,
+    stdout,
+    stderr: '',
+  }));
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.exitCode, 1);
+  assert.equal(doctor.checksRun, 40);
+  assert.equal(doctor.checksSkipped, 30);
+  const heartbeat = doctor.findings.find(finding => finding.checkId === 'core/doctor/heartbeat-cadence-migration');
+  assert.equal(heartbeat.requirement, 'heartbeat-monitor-create');
+  assert.equal(heartbeat.path, '~/.openclaw/cron/jobs.json');
+  assert.equal(heartbeat.errorCode, undefined);
+  const runtime = doctor.findings.find(finding => finding.checkId === 'core/doctor/node-runtime');
+  assert.equal(runtime.requirement, 'recommended Node security patches');
+  assert.equal(Object.hasOwn(runtime, 'source'), false);
+});
+
+test('native doctor accepts the documented exit-2 lint-inspection envelope', async () => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 2,
+    signal: null,
+    stdout,
+    stderr: '',
+  }));
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.exitCode, 2);
+  assert.equal(doctor.checksRun, 0);
+  assert.equal(doctor.checksSkipped, 0);
+  assert.deepEqual(doctor.findings, [{
+    checkId: 'core/doctor/lint-inspection',
+    severity: 'error',
+    message: 'Invalid --severity-min value. Expected one of: info, warning, error.',
+    path: null,
+    fixHint: 'Resolve this inspection error, then rerun `openclaw doctor --lint`.',
+  }]);
+});
+
+test('native doctor keeps errorCode and line and drops a free-form error code', () => {
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    signal: null,
+    stdout: JSON.stringify({
+      ok: false,
+      checksRun: 1,
+      checksSkipped: 0,
+      findings: [{
+        checkId: 'core/doctor/state-schema',
+        severity: 'warning',
+        message: 'migration pending token=ghp_' + 'd'.repeat(36),
+        errorCode: 'OPENCLAW_STATE_LEASE_ABORTED',
+        line: 12,
+        requirement: 'state-schema-migration-pending',
+      }, {
+        checkId: 'core/doctor/node-runtime',
+        severity: 'warning',
+        message: 'runtime',
+        errorCode: 'not a code',
+        line: -1,
+      }],
+    }),
+    stderr: '',
+  }));
+  assert.equal(doctor.findings[0].errorCode, 'OPENCLAW_STATE_LEASE_ABORTED');
+  assert.equal(doctor.findings[0].line, 12);
+  assert.equal(doctor.findings[0].requirement, 'state-schema-migration-pending');
+  assert.doesNotMatch(doctor.findings[0].message, /ghp_/);
+  assert.equal(doctor.findings[1].errorCode, undefined);
+  assert.equal(doctor.findings[1].line, undefined);
+});
+
 test('listening-port collection returns schema evidence for invalid configured ports', () => {
   for (const port of ['18789', 'not-a-port', 0, 65536, null]) {
     let spawned = false;
@@ -396,6 +473,28 @@ printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkI
   assert.equal(printed.stdout.includes(token), false);
   assert.equal(printed.stdout.includes(home), false);
   assert.match(doctor.findings[0].path, /^~\/secret$/);
+});
+
+test('the hosted doctor collector keeps a blocked lint-inspection report', async (t) => {
+  const fixture = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url));
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-blocked-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const report = join(home, 'report.json');
+  const bin = join(home, 'openclaw');
+  await writeFile(report, fixture);
+  await writeFile(bin, `#!/bin/sh\ncat ${JSON.stringify(report)}\nexit 2\n`);
+  await chmod(bin, 0o755);
+  const printed = spawnSync('bash', ['-c', `${doctorSnippet()}\nprintf '%s' "$DOCTOR_JSON"`], {
+    env: { ...process.env, HOME: home, OPENCLAW_BIN: bin },
+    encoding: 'utf8',
+  });
+  assert.equal(printed.status, 0, printed.stderr);
+  const doctor = JSON.parse(printed.stdout);
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.checksRun, 0);
+  assert.equal(doctor.findings[0].checkId, 'core/doctor/lint-inspection');
+  assert.match(doctor.findings[0].message, /Invalid --severity-min/);
 });
 
 test('the hosted doctor collector reports a timeout instead of a partial finding', async (t) => {
