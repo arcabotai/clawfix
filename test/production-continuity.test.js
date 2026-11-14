@@ -47,6 +47,7 @@ function verifierFetch({
           headers: { 'content-type': 'application/json' },
         });
       case '/install':
+      case '/install.sh':
         return response(INSTALLER, {
           headers: {
             'content-type': 'text/plain',
@@ -54,6 +55,7 @@ function verifierFetch({
           },
         });
       case '/install/sha256':
+      case '/install.sh.sha256':
         return response(JSON.stringify({ sha256: installerHash }), {
           headers: { 'content-type': 'application/json' },
         });
@@ -81,7 +83,7 @@ test('free production verification checks root, health, stats, installer, and ex
   );
   assert.deepEqual(
     calls.map((call) => call.path).sort(),
-    ['/', '/api/health', '/api/stats', '/install', '/install/sha256'].sort(),
+    ['/', '/api/health', '/api/stats', '/install', '/install.sh', '/install/sha256', '/install.sh.sha256'].sort(),
   );
   assert.ok(calls.every((call) => call.options.redirect === 'error'));
 });

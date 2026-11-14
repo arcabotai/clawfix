@@ -7,16 +7,13 @@ One command. No signup. No account.
 ## Quick Start
 
 ```bash
-# Recommended: download, verify, then install with bash (no global npm)
-curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh
-cat install-clawfix.sh
-shasum -a 256 install-clawfix.sh
-curl --fail --show-error --silent https://clawfix.dev/install/sha256
-# Compare the printed hashes exactly before running the script.
-bash install-clawfix.sh
+# Node.js 22 or newer. No global npm.
+curl -fsSL https://clawfix.dev/install.sh | bash
 
 clawfix
 ```
+
+To inspect the installer first, download `https://clawfix.dev/install.sh`, compare `shasum -a 256` with `https://clawfix.dev/install.sh.sha256` (or `https://clawfix.dev/install/sha256`), then run it. `/install` serves the same script.
 
 Or with npx:
 

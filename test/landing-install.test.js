@@ -31,9 +31,11 @@ test('primary website command downloads and runs the installer', async () => {
 
   assert.equal(
     command,
-    'curl -fsSL https://clawfix.dev/install -o install.sh && bash install.sh',
+    'curl -fsSL https://clawfix.dev/install.sh | bash',
   );
-  assert.doesNotMatch(command, /curl[^\n]*\|\s*(?:ba)?sh/);
+  assert.match(landing, /install\.sh\.sha256/);
+  assert.match(landing, /install\/sha256/);
+  assert.match(landing, /No global npm/);
   assert.doesNotMatch(landing, /onclick="copyCommand/);
 });
 
