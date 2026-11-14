@@ -20,7 +20,7 @@ import {
   collectOpenClawUpdateStatus,
   collectOpenClawVersion,
 } from '../bin/native-diagnostics.js';
-import { projectLocalIssuesForUpload, redactOutbound } from '../bin/security.js';
+import { collectStuckSessionWindows, projectLocalIssuesForUpload, redactOutbound } from '../bin/security.js';
 import { countMarkdownFiles } from '../bin/workspace.js';
 import { openClawAdapter } from '../adapters/openclaw.js';
 import { createDiagnosticsCore } from '../core/diagnostics.js';
@@ -571,6 +571,7 @@ function createCliDiagnosticsCore() {
       setTimeout: (callback, ms) => setTimeout(callback, ms),
       clearTimeout: handle => clearTimeout(handle),
     },
+    collectStuckSessionWindows,
     nativeCollectors: {
       collectOpenClawVersion,
       collectListeningPort,

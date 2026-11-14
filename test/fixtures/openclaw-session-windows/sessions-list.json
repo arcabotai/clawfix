@@ -1,0 +1,9 @@
+{
+  "path": "~/.openclaw/agents/main/agent/openclaw-agent.sqlite",
+  "count": 0,
+  "totalCount": 0,
+  "limitApplied": 100,
+  "hasMore": false,
+  "activeMinutes": null,
+  "sessions": []
+}

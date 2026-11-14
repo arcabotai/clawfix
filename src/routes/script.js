@@ -995,6 +995,61 @@ if [ -z "\$DOCTOR_JSON" ]; then
   DOCTOR_JSON=null
 fi
 
+# A running session_windows row whose session_nodes entry is '{}' and
+# entry_valid is -1 is omitted by sessions list and by doctor session inspect.
+# openclaw src/config/sessions/session-canonical-row.ts:48-53.
+STUCK_SESSION_WINDOWS_JSON=null
+if [ -n "\$OPENCLAW_DIR" ] && [ -d "\$OPENCLAW_DIR/agents" ]; then
+  STUCK_SESSION_WINDOWS_JSON=\$(node - "\$OPENCLAW_DIR/agents" <<'NODE'
+const { readdirSync, lstatSync } = require('node:fs');
+const { join } = require('node:path');
+let DatabaseSync;
+try {
+  DatabaseSync = require('node:sqlite').DatabaseSync;
+} catch (error) {
+  process.stdout.write('null');
+  process.exit(0);
+}
+const agentsDir = process.argv[2];
+const sql = "SELECT COUNT(*) AS count FROM session_windows AS window INNER JOIN session_nodes AS node ON node.session_key = window.session_key WHERE node.entry_json = '{}' AND node.entry_valid = -1 AND node.current_session_id = window.session_id AND window.status = 'running' AND window.ended_at IS NULL";
+const agentId = /^[A-Za-z0-9_-]{1,64}$/;
+let count = 0;
+const agents = [];
+let scanned = 0;
+try {
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (scanned >= 32) break;
+    if (!entry.isDirectory() || !agentId.test(entry.name)) continue;
+    const databasePath = join(agentsDir, entry.name, 'agent', 'openclaw-agent.sqlite');
+    let info;
+    try { info = lstatSync(databasePath); } catch (error) { continue; }
+    if (!info.isFile()) continue;
+    scanned += 1;
+    try {
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        const row = database.prepare(sql).get();
+        const found = Number(row && row.count);
+        if (Number.isSafeInteger(found) && found > 0) {
+          count += found;
+          if (agents.length < 8) agents.push(entry.name);
+        }
+      } finally {
+        database.close();
+      }
+    } catch (error) {}
+  }
+  process.stdout.write(JSON.stringify({ count: count, agents: agents }));
+} catch (error) {
+  process.stdout.write('null');
+}
+NODE
+) || true
+fi
+if [ -z "\$STUCK_SESSION_WINDOWS_JSON" ]; then
+  STUCK_SESSION_WINDOWS_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -1023,7 +1078,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "gatewayPid": "\${GATEWAY_PID:-none}",
     "gatewayPort": "\${GATEWAY_PORT:-18789}",
     "processExists": \$PROCESS_EXISTS,
-    "portListening": \$PORT_LISTENING
+    "portListening": \$PORT_LISTENING,
+    "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON
   },
   "service": {
     "manager": "\$SERVICE_MANAGER",

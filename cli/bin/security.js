@@ -5,6 +5,77 @@ const REDACTED = '***REDACTED***';
 // Kept in sync with cli/core/diagnostics.js. The production image ships this
 // file and does not copy cli/core, so the server must not import the core copy.
 export const OPENCLAW_REDACTED_PLACEHOLDER = '__OPENCLAW_REDACTED__';
+// An empty invalid session node with a still-running window is invisible to
+// sessions list and to doctor --session-sqlite inspect.
+// openclaw src/config/sessions/session-canonical-row.ts:48-53 returns no entry
+// for entry_json '{}' and entry_valid -1 when the window id matches.
+// src/config/sessions/session-entry-read.worker.ts:534-543 keeps that row as a
+// placeholder instead of a deletable session. There is no documented repair.
+export const STUCK_SESSION_WINDOW_SQL = `SELECT COUNT(*) AS count
+  FROM session_windows AS window
+  INNER JOIN session_nodes AS node ON node.session_key = window.session_key
+  WHERE node.entry_json = '{}'
+    AND node.entry_valid = -1
+    AND node.current_session_id = window.session_id
+    AND window.status = 'running'
+    AND window.ended_at IS NULL`;
+
+const STUCK_SESSION_AGENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export function stuckSessionWindowCount(record) {
+  const count = record?.count;
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
+}
+
+export async function collectStuckSessionWindows(openclawDir) {
+  if (typeof openclawDir !== 'string' || openclawDir.length === 0) return null;
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await import('node:sqlite'));
+  } catch {
+    return null;
+  }
+  const { readdir, lstat } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  let entries;
+  try {
+    entries = await readdir(join(openclawDir, 'agents'), { withFileTypes: true });
+  } catch {
+    return { count: 0, agents: [] };
+  }
+  let count = 0;
+  const agents = [];
+  let scanned = 0;
+  for (const entry of entries) {
+    if (scanned >= 32) break;
+    if (!entry.isDirectory() || !STUCK_SESSION_AGENT_ID.test(entry.name)) continue;
+    const databasePath = join(openclawDir, 'agents', entry.name, 'agent', 'openclaw-agent.sqlite');
+    let info;
+    try {
+      info = await lstat(databasePath);
+    } catch {
+      continue;
+    }
+    if (!info.isFile()) continue;
+    scanned += 1;
+    try {
+      const database = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        const row = database.prepare(STUCK_SESSION_WINDOW_SQL).get();
+        const found = Number(row?.count ?? 0);
+        if (Number.isSafeInteger(found) && found > 0) {
+          count += found;
+          if (agents.length < 8) agents.push(entry.name);
+        }
+      } finally {
+        database.close();
+      }
+    } catch {
+      // A store this OpenClaw build cannot open is unknown, not evidence of a stuck window.
+    }
+  }
+  return { count, agents };
+}
 const PLACEHOLDER_PATH_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 const PLACEHOLDER_PATH_LIMIT = 32;
 const PLACEHOLDER_PATH_DEPTH = 24;
