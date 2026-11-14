@@ -1028,15 +1028,24 @@ echo ""
 ISSUES=0
 ISSUE_LIST=""
 
-# Check for common problems
+# Check for common problems.
+# A service-manager line marked "diagnostic only, not the check target" is not
+# the gateway verdict. "Connectivity check: ok" and "Listening:" mean it is up,
+# even when that discarded line says "Runtime: stopped".
+GATEWAY_PROBE=\$(printf '%s\n' "\$GATEWAY_STATUS" | grep -vi 'diagnostic only, not the check target' || true)
 GATEWAY_RUNNING=false
-if echo "\$GATEWAY_STATUS" | grep -qi "running.*pid\\|state active\\|listening"; then
+if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*ok|read check:[[:space:]]*ok|running.*pid|state active|^listening:'; then
   GATEWAY_RUNNING=true
 fi
-if echo "\$GATEWAY_STATUS" | grep -qi "not running\\|failed to start\\|stopped\\|inactive"; then
-  ISSUES=\$((ISSUES + 1))
-  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
-elif [ "\$GATEWAY_RUNNING" = "false" ] && ! echo "\$GATEWAY_STATUS" | grep -qi "warning"; then
+GATEWAY_DOWN=false
+if [ "\$GATEWAY_RUNNING" != "true" ]; then
+  if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*(failed|timed out)|read check:[[:space:]]*(failed|timed out)|not running|failed to start|stopped|inactive'; then
+    GATEWAY_DOWN=true
+  elif ! printf '%s\n' "\$GATEWAY_PROBE" | grep -qi 'warning'; then
+    GATEWAY_DOWN=true
+  fi
+fi
+if [ "\$GATEWAY_DOWN" = "true" ]; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
 fi

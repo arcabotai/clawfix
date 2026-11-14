@@ -291,6 +291,36 @@ test('port conflict requires evidence that the listener is a competing owner', (
   assert.equal(competingOwner.some(issue => issue.id === 'gateway-not-running'), false);
 });
 
+test('a connectivity check decides gateway liveness ahead of a diagnostic-only stopped line', () => {
+  const up = detectIssues({
+    openclaw: {
+      processExists: true,
+      portListening: true,
+      gatewayPid: '4242',
+      gatewayStatus: [
+        'Runtime: stopped (diagnostic only, not the check target)',
+        'Connectivity check: ok',
+        'Listening: 127.0.0.1:18789',
+      ].join('\n'),
+    },
+    ports: { gateway: { listening: true, process: 'openclaw', pid: 4242 } },
+  });
+  assert.equal(up.some(issue => issue.id === 'gateway-not-running'), false);
+
+  const down = detectIssues({
+    openclaw: {
+      processExists: false,
+      portListening: false,
+      gatewayStatus: [
+        'Runtime: stopped (diagnostic only, not the check target)',
+        'Connectivity check: failed',
+      ].join('\n'),
+    },
+    ports: { gateway: { listening: false, process: null, pid: null } },
+  });
+  assert.equal(down.some(issue => issue.id === 'gateway-not-running'), true);
+});
+
 test('an unowned or invalid listener does not hide gateway-not-running', () => {
   for (const gateway of [
     { listening: true, process: null, pid: null },
@@ -304,6 +334,34 @@ test('an unowned or invalid listener does not hide gateway-not-running', () => {
     assert.equal(issues.some(issue => issue.id === 'port-conflict'), false);
     assert.equal(issues.some(issue => issue.id === 'gateway-not-running'), true);
   }
+});
+
+test('the hosted script uses the connectivity check instead of a diagnostic-only stopped line', () => {
+  const start = DIAGNOSTIC_SCRIPT.indexOf('GATEWAY_PROBE=');
+  const end = DIAGNOSTIC_SCRIPT.indexOf('if echo "$GATEWAY_LOG"');
+  assert.ok(start > 0 && end > start);
+  const snippet = DIAGNOSTIC_SCRIPT.slice(start, end);
+  const run = (status) => {
+    const printed = spawnSync('bash', ['-c', `${snippet}\nprintf '%s' "$ISSUES"`], {
+      env: { ...process.env, GATEWAY_STATUS: status, ISSUES: '0', ISSUE_LIST: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(printed.status, 0, printed.stderr);
+    return printed.stdout;
+  };
+  const up = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: ok',
+    'Listening: 127.0.0.1:18789',
+  ].join('\n');
+  const down = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: failed',
+  ].join('\n');
+  assert.equal(run(up), '0');
+  assert.equal(run(down), '1');
+  assert.equal(run('runtime: ok\nrunning, pid 4242'), '0');
+  assert.equal(run('not running'), '1');
 });
 
 test('local issue matching is exact or explicit and preserves local classification', () => {
