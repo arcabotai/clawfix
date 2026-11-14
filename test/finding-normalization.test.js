@@ -55,6 +55,36 @@ test('an explicit native checkId maps to its reviewed repair', () => {
   assert.equal(finding.source, 'clawfix-port-probe');
 });
 
+test('a doctor gateway-auth alias uses the reviewed loopback repair', () => {
+  const [finding] = normalizeFindings({
+    localIssues: [{
+      severity: 'medium',
+      text: 'Gateway auth is off or missing a token.',
+      source: 'openclaw-doctor',
+      nativeCheckId: 'core/doctor/gateway-auth',
+      securityCheckId: 'gateway.loopback_no_auth',
+    }],
+    knownRepairIds: ['gateway-loopback-no-auth'],
+  });
+  assert.equal(finding.repairId, 'gateway-loopback-no-auth');
+  assert.equal(finding.repairable, true);
+});
+
+test('an unmapped security alias stays advisory', () => {
+  const [finding] = normalizeFindings({
+    localIssues: [{
+      severity: 'medium',
+      text: 'Gateway bound beyond loopback',
+      source: 'openclaw-doctor',
+      nativeCheckId: 'core/doctor/security',
+      securityCheckId: 'gateway.bind_no_auth',
+    }],
+    knownRepairIds: ['gateway-loopback-no-auth'],
+  });
+  assert.equal(finding.repairId, undefined);
+  assert.equal(finding.repairable, false);
+});
+
 test('an unmapped native checkId stays advisory', () => {
   const [finding] = normalizeFindings({
     localIssues: [{

@@ -916,6 +916,33 @@ function mem0PluginEntry(config) {
   return entry;
 }
 
+const DOCTOR_SECURITY_CHECK_ID = 'core/doctor/security';
+const GATEWAY_AUTH_CHECK_ID = 'core/doctor/gateway-auth';
+const LOOPBACK_NO_AUTH_CHECK_ID = 'gateway.loopback_no_auth';
+// Exact hint from openclaw doctor-gateway-auth.ts for a missing token.
+// SecretRef failures use a different hint and must not take this repair.
+const MISSING_GATEWAY_TOKEN_FIX_HINT = 'Run `openclaw doctor --fix --generate-gateway-token` to generate a token, then restart the Gateway.';
+const NATIVE_CHECK_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+
+function doctorSecurityAlias(finding) {
+  if (finding?.checkId !== DOCTOR_SECURITY_CHECK_ID) return '';
+  const requirement = typeof finding.requirement === 'string' ? finding.requirement : '';
+  return NATIVE_CHECK_ID.test(requirement) ? requirement : '';
+}
+
+function isMissingGatewayTokenFinding(finding) {
+  return finding?.checkId === GATEWAY_AUTH_CHECK_ID
+    && finding.severity === 'warning'
+    && finding.path === 'gateway.auth.token'
+    && !finding.requirement
+    && finding.fixHint === MISSING_GATEWAY_TOKEN_FIX_HINT;
+}
+
+function doctorRepairAlias(finding) {
+  if (isMissingGatewayTokenFinding(finding)) return LOOPBACK_NO_AUTH_CHECK_ID;
+  return doctorSecurityAlias(finding);
+}
+
 export function deriveIssues(collected) {
   const {
     config,
@@ -1202,18 +1229,27 @@ export function deriveIssues(collected) {
     // Match on the detail too, not just the headline. Findings that carry an upstream message as
     // their detail (config/schema-invalid holds the validator's text) would otherwise be
     // reported twice — once with an actionable title, once as the raw parser output.
+    // core/doctor/security stores the original audit id in requirement, and the
+    // missing-token gateway-auth shape is the same repair as gateway.loopback_no_auth.
+    const alias = doctorRepairAlias(finding);
     const message = String(finding.message || '').toLowerCase();
     const duplicate = issues.some((issue) => (
       issue.nativeCheckId === finding.checkId
+      || (alias && (issue.nativeCheckId === alias || issue.securityCheckId === alias))
       || String(issue.text || '').toLowerCase() === message
       || String(issue.description || '').toLowerCase() === message
     ));
     if (duplicate) continue;
+    const requirement = typeof finding.requirement === 'string' && finding.requirement
+      ? finding.requirement
+      : '';
     issues.push({
       severity: finding.severity === 'error' ? 'high' : 'medium',
       text: finding.message,
       source: 'openclaw-doctor',
       nativeCheckId: finding.checkId,
+      ...(alias ? { securityCheckId: alias } : {}),
+      ...(requirement ? { requirement } : {}),
       path: finding.path,
       fixHint: finding.fixHint,
     });

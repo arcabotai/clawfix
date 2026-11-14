@@ -533,6 +533,36 @@ printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkI
   assert.match(doctor.findings[0].path, /^~\/secret$/);
 });
 
+test('native and hosted doctor keep requirement from a real 2026.11.3 lint report', async (t) => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1, signal: null, stdout, stderr: '',
+  }));
+  const heartbeat = doctor.findings.find(finding => finding.checkId === 'core/doctor/heartbeat-cadence-migration');
+  assert.equal(heartbeat.requirement, 'heartbeat-monitor-create');
+  const auth = doctor.findings.find(finding => finding.checkId === 'core/doctor/gateway-auth');
+  assert.equal(auth.fixHint, 'Run `openclaw doctor --fix --generate-gateway-token` to generate a token, then restart the Gateway.');
+  assert.equal(auth.requirement, undefined);
+
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-requirement-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, 'openclaw');
+  const token = `ghp_${'e'.repeat(36)}`;
+  await writeFile(bin, `#!/bin/sh
+printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkId":"core/doctor/security","severity":"warning","message":"note","requirement":"token=${token}","fixHint":"rotate"}]}'
+`);
+  await chmod(bin, 0o755);
+  const printed = spawnSync('bash', ['-c', `${doctorSnippet()}\nprintf '%s' "$DOCTOR_JSON"`], {
+    env: { ...process.env, HOME: home, OPENCLAW_BIN: bin },
+    encoding: 'utf8',
+  });
+  assert.equal(printed.status, 0, printed.stderr);
+  const hosted = JSON.parse(printed.stdout);
+  assert.equal(hosted.findings[0].checkId, 'core/doctor/security');
+  assert.match(hosted.findings[0].requirement, /token=/);
+  assert.equal(printed.stdout.includes(token), false);
+});
+
 test('the hosted doctor collector keeps a blocked lint-inspection report', async (t) => {
   const fixture = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url));
   const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-blocked-'));

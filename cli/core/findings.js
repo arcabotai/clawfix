@@ -48,6 +48,9 @@ function resolveLocalRepairId(issue) {
   if (typeof issue.nativeCheckId === 'string' && NATIVE_CHECK_ID_REPAIR_MAP.has(issue.nativeCheckId)) {
     return NATIVE_CHECK_ID_REPAIR_MAP.get(issue.nativeCheckId);
   }
+  if (typeof issue.securityCheckId === 'string' && NATIVE_CHECK_ID_REPAIR_MAP.has(issue.securityCheckId)) {
+    return NATIVE_CHECK_ID_REPAIR_MAP.get(issue.securityCheckId);
+  }
   if (typeof issue.text === 'string' && LOCAL_ISSUE_TEXT_REPAIR_MAP.has(issue.text)) {
     return LOCAL_ISSUE_TEXT_REPAIR_MAP.get(issue.text);
   }
@@ -65,6 +68,12 @@ function buildEvidence(issue) {
   if (typeof issue.fixHint === 'string' && issue.fixHint) evidence.push({ label: 'fixHint', detail: issue.fixHint });
   if (typeof issue.nativeCheckId === 'string' && issue.nativeCheckId) {
     evidence.push({ label: 'nativeCheckId', detail: issue.nativeCheckId });
+  }
+  if (typeof issue.securityCheckId === 'string' && issue.securityCheckId) {
+    evidence.push({ label: 'securityCheckId', detail: issue.securityCheckId });
+  }
+  if (typeof issue.requirement === 'string' && issue.requirement) {
+    evidence.push({ label: 'requirement', detail: issue.requirement });
   }
   return Object.freeze(evidence.map((entry) => Object.freeze(entry)));
 }

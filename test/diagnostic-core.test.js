@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -12,7 +13,9 @@ import {
   scanWarning,
   SCAN_PHASES,
 } from '../cli/core/events.js';
+import { collectNativeDoctor } from '../cli/bin/native-diagnostics.js';
 import { redactOutbound } from '../cli/bin/security.js';
+import { normalizeFindings } from '../cli/core/findings.js';
 import {
   createDiagnosticsCore,
   deriveIssues,
@@ -3061,4 +3064,123 @@ test('runDiagnostics uploads only the two OpenClaw versions for a newer config w
   assert.equal(local.description.includes(migrationMarker), false);
   assert.equal(local.description.includes(providerSecret), false);
   assert.equal(local.description.includes('meta.migrations'), false);
+});
+
+const MISSING_GATEWAY_TOKEN = {
+  checkId: 'core/doctor/gateway-auth',
+  severity: 'warning',
+  message: 'Gateway auth is off or missing a token.',
+  path: 'gateway.auth.token',
+  fixHint: 'Run `openclaw doctor --fix --generate-gateway-token` to generate a token, then restart the Gateway.',
+};
+
+test('a captured doctor gateway-auth finding aliases the loopback repair when the audit did not', async () => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1, signal: null, stdout, stderr: '',
+  }));
+  const issues = deriveIssues(fakeCollected({ nativeDoctor: doctor }));
+  const auth = issues.find(issue => issue.nativeCheckId === 'core/doctor/gateway-auth');
+  assert.equal(auth.securityCheckId, 'gateway.loopback_no_auth');
+  assert.equal(issues.filter(issue => issue.securityCheckId === 'gateway.loopback_no_auth').length, 1);
+  const [normalized] = normalizeFindings({
+    localIssues: [auth],
+    knownRepairIds: ['gateway-loopback-no-auth'],
+  });
+  assert.equal(normalized.repairId, 'gateway-loopback-no-auth');
+  assert.equal(normalized.repairable, true);
+  const heartbeat = issues.find(issue => issue.nativeCheckId === 'core/doctor/heartbeat-cadence-migration');
+  assert.equal(heartbeat.requirement, 'heartbeat-monitor-create');
+  assert.equal(heartbeat.securityCheckId, undefined);
+});
+
+test('doctor gateway-auth is omitted when security audit already reported loopback_no_auth', () => {
+  const issues = deriveIssues(fakeCollected({
+    nativeSecurity: {
+      available: true,
+      findings: [{
+        checkId: 'gateway.loopback_no_auth',
+        severity: 'critical',
+        title: 'Gateway auth missing on loopback',
+        message: 'gateway.bind is loopback but no gateway auth secret is configured.',
+        source: 'openclaw-security',
+        path: null,
+        fixHint: 'Set gateway.auth.',
+      }],
+    },
+    nativeDoctor: { available: true, findings: [MISSING_GATEWAY_TOKEN] },
+  }));
+  assert.equal(issues.some(issue => issue.nativeCheckId === 'core/doctor/gateway-auth'), false);
+  assert.equal(issues.filter(issue => issue.nativeCheckId === 'gateway.loopback_no_auth').length, 1);
+});
+
+test('a SecretRef gateway-auth finding is not treated as the loopback token repair', () => {
+  const issues = deriveIssues(fakeCollected({
+    nativeSecurity: {
+      available: true,
+      findings: [{
+        checkId: 'gateway.loopback_no_auth',
+        severity: 'critical',
+        title: 'Gateway auth missing on loopback',
+        message: 'no auth secret',
+        source: 'openclaw-security',
+      }],
+    },
+    nativeDoctor: {
+      available: true,
+      findings: [{
+        checkId: 'core/doctor/gateway-auth',
+        severity: 'warning',
+        message: 'Gateway token SecretRef could not be resolved: missing.',
+        path: 'gateway.auth.token',
+        requirement: 'SECRET_REF_REDACTED_VALUE',
+        fixHint: 'Run `openclaw doctor --fix` to regenerate secret store entry "gateway-token", then restart the Gateway and reconnect or re-pair devices with the new token.',
+      }],
+    },
+  }));
+  const secret = issues.find(issue => issue.message === undefined && issue.text.startsWith('Gateway token SecretRef'));
+  assert.ok(secret);
+  assert.equal(secret.nativeCheckId, 'core/doctor/gateway-auth');
+  assert.equal(secret.securityCheckId, undefined);
+  assert.equal(secret.requirement, 'SECRET_REF_REDACTED_VALUE');
+});
+
+test('doctor security findings dedupe by requirement and do not invent a repair', () => {
+  const issues = deriveIssues(fakeCollected({
+    nativeSecurity: {
+      available: true,
+      findings: [{
+        checkId: 'gateway.bind_no_auth',
+        severity: 'critical',
+        title: 'Gateway binds beyond loopback without auth',
+        message: 'gateway.bind is lan',
+        source: 'openclaw-security',
+      }],
+    },
+    nativeDoctor: {
+      available: true,
+      findings: [{
+        checkId: 'core/doctor/security',
+        severity: 'error',
+        message: 'CRITICAL: Gateway bound to "lan" without authentication.',
+        requirement: 'gateway.bind_no_auth',
+        fixHint: 'Set gateway.bind loopback.',
+      }, {
+        checkId: 'core/doctor/security',
+        severity: 'warning',
+        message: 'Approvals forwarding is disabled.',
+        requirement: 'doctor.approval_forwarding_disabled',
+      }],
+    },
+  }));
+  assert.equal(issues.filter(issue => issue.nativeCheckId === 'gateway.bind_no_auth').length, 1);
+  assert.equal(issues.some(issue => issue.requirement === 'gateway.bind_no_auth'), false);
+  const forwarding = issues.find(issue => issue.requirement === 'doctor.approval_forwarding_disabled');
+  assert.equal(forwarding.nativeCheckId, 'core/doctor/security');
+  assert.equal(forwarding.securityCheckId, 'doctor.approval_forwarding_disabled');
+  const [normalized] = normalizeFindings({
+    localIssues: [forwarding],
+    knownRepairIds: ['gateway-loopback-no-auth'],
+  });
+  assert.equal(normalized.repairable, false);
 });
