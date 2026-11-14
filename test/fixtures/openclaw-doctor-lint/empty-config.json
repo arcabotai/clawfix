@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "checksRun": 40,
+  "checksSkipped": 30,
+  "findings": [
+    {
+      "checkId": "core/doctor/gateway-auth",
+      "severity": "warning",
+      "message": "Gateway auth is off or missing a token.",
+      "path": "gateway.auth.token",
+      "fixHint": "Run `openclaw doctor --fix --generate-gateway-token` to generate a token, then restart the Gateway."
+    },
+    {
+      "checkId": "core/doctor/gateway-config",
+      "severity": "warning",
+      "message": "gateway.mode is unset; gateway start will be blocked.",
+      "path": "gateway.mode",
+      "fixHint": "Run `openclaw configure` and set Gateway mode (local/remote), or `openclaw config set gateway.mode local`."
+    },
+    {
+      "checkId": "core/doctor/heartbeat-cadence-migration",
+      "severity": "warning",
+      "message": "Create heartbeat monitor for agent \"main\" at 30m.",
+      "path": "~/.openclaw/cron/jobs.json",
+      "requirement": "heartbeat-monitor-create",
+      "fixHint": "Run openclaw doctor --fix to materialize heartbeat cadence in cron."
+    },
+    {
+      "checkId": "core/doctor/node-runtime",
+      "severity": "warning",
+      "message": "SECURITY WARNING: Node.js 24.16.0 is below the recommended security patch level. Upgrade to Node 24.22.1+ on the 24.x line or Node 26.12.1+ to reject the public keys compromised in the October 2026 eMudhra incident.",
+      "source": "cli",
+      "requirement": "recommended Node security patches",
+      "fixHint": "Upgrade the Node.js runtime to the recommended security patch level. Compatible older Node remains usable."
+    }
+  ]
+}

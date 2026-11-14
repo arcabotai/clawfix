@@ -220,15 +220,19 @@ export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
       || !Array.isArray(parsed.findings)) {
       throw new TypeError('invalid Doctor envelope');
     }
-    const findings = parsed.findings.slice(0, 100).map(finding => ({
-      checkId: cleanText(finding.checkId, 200),
-      severity: ['info', 'warning', 'error'].includes(finding.severity)
-        ? finding.severity
-        : 'warning',
-      message: redactDiagnosticText(cleanText(finding.message, 2000)),
-      path: cleanPath(finding.path) || null,
-      fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
-    }));
+    const findings = parsed.findings.slice(0, 100).map(finding => {
+      const requirement = cleanPath(cleanText(finding.requirement, 200));
+      return {
+        checkId: cleanText(finding.checkId, 200),
+        severity: ['info', 'warning', 'error'].includes(finding.severity)
+          ? finding.severity
+          : 'warning',
+        message: redactDiagnosticText(cleanText(finding.message, 2000)),
+        path: cleanPath(finding.path) || null,
+        fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
+        ...(requirement ? { requirement } : {}),
+      };
+    });
 
     return {
       available: true,

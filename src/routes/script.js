@@ -920,13 +920,16 @@ if (result.error && result.error.code === 'ETIMEDOUT') {
           : 'warning';
         const path = redact(finding && finding.path);
         const fixHint = redact(finding && (finding.fixHint || finding.remediation));
-        return {
+        const requirement = redact(clean(finding && finding.requirement, 200));
+        const projected = {
           checkId: clean(finding && finding.checkId, 200),
           severity: severity,
           message: redact(finding && finding.message),
           path: path || null,
           fixHint: fixHint || null,
         };
+        if (requirement) projected.requirement = requirement;
+        return projected;
       }),
     };
   }
