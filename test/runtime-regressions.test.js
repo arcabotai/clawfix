@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  DOCTOR_LINT_TIMEOUT_MS,
   collectListeningPort,
   collectNativeConfigValidation,
   collectNativeDoctor,
@@ -10,6 +15,7 @@ import {
   collectNativeStatus,
 } from '../cli/bin/native-diagnostics.js';
 import { detectIssues, matchLocalKnownIssues } from '../src/known-issues.js';
+import { DIAGNOSTIC_SCRIPT } from '../src/routes/script.js';
 import { validateRepairScript } from '../src/repair-validator.js';
 import { createServerStarter } from '../src/server-start.js';
 
@@ -17,8 +23,10 @@ const successfulSpawn = (stdout = '') => ({ status: 0, signal: null, stdout, std
 
 test('native doctor runs the broad lint set and skips only workspace-heavy readiness checks', () => {
   let args;
-  const result = collectNativeDoctor('/usr/local/bin/openclaw', (_command, received) => {
+  let timeout;
+  const result = collectNativeDoctor('/usr/local/bin/openclaw', (_command, received, options) => {
     args = received;
+    timeout = options.timeout;
     if (received.includes('--include')) {
       return { status: 2, stdout: '', stderr: 'error: unknown option --include' };
     }
@@ -31,7 +39,10 @@ test('native doctor runs the broad lint set and skips only workspace-heavy readi
     '--skip',
     'core/doctor/skills-readiness',
   ]);
+  assert.equal(timeout, DOCTOR_LINT_TIMEOUT_MS);
+  assert.equal(timeout, 120_000);
   assert.equal(result.available, true);
+  assert.equal(result.timedOut, false);
 });
 
 test('native config validation parses the OpenClaw 2026.6.11 issues shape', () => {
@@ -114,7 +125,13 @@ test('native collectors reject partial JSON from timed-out subprocesses', () => 
   const timedOut = {
     status: null,
     signal: 'SIGTERM',
-    stdout: JSON.stringify({ valid: true, ok: true, findings: [] }),
+    stdout: JSON.stringify({
+      valid: true,
+      ok: false,
+      checksRun: 1,
+      checksSkipped: 0,
+      findings: [{ checkId: 'core/doctor/gateway-config', severity: 'error', message: 'timeout' }],
+    }),
     stderr: '',
     error: { code: 'ETIMEDOUT', message: 'timed out' },
   };
@@ -123,7 +140,46 @@ test('native collectors reject partial JSON from timed-out subprocesses', () => 
   assert.equal(config.available, false);
   assert.equal(config.valid, null);
   assert.equal(doctor.available, false);
-  assert.equal(doctor.findings.length, 0);
+  assert.equal(doctor.timedOut, true);
+  assert.equal(doctor.state, 'timed out');
+  assert.equal(doctor.error, 'OpenClaw Doctor timed out');
+  assert.deepEqual(doctor.findings, []);
+});
+
+test('a completed doctor lint finding is kept and a timeout with the same text is not', () => {
+  const envelope = {
+    ok: false,
+    checksRun: 1,
+    checksSkipped: 0,
+    findings: [{
+      checkId: 'core/doctor/gateway-config',
+      severity: 'warning',
+      message: 'gateway.mode is unset',
+      path: 'gateway.mode',
+      fixHint: 'Set gateway.mode local',
+    }],
+  };
+  const completed = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    signal: null,
+    stdout: JSON.stringify(envelope),
+    stderr: '',
+  }));
+  assert.equal(completed.available, true);
+  assert.equal(completed.timedOut, false);
+  assert.equal(completed.findings[0].message, 'gateway.mode is unset');
+  assert.equal(completed.findings[0].checkId, 'core/doctor/gateway-config');
+
+  const killed = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: null,
+    signal: 'SIGTERM',
+    stdout: JSON.stringify(envelope),
+    stderr: 'timeout',
+    error: { code: 'ETIMEDOUT', message: 'timeout' },
+  }));
+  assert.equal(killed.state, 'timed out');
+  assert.deepEqual(killed.findings, []);
+  assert.equal(JSON.stringify(killed).includes('gateway.mode is unset'), false);
 });
 
 test('native collectors reject valid JSON with the wrong top-level contract', () => {
@@ -300,4 +356,76 @@ test('server startup consumes runtime bind errors from the server error event', 
 
   await assert.rejects(startServer(), error => error === bindError);
   assert.equal(initialized, false);
+});
+
+function doctorSnippet() {
+  const start = DIAGNOSTIC_SCRIPT.indexOf('DOCTOR_JSON=null');
+  const end = DIAGNOSTIC_SCRIPT.indexOf('# --- Build Diagnostic Payload ---');
+  assert.ok(start > 0 && end > start);
+  return DIAGNOSTIC_SCRIPT.slice(start, end);
+}
+
+test('the hosted doctor collector matches the CLI lint budget and keeps a real finding', async (t) => {
+  const snippet = doctorSnippet();
+  assert.match(snippet, /const DOCTOR_TIMEOUT_MS = 120000;/);
+  assert.match(snippet, /timeout: DOCTOR_TIMEOUT_MS/);
+  assert.match(snippet, /'doctor',\n {2}'--lint',\n {2}'--json'/);
+  assert.match(snippet, /core\/doctor\/skills-readiness/);
+  assert.match(snippet, /state: 'timed out'/);
+  assert.equal(snippet.includes('cli/core/'), false);
+
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, 'openclaw');
+  const token = `ghp_${'c'.repeat(36)}`;
+  await writeFile(bin, `#!/bin/sh
+printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkId":"core/doctor/gateway-config","severity":"warning","message":"gateway.mode is unset token=${token}","path":"'"$HOME"'/secret","fixHint":"set it"}]}'
+`);
+  await chmod(bin, 0o755);
+  const printed = spawnSync('bash', ['-c', `${snippet}\nprintf '%s' "$DOCTOR_JSON"`], {
+    env: { ...process.env, HOME: home, OPENCLAW_BIN: bin },
+    encoding: 'utf8',
+  });
+  assert.equal(printed.status, 0, printed.stderr);
+  const doctor = JSON.parse(printed.stdout);
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.timedOut, false);
+  assert.equal(doctor.findings.length, 1);
+  assert.equal(doctor.findings[0].checkId, 'core/doctor/gateway-config');
+  assert.match(doctor.findings[0].message, /gateway\.mode is unset/);
+  assert.equal(printed.stdout.includes(token), false);
+  assert.equal(printed.stdout.includes(home), false);
+  assert.match(doctor.findings[0].path, /^~\/secret$/);
+});
+
+test('the hosted doctor collector reports a timeout instead of a partial finding', async (t) => {
+  const snippet = doctorSnippet().replace(
+    'const DOCTOR_TIMEOUT_MS = 120000;',
+    'const DOCTOR_TIMEOUT_MS = 200;',
+  );
+  assert.match(doctorSnippet(), /const DOCTOR_TIMEOUT_MS = 120000;/);
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-timeout-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, 'openclaw');
+  await writeFile(bin, `#!/bin/sh
+printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkId":"core/doctor/gateway-config","severity":"error","message":"timeout"}]}'
+sleep 30
+`);
+  await chmod(bin, 0o755);
+  const printed = spawnSync('bash', ['-c', `${snippet}\nprintf '%s' "$DOCTOR_JSON"`], {
+    env: { ...process.env, HOME: home, OPENCLAW_BIN: bin },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  assert.equal(printed.status, 0, printed.stderr);
+  const doctor = JSON.parse(printed.stdout);
+  assert.deepEqual(doctor, {
+    available: false,
+    timedOut: true,
+    state: 'timed out',
+    checksRun: 0,
+    checksSkipped: 0,
+    findings: [],
+  });
+  assert.equal(printed.stdout.includes('gateway-config'), false);
 });

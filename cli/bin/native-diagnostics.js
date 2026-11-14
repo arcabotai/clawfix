@@ -5,6 +5,10 @@ import { projectOpenClawUpdateStatus, redactText } from './security.js';
 const VERSION_STDOUT_BYTES = 1_200;
 const VERSION_STDERR_BYTES = 4_000;
 const DOCTOR_STDOUT_BYTES = 1_000_000;
+// OpenClaw bounds hosted doctor diagnosis at 120 seconds
+// (src/commands/doctor-process.ts, timeoutMs). Lint is read-only. A kill at
+// this budget is a collector state, not an OpenClaw finding.
+export const DOCTOR_LINT_TIMEOUT_MS = 120_000;
 const JSON_STDOUT_BYTES = 2_000_000;
 const JSON_STDERR_BYTES = 8_000;
 const PORT_STDOUT_BYTES = 80_000;
@@ -152,6 +156,18 @@ export function collectOpenClawVersion(openclawBin, runSync = defaultRunSync) {
   };
 }
 
+function doctorUnavailable(result, error) {
+  return {
+    available: false,
+    timedOut: false,
+    exitCode: result.status,
+    error,
+    checksRun: 0,
+    checksSkipped: 0,
+    findings: [],
+  };
+}
+
 export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
   const result = normalizeProcessResult(runSync(openclawBin, [
     'doctor',
@@ -162,35 +178,35 @@ export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
     '--no-workspace-suggestions',
   ], {
     encoding: 'utf8',
-    timeout: 30_000,
+    timeout: DOCTOR_LINT_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
     maxStdoutBytes: DOCTOR_STDOUT_BYTES,
     maxStderrBytes: JSON_STDERR_BYTES,
   }));
 
-  const stdout = String(result.stdout ?? '').trim();
-  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true }) || !hasAcceptedJsonExitCode(result)) {
+  // Partial stdout from a killed lint process is not a health finding.
+  if (result.timedOut) {
     return {
       available: false,
+      timedOut: true,
+      state: 'timed out',
       exitCode: result.status,
-      error: redactDiagnosticText(cleanText(
-        processFailureText(result, `Doctor exited with status ${result.status}`),
-        1000,
-      )),
+      error: 'OpenClaw Doctor timed out',
       checksRun: 0,
       checksSkipped: 0,
       findings: [],
     };
   }
+
+  const stdout = String(result.stdout ?? '').trim();
+  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true }) || !hasAcceptedJsonExitCode(result)) {
+    return doctorUnavailable(result, redactDiagnosticText(cleanText(
+      processFailureText(result, `Doctor exited with status ${result.status}`),
+      1000,
+    )));
+  }
   if (!stdout) {
-    return {
-      available: false,
-      exitCode: result.status,
-      error: redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 1000)),
-      checksRun: 0,
-      checksSkipped: 0,
-      findings: [],
-    };
+    return doctorUnavailable(result, redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 1000)));
   }
 
   try {
@@ -216,6 +232,7 @@ export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
 
     return {
       available: true,
+      timedOut: false,
       exitCode: result.status,
       ok: parsed.ok === true,
       checksRun: Number.isSafeInteger(parsed.checksRun) ? parsed.checksRun : 0,
@@ -223,14 +240,7 @@ export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
       findings,
     };
   } catch {
-    return {
-      available: false,
-      exitCode: result.status,
-      error: 'OpenClaw Doctor returned invalid JSON',
-      checksRun: 0,
-      checksSkipped: 0,
-      findings: [],
-    };
+    return doctorUnavailable(result, 'OpenClaw Doctor returned invalid JSON');
   }
 }
 

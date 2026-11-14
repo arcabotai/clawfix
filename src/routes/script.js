@@ -823,6 +823,122 @@ check_port "\${GATEWAY_PORT:-18789}" "gateway"
 check_port 18800 "browser CDP"
 check_port 18791 "browser control"
 
+# OpenClaw doctor --lint is read-only. Hosted diagnosis allows 120 seconds
+# (openclaw src/commands/doctor-process.ts). A timeout is a collector state,
+# not an OpenClaw finding, even if the killed process wrote partial JSON.
+DOCTOR_JSON=null
+if [ -n "\$OPENCLAW_BIN" ]; then
+  DOCTOR_JSON=\$(node - "\$OPENCLAW_BIN" <<'NODE'
+const { spawnSync } = require('node:child_process');
+const { homedir } = require('node:os');
+
+const bin = process.argv[2] || '';
+const DOCTOR_TIMEOUT_MS = 120000;
+const home = homedir();
+
+function clean(value, maxLength) {
+  return String(value || '')
+    .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g, '')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function redact(value) {
+  let text = clean(value, 2000);
+  text = text
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, '***REDACTED***')
+    .replace(/\\b((?:https?|postgres(?:ql)?|mysql|mongodb(?:\\+srv)?):\\/\\/)([^\\s/@:]+):([^\\s/@]+)@/gi, '\$1***REDACTED***:***REDACTED***@')
+    .replace(/\\b(?:sk(?:-or-v\\d+)?[-_]|xai[-_]|gh[pousr]_|npm_|m0[-_]|ntn_|xox[baprs]-)[A-Za-z0-9._-]{8,}\\b/gi, '***REDACTED***')
+    .replace(/\\bAIza[A-Za-z0-9_-]{20,}\\b/g, '***REDACTED***')
+    .replace(/((?:api[_-]?key|access[_-]?token|cookie|credential|jwt|password|secret|token)\\s*[=:]\\s*)(?:(['\"])[\\s\\S]*?\\2|[^\\s,;]+)/gi, '\$1***REDACTED***');
+  if (home && home !== '/') text = text.split(home).join('~');
+  return text;
+}
+
+const result = spawnSync(bin, [
+  'doctor',
+  '--lint',
+  '--json',
+  '--severity-min',
+  'warning',
+  '--skip',
+  'core/doctor/skills-readiness',
+  '--no-workspace-suggestions',
+], {
+  timeout: DOCTOR_TIMEOUT_MS,
+  encoding: 'utf8',
+  maxBuffer: 1000000,
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+let projected;
+if (result.error && result.error.code === 'ETIMEDOUT') {
+  projected = {
+    available: false,
+    timedOut: true,
+    state: 'timed out',
+    checksRun: 0,
+    checksSkipped: 0,
+    findings: [],
+  };
+} else {
+  const failed = Boolean(result.error) || result.signal != null || (result.status !== 0 && result.status !== 1);
+  let parsed = null;
+  if (!failed && typeof result.stdout === 'string' && result.stdout.trim()) {
+    try {
+      parsed = JSON.parse(result.stdout);
+    } catch (error) {
+      parsed = null;
+    }
+  }
+  const findings = parsed && Array.isArray(parsed.findings) ? parsed.findings : null;
+  const envelope = parsed
+    && typeof parsed.ok === 'boolean'
+    && Number.isSafeInteger(parsed.checksRun)
+    && parsed.checksRun >= 0
+    && Number.isSafeInteger(parsed.checksSkipped)
+    && parsed.checksSkipped >= 0
+    && findings;
+  if (!envelope) {
+    projected = {
+      available: false,
+      timedOut: false,
+      checksRun: 0,
+      checksSkipped: 0,
+      findings: [],
+    };
+  } else {
+    projected = {
+      available: true,
+      timedOut: false,
+      ok: parsed.ok === true,
+      checksRun: parsed.checksRun,
+      checksSkipped: parsed.checksSkipped,
+      findings: findings.slice(0, 100).map(function (finding) {
+        const severity = finding && (finding.severity === 'info' || finding.severity === 'warning' || finding.severity === 'error')
+          ? finding.severity
+          : 'warning';
+        const path = redact(finding && finding.path);
+        const fixHint = redact(finding && (finding.fixHint || finding.remediation));
+        return {
+          checkId: clean(finding && finding.checkId, 200),
+          severity: severity,
+          message: redact(finding && finding.message),
+          path: path || null,
+          fixHint: fixHint || null,
+        };
+      }),
+    };
+  }
+}
+process.stdout.write(JSON.stringify(projected));
+NODE
+) || true
+fi
+if [ -z "\$DOCTOR_JSON" ]; then
+  DOCTOR_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -846,6 +962,7 @@ DIAGNOSTIC=\$(cat <<EOF
     "binary": "\${OPENCLAW_BIN:-not found}",
     "configDir": "\${OPENCLAW_DIR:-not found}",
     "configExists": \$CONFIG_EXISTS,
+    "nativeDoctor": \$(printf '%s' "\$DOCTOR_JSON" | jq -c .),
     "gatewayStatus": \$(echo "\$GATEWAY_STATUS" | jq -Rs .),
     "gatewayPid": "\${GATEWAY_PID:-none}",
     "gatewayPort": "\${GATEWAY_PORT:-18789}",
@@ -935,6 +1052,11 @@ if [ "\$MEMORY_FILES" -eq 0 ]; then
   ISSUE_LIST="\${ISSUE_LIST}   \${YELLOW}⚠️  No memory files found\${NC}\\n"
 fi
 
+# Doctor timeout is a collector state. It is not counted as an OpenClaw finding.
+if [ "\$DOCTOR_JSON" != "null" ] && echo "\$DOCTOR_JSON" | jq -e '.timedOut == true' >/dev/null; then
+  echo -e "   \${YELLOW}⚠️  OpenClaw Doctor timed out\${NC}"
+fi
+
 # Zombie gateway detection
 if [ "\$PROCESS_EXISTS" = "true" ] && [ "\$PORT_LISTENING" = "false" ]; then
   ISSUES=\$((ISSUES + 1))
@@ -975,6 +1097,7 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • Recent logs (up to 30 matching gateway log lines and up to 50 recent stderr lines)"
   echo "  • Plugin status (enabled/disabled only)"
   echo "  • Gateway status"
+  echo "  • OpenClaw doctor --lint result (findings, or a timed-out state when the 120 second budget is exhausted; recognized secrets redacted)"
   echo "  • Source IP is processed transiently by ClawFix for abuse prevention"
   echo "  • Redacted diagnostic data is analyzed by ClawFix and OpenRouter"
   echo ""
@@ -984,6 +1107,7 @@ if [ \$ISSUES -gt 0 ]; then
   echo "  • Chat history or messages"
   echo "  • Real hostname (only an 8-character one-way hash is sent)"
   echo "  • Update-status paths, git metadata, registry errors, or run history"
+  echo "  • Partial doctor output from a timed-out lint process"
   echo ""
   echo -e "\${YELLOW}To inspect the full payload first:\${NC}"
   echo "  npx clawfix --dry-run"

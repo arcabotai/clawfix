@@ -1176,7 +1176,9 @@ export function deriveIssues(collected) {
     });
   }
 
-  for (const finding of nativeDoctor.findings) {
+  // A lint process killed for its time budget is not an OpenClaw finding, even
+  // when the killed process had already written a partial JSON envelope.
+  if (nativeDoctor?.timedOut !== true) for (const finding of nativeDoctor.findings) {
     // Match on the detail too, not just the headline. Findings that carry an upstream message as
     // their detail (config/schema-invalid holds the validator's text) would otherwise be
     // reported twice — once with an actionable title, once as the raw parser output.
@@ -1353,11 +1355,23 @@ export function createDiagnosticsCore({
     // Native collectors are sync spawnSync boundaries with intrinsic timeouts. Cancellation cannot
     // interrupt a collector already executing, but is observed before and after each call.
     cancellation.checkCancelled();
-    const nativeDoctor = openclawBin
+    let nativeDoctor = openclawBin
       ? nativeCollectors.collectNativeDoctor(openclawBin)
       : {
-        available: false, checksRun: 0, checksSkipped: 0, findings: [],
+        available: false, timedOut: false, checksRun: 0, checksSkipped: 0, findings: [],
       };
+    if (nativeDoctor?.timedOut === true) {
+      nativeDoctor = {
+        available: false,
+        timedOut: true,
+        state: 'timed out',
+        exitCode: Number.isInteger(nativeDoctor.exitCode) ? nativeDoctor.exitCode : null,
+        error: 'OpenClaw Doctor timed out',
+        checksRun: 0,
+        checksSkipped: 0,
+        findings: [],
+      };
+    }
     cancellation.checkCancelled();
 
     const canRunNativeEvidence = Boolean(openclawBin) && runtimeCompatible === true;
@@ -1547,7 +1561,10 @@ export function createDiagnosticsCore({
     return { config, redactedConfig };
   }
 
-  async function runDiagnostics({ revision, emit, signal, deadlineMs = 30_000 } = {}) {
+  // Doctor lint may use the full upstream 120s budget. The scan deadline has to
+  // outlive that spawn plus the shorter probes around it, or a doctor that is
+  // still working is discarded as a scan timeout.
+  async function runDiagnostics({ revision, emit, signal, deadlineMs = 180_000 } = {}) {
     validateRevision(revision);
     if (emit !== undefined && typeof emit !== 'function') {
       throw new TypeError('emit must be a function');
@@ -1707,10 +1724,14 @@ export function createDiagnosticsCore({
         label: 'Running OpenClaw native health checks',
         data: {
           doctor: {
-            available: nativeDoctor.available,
+            available: nativeDoctor.available === true,
+            timedOut: nativeDoctor.timedOut === true,
+            ...(nativeDoctor.timedOut === true ? { state: 'timed out' } : {}),
             checksRun: nativeDoctor.checksRun ?? 0,
             checksSkipped: nativeDoctor.checksSkipped ?? 0,
-            findingCount: Array.isArray(nativeDoctor.findings) ? nativeDoctor.findings.length : 0,
+            findingCount: nativeDoctor.timedOut === true || !Array.isArray(nativeDoctor.findings)
+              ? 0
+              : nativeDoctor.findings.length,
           },
           config: {
             available: nativeConfig.available,
@@ -1735,10 +1756,14 @@ export function createDiagnosticsCore({
 
       const commandText = [
         system.versionCommandText,
-        nativeDoctor?.error,
-        ...(Array.isArray(nativeDoctor?.findings)
-          ? nativeDoctor.findings.map(finding => finding?.message)
-          : []),
+        // Timeout text is a collector state. It must not be read as version or
+        // install evidence, and partial lint stdout must not become a finding.
+        ...(nativeDoctor?.timedOut === true ? [] : [
+          nativeDoctor?.error,
+          ...(Array.isArray(nativeDoctor?.findings)
+            ? nativeDoctor.findings.map(finding => finding?.message)
+            : []),
+        ]),
       ].filter(text => typeof text === 'string' && text).join('\n');
       let install = null;
       if (typeof fs.lstat === 'function' && typeof fs.readlink === 'function'
