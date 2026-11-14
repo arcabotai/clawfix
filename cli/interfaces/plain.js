@@ -77,6 +77,12 @@ async function readJson(p) {
   try { return JSON.parse(await readFile(p, 'utf8')); } catch { return null; }
 }
 
+async function readFileBuffer(filePath, maxBytes) {
+  const info = await lstat(filePath);
+  if (info.isSymbolicLink() || !info.isFile() || info.size > maxBytes) return null;
+  return readFile(filePath);
+}
+
 async function readBoundedFile(filePath) {
   const info = await lstat(filePath);
   const target = info.isSymbolicLink() ? await realpath(filePath) : filePath;
@@ -550,6 +556,7 @@ function createCliDiagnosticsCore() {
       stat,
       readdir,
       countMarkdownFiles,
+      readFileBuffer,
       lstat,
       readlink,
       realpath,

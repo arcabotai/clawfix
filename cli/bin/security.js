@@ -76,6 +76,22 @@ export async function collectStuckSessionWindows(openclawDir) {
   }
   return { count, agents };
 }
+
+// OpenClaw cron scratch refuses more than 256 KiB.
+// openclaw src/cron/scratch-contract.ts:2 and assertCronJobScratchContent at :93-99.
+// Doctor reads HEARTBEAT.md with that cap
+// (src/commands/doctor-heartbeat-scratch-migration.ts:137-146).
+// Template Add applies the same limit only while planning
+// (src/templates/portable-automation.ts:63-64), after validate has already passed.
+export const HEARTBEAT_SCRATCH_MAX_BYTES = 256 * 1024;
+
+export function classifyHeartbeatScratchFile({ bytes, utf8 } = {}) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return null;
+  if (bytes > HEARTBEAT_SCRATCH_MAX_BYTES) return 'too-large';
+  if (utf8 === false) return 'invalid-utf8';
+  return null;
+}
+
 const PLACEHOLDER_PATH_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 const PLACEHOLDER_PATH_LIMIT = 32;
 const PLACEHOLDER_PATH_DEPTH = 24;

@@ -5,6 +5,7 @@
  */
 
 import {
+  classifyHeartbeatScratchFile,
   configWrittenByNewerVersion,
   describeConfigWrittenByNewerVersion,
   describeIncompleteNpmInstall,
@@ -820,6 +821,29 @@ cat > "$WORKSPACE/AGENTS.md" << 'EOF'
 - trash > rm
 EOF
 echo "✅ Created basic AGENTS.md at $WORKSPACE/AGENTS.md"`,
+  },
+
+  {
+    id: 'heartbeat-file-blocks-scratch',
+    severity: 'high',
+    title: 'HEARTBEAT.md cannot become cron scratch',
+    description: 'OpenClaw cron scratch accepts at most 262144 bytes of UTF-8. A larger or non-UTF-8 HEARTBEAT.md still passes templates validate, then fails when the file is migrated or a template is added. Shrink the file below that limit, or save it as UTF-8. This check does not edit the file.',
+    detect: (diag) => classifyHeartbeatScratchFile(diag.workspace?.heartbeatFile) !== null,
+    describe: (diag) => {
+      const problem = classifyHeartbeatScratchFile(diag.workspace?.heartbeatFile);
+      if (problem === 'too-large') {
+        return `HEARTBEAT.md is ${diag.workspace.heartbeatFile.bytes} bytes. OpenClaw accepts at most 262144 bytes of cron scratch.`;
+      }
+      if (problem === 'invalid-utf8') {
+        return 'HEARTBEAT.md is not valid UTF-8, so OpenClaw cannot copy it into cron scratch.';
+      }
+      return 'HEARTBEAT.md cannot become cron scratch.';
+    },
+    fix: `# Advisory only. Do not delete or rewrite HEARTBEAT.md from this script.
+echo "HEARTBEAT.md is larger than 262144 bytes or is not valid UTF-8."
+echo "OpenClaw cron scratch rejects that file. templates validate can still pass."
+echo "Shrink it below 262144 bytes and save it as UTF-8, then run: openclaw doctor --fix"
+echo "This check does not edit the file."`,
   },
 
   {
