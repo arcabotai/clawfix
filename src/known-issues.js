@@ -528,13 +528,22 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
     description: 'The OpenClaw gateway process is not running. This could be due to a config error, port conflict, or crash.',
     detect: (diag) => {
       const status = diag.openclaw?.gatewayStatus || '';
-      // Check for explicit "running" indicators first — ignore config warnings
-      if (/running.*pid|state active|listening/i.test(status) ||
-          (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) return false;
+      const probe = String(status)
+        .split('\n')
+        .filter((line) => !/diagnostic only, not the check target/i.test(line))
+        .join('\n');
+      // Connectivity is the check. A diagnostic-only "Runtime: stopped" line is
+      // not a down gateway when the check itself succeeded.
+      if (/(?:connectivity|read) check:\s*ok/i.test(probe)
+        || /running.*pid|state active|^listening:/im.test(probe)
+        || (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) {
+        return false;
+      }
       if (hasCompetingGatewayPortOwner(diag)) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;
-      return (/not running|failed to start|stopped|inactive/i.test(status)) ||
+      if (/(?:connectivity|read) check:\s*(?:failed|timed out)/i.test(probe)) return true;
+      return (/not running|failed to start|\bstopped\b|\binactive\b/i.test(probe)) ||
              diag.openclaw?.processExists === false;
     },
     fix: `# Fix: Restart the gateway

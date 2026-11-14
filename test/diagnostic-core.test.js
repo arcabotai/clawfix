@@ -16,6 +16,7 @@ import { redactOutbound } from '../cli/bin/security.js';
 import {
   createDiagnosticsCore,
   deriveIssues,
+  readGatewayLiveness,
   DiagnosticsAbortError,
   DiagnosticsTimeoutError,
   OPENCLAW_REDACTED_PLACEHOLDER,
@@ -2034,6 +2035,34 @@ test('deriveIssues: an invalid or unowned listener must not be mistaken for a co
   assert.deepEqual(deriveIssues(unownedListener), [
     { severity: 'critical', text: 'Gateway is not running', kind: 'failure' },
   ]);
+});
+
+test('deriveIssues: a manual gateway with a diagnostic-only stopped line is up when the connectivity check is ok', () => {
+  const up = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: ok',
+    'Listening: 127.0.0.1:18789',
+  ].join('\n');
+  const down = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: failed',
+  ].join('\n');
+  const upIssues = deriveIssues(fakeCollected({
+    gateway: { gatewayStatus: up, gatewayPort: 18789, gatewayPid: '4242' },
+    portsGateway: {
+      valid: true, available: true, listening: true, process: 'openclaw', pid: 4242, collector: 'lsof',
+    },
+  }));
+  assert.equal(upIssues.some((issue) => issue.text === 'Gateway is not running'), false);
+  assert.equal(readGatewayLiveness(up), 'up');
+  assert.equal(readGatewayLiveness(down), 'down');
+  const downIssues = deriveIssues(fakeCollected({
+    gateway: { gatewayStatus: down, gatewayPort: 18789, gatewayPid: '' },
+    portsGateway: {
+      valid: true, available: true, listening: false, process: null, pid: null, collector: 'ss',
+    },
+  }));
+  assert.equal(downIssues.some((issue) => issue.text === 'Gateway is not running'), true);
 });
 
 test('deriveIssues: a matching gateway PID is not treated as a competing owner even while the port is listening', () => {

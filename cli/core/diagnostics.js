@@ -878,6 +878,25 @@ export async function inspectOpenClawInstall({
   }
 }
 
+// OpenClaw 2026.11.3 prints the service-manager line even when that line is not
+// the health check. A gateway started by hand looks like:
+//   Runtime: stopped (diagnostic only, not the check target)
+//   Connectivity check: ok
+//   Listening: 127.0.0.1:18789
+// The connectivity check is the verdict. A diagnostic-only "stopped" is not.
+export function readGatewayLiveness(status) {
+  const probe = String(status || '')
+    .split('\n')
+    .filter((line) => !/diagnostic only, not the check target/i.test(line))
+    .join('\n');
+  const connectivity = /(?:connectivity|read) check:\s*(ok|failed|timed out)/i.exec(probe);
+  if (connectivity) return connectivity[1].toLowerCase() === 'ok' ? 'up' : 'down';
+  if (/running.*pid|state active|^listening:/im.test(probe)) return 'up';
+  if (/not running|failed to start|\bstopped\b|\binactive\b/i.test(probe)) return 'down';
+  if (/warning/i.test(probe)) return 'unknown';
+  return 'down';
+}
+
 // deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
 // Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
 // reasons about (config, per-band collection results) is read from the `collected` argument, and
@@ -971,8 +990,9 @@ export function deriveIssues(collected) {
     .filter(Boolean).join('\n');
 
   const { gatewayStatus } = gateway;
-  const gatewayRunning = /running.*pid|state active|listening/i.test(gatewayStatus);
-  const gatewayFailed = /not running|failed to start|stopped|inactive/i.test(gatewayStatus);
+  const gatewayLiveness = readGatewayLiveness(gatewayStatus);
+  const gatewayRunning = gatewayLiveness === 'up';
+  const gatewayFailed = gatewayLiveness === 'down';
   const listenerPid = Number(ports.gateway?.pid);
   const expectedGatewayPid = Number.parseInt(String(gateway.gatewayPid || ''), 10);
   const competingPortOwner = ports.gateway?.listening === true
@@ -1405,7 +1425,7 @@ export function createDiagnosticsCore({
       gatewayStatus.split('\n').find((line) => /runtime:|listening|running|stopped|not running/i.test(line))
       || gatewayStatus.split('\n')[0]
     ).trim();
-    const running = /running.*pid|state active|listening/i.test(gatewayStatus);
+    const running = readGatewayLiveness(gatewayStatus) === 'up';
     return {
       gatewayStatus, gatewayPort, gatewayPid, statusLine, running,
     };
