@@ -1038,36 +1038,56 @@ if [ -n "\$OPENCLAW_DIR" ] && [ -d "\$OPENCLAW_DIR/agents" ]; then
   STUCK_SESSION_WINDOWS_JSON=\$(node - "\$OPENCLAW_DIR/agents" <<'NODE'
 const { readdirSync, lstatSync } = require('node:fs');
 const { join } = require('node:path');
+const agentsDir = process.argv[2];
+const sql = "SELECT COUNT(*) AS count FROM session_windows AS window INNER JOIN session_nodes AS node ON node.session_key = window.session_key WHERE node.entry_json = '{}' AND node.entry_valid = -1 AND node.current_session_id = window.session_id AND window.status = 'running' AND window.ended_at IS NULL";
+const agentId = /^[A-Za-z0-9_-]{1,64}$/;
+const databases = [];
+try {
+  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
+    if (databases.length >= 32) break;
+    if (!entry.isDirectory() || !agentId.test(entry.name)) continue;
+    const databasePath = join(agentsDir, entry.name, 'agent', 'openclaw-agent.sqlite');
+    let info;
+    try { info = lstatSync(databasePath); } catch (error) { continue; }
+    if (!info.isFile()) continue;
+    databases.push({ agentId: entry.name, databasePath: databasePath });
+  }
+} catch (error) {
+  process.stdout.write('null');
+  process.exit(0);
+}
+if (databases.length === 0) {
+  process.stdout.write(JSON.stringify({ count: 0, agents: [] }));
+  process.exit(0);
+}
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = function emitWarning(warning, type) {
+  const message = typeof warning === 'string' ? warning : warning && warning.message;
+  const name = typeof warning === 'string' ? type : warning && warning.name;
+  if (name === 'ExperimentalWarning' && String(message).indexOf('SQLite is an experimental feature') !== -1) return;
+  return originalEmitWarning.apply(process, arguments);
+};
 let DatabaseSync;
 try {
   DatabaseSync = require('node:sqlite').DatabaseSync;
 } catch (error) {
   process.stdout.write('null');
   process.exit(0);
+} finally {
+  process.emitWarning = originalEmitWarning;
 }
-const agentsDir = process.argv[2];
-const sql = "SELECT COUNT(*) AS count FROM session_windows AS window INNER JOIN session_nodes AS node ON node.session_key = window.session_key WHERE node.entry_json = '{}' AND node.entry_valid = -1 AND node.current_session_id = window.session_id AND window.status = 'running' AND window.ended_at IS NULL";
-const agentId = /^[A-Za-z0-9_-]{1,64}$/;
 let count = 0;
 const agents = [];
-let scanned = 0;
 try {
-  for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
-    if (scanned >= 32) break;
-    if (!entry.isDirectory() || !agentId.test(entry.name)) continue;
-    const databasePath = join(agentsDir, entry.name, 'agent', 'openclaw-agent.sqlite');
-    let info;
-    try { info = lstatSync(databasePath); } catch (error) { continue; }
-    if (!info.isFile()) continue;
-    scanned += 1;
+  for (const candidate of databases) {
     try {
-      const database = new DatabaseSync(databasePath, { readOnly: true });
+      const database = new DatabaseSync(candidate.databasePath, { readOnly: true });
       try {
         const row = database.prepare(sql).get();
         const found = Number(row && row.count);
         if (Number.isSafeInteger(found) && found > 0) {
           count += found;
-          if (agents.length < 8) agents.push(entry.name);
+          if (agents.length < 8) agents.push(candidate.agentId);
         }
       } finally {
         database.close();

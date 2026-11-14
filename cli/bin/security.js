@@ -27,27 +27,50 @@ export function stuckSessionWindowCount(record) {
   return Number.isSafeInteger(count) && count > 0 ? count : 0;
 }
 
-export async function collectStuckSessionWindows(openclawDir) {
-  if (typeof openclawDir !== 'string' || openclawDir.length === 0) return null;
-  let DatabaseSync;
+const STUCK_SESSION_DATABASE_LIMIT = 32;
+
+function isSqliteExperimentalWarning(warning, type) {
+  const message = typeof warning === 'string' ? warning : warning?.message;
+  const name = typeof warning === 'string' ? type : warning?.name;
+  return name === 'ExperimentalWarning'
+    && typeof message === 'string'
+    && message.includes('SQLite is an experimental feature');
+}
+
+// Node 22 prints this when node:sqlite loads. The filter covers only that
+// import, then the previous emitWarning is restored so other warnings still print.
+async function importNodeSqlite() {
+  const originalEmitWarning = process.emitWarning;
+  process.emitWarning = function emitWarning(warning, type, ...rest) {
+    if (isSqliteExperimentalWarning(warning, type)) return undefined;
+    return originalEmitWarning.call(this, warning, type, ...rest);
+  };
   try {
-    ({ DatabaseSync } = await import('node:sqlite'));
-  } catch {
-    return null;
+    return await import('node:sqlite');
+  } finally {
+    process.emitWarning = originalEmitWarning;
   }
+}
+
+let nodeSqlitePromise;
+
+function loadNodeSqlite() {
+  nodeSqlitePromise ??= importNodeSqlite();
+  return nodeSqlitePromise;
+}
+
+async function listAgentDatabasePaths(openclawDir) {
   const { readdir, lstat } = await import('node:fs/promises');
   const { join } = await import('node:path');
   let entries;
   try {
     entries = await readdir(join(openclawDir, 'agents'), { withFileTypes: true });
   } catch {
-    return { count: 0, agents: [] };
+    return [];
   }
-  let count = 0;
-  const agents = [];
-  let scanned = 0;
+  const databases = [];
   for (const entry of entries) {
-    if (scanned >= 32) break;
+    if (databases.length >= STUCK_SESSION_DATABASE_LIMIT) break;
     if (!entry.isDirectory() || !STUCK_SESSION_AGENT_ID.test(entry.name)) continue;
     const databasePath = join(openclawDir, 'agents', entry.name, 'agent', 'openclaw-agent.sqlite');
     let info;
@@ -57,7 +80,24 @@ export async function collectStuckSessionWindows(openclawDir) {
       continue;
     }
     if (!info.isFile()) continue;
-    scanned += 1;
+    databases.push({ agentId: entry.name, databasePath });
+  }
+  return databases;
+}
+
+export async function collectStuckSessionWindows(openclawDir) {
+  if (typeof openclawDir !== 'string' || openclawDir.length === 0) return null;
+  const databases = await listAgentDatabasePaths(openclawDir);
+  if (databases.length === 0) return { count: 0, agents: [] };
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = await loadNodeSqlite());
+  } catch {
+    return null;
+  }
+  let count = 0;
+  const agents = [];
+  for (const { agentId, databasePath } of databases) {
     try {
       const database = new DatabaseSync(databasePath, { readOnly: true });
       try {
@@ -65,7 +105,7 @@ export async function collectStuckSessionWindows(openclawDir) {
         const found = Number(row?.count ?? 0);
         if (Number.isSafeInteger(found) && found > 0) {
           count += found;
-          if (agents.length < 8) agents.push(entry.name);
+          if (agents.length < 8) agents.push(agentId);
         }
       } finally {
         database.close();

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -135,6 +135,73 @@ test('the hosted script uses the same stuck-window query', async (t) => {
     encoding: 'utf8',
   });
   assert.equal(printed.status, 0, printed.stderr);
+  assert.doesNotMatch(printed.stderr, /ExperimentalWarning/);
   assert.deepEqual(JSON.parse(printed.stdout), { count: 1, agents: ['main'] });
   assert.equal(printed.stdout.includes(STUCK_KEY), false);
+});
+
+test('CLI JSON mode stays quiet when Node 22 loads sqlite for an agent database', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'clawfix-cli-sqlite-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, 'home');
+  const bin = join(root, 'bin');
+  const workspace = join(home, 'workspace');
+  const agentDir = join(home, '.openclaw', 'agents', 'main', 'agent');
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(bin, { recursive: true });
+  await mkdir(workspace, { recursive: true });
+  createStore(join(agentDir, 'openclaw-agent.sqlite'), { stuck: true });
+  await writeFile(join(home, '.openclaw', 'openclaw.json'), `${JSON.stringify({
+    gateway: { port: 65431 },
+    agents: { defaults: { workspace } },
+  })}\n`);
+  await writeFile(join(workspace, 'SOUL.md'), '# Test soul\n');
+  const openclaw = join(bin, 'openclaw');
+  await writeFile(openclaw, `#!/bin/sh
+case "$*" in
+  "--version") echo '2026.7.1' ;;
+  "gateway status"*) echo 'Runtime: running (pid 4242)' ;;
+  "doctor "*) echo '{"ok":true,"checksRun":1,"checksSkipped":0,"findings":[]}' ;;
+  "config validate --json") echo '{"valid":true,"issues":[],"warnings":[]}' ;;
+  "status --json") echo '{"runtimeVersion":"2026.7.1","gateway":{"reachable":true}}' ;;
+  "security audit --json") echo '{"summary":{"critical":0,"warn":0,"info":0},"findings":[]}' ;;
+  *) exit 0 ;;
+esac
+`);
+  await chmod(openclaw, 0o755);
+  await writeFile(join(bin, 'which'), `#!/bin/sh
+if [ "$1" = "openclaw" ] && [ -n "$CLAWFIX_TEST_OPENCLAW" ] && [ -x "$CLAWFIX_TEST_OPENCLAW" ]; then
+  printf '%s\\n' "$CLAWFIX_TEST_OPENCLAW"
+  exit 0
+fi
+exit 1
+`);
+  await chmod(join(bin, 'which'), 0o755);
+  await writeFile(join(bin, 'npm'), '#!/bin/sh\nprintf \'%s\\n\' \'10.0.0\'\n');
+  await chmod(join(bin, 'npm'), 0o755);
+  for (const command of ['id', 'launchctl', 'lsof', 'pgrep', 'ps', 'ss', 'systemctl', 'tail']) {
+    await writeFile(join(bin, command), '#!/bin/sh\nexit 1\n');
+    await chmod(join(bin, command), 0o755);
+  }
+
+  const child = spawnSync(process.execPath, [
+    new URL('../cli/bin/clawfix.js', import.meta.url).pathname,
+    '--json',
+  ], {
+    env: {
+      HOME: home,
+      PATH: bin,
+      CLAWFIX_TEST_OPENCLAW: openclaw,
+      CLAWFIX_API: 'http://127.0.0.1:9',
+    },
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stderr.includes('ExperimentalWarning'), false);
+  const output = JSON.parse(child.stdout);
+  assert.equal(output.ok, true);
+  assert.equal(
+    output.issues.some(issue => issue.knownIssueId === 'stuck-invalid-session-window'),
+    true,
+  );
 });
