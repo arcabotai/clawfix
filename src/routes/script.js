@@ -640,8 +640,27 @@ if [ -n "\$OPENCLAW_BIN" ]; then
   GATEWAY_STATUS=\$("\$OPENCLAW_BIN" gateway status 2>&1 || echo "error")
 fi
 
-# Try to find gateway process
-GATEWAY_PID=\$(pgrep -f "openclaw.*gateway" 2>/dev/null | head -1 || echo "")
+# A gateway started by \`openclaw gateway run\` re-execs with argv \`openclaw\`, so
+# \`pgrep -f 'openclaw.*gateway'\` misses it and matches ClawFix's own
+# \`openclaw gateway status\` instead. Transient CLI verbs are not the server.
+# The listening port, checked below, remains the liveness verdict.
+GATEWAY_PID=""
+while IFS= read -r GATEWAY_PROCESS_LINE || [ -n "\$GATEWAY_PROCESS_LINE" ]; do
+  [ -n "\$GATEWAY_PROCESS_LINE" ] || continue
+  GATEWAY_CANDIDATE_PID=\${GATEWAY_PROCESS_LINE%% *}
+  GATEWAY_CANDIDATE_CMD=\${GATEWAY_PROCESS_LINE#* }
+  case "\$GATEWAY_CANDIDATE_PID" in
+    ''|*[!0-9]*) continue ;;
+  esac
+  if [ "\$GATEWAY_CANDIDATE_PID" = "\$\$" ]; then
+    continue
+  fi
+  if printf '%s\n' "\$GATEWAY_CANDIDATE_CMD" | grep -Eq '(^|[[:space:]])(gateway[[:space:]]+(status|restart|stop|logs|probe|health|diagnostics|stability|call|discover|install)|doctor|config)([[:space:]]|\$)|--version|(^|[[:space:]])(pgrep|grep|tail|less|cat)([[:space:]]|\$)|sh -c|bash -c|node .*clawfix'; then
+    continue
+  fi
+  GATEWAY_PID=\$GATEWAY_CANDIDATE_PID
+  break
+done < <(pgrep -af openclaw 2>/dev/null || true)
 
 # Try to detect port from config
 if [ -n "\$OPENCLAW_CONFIG" ]; then

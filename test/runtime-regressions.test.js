@@ -487,3 +487,51 @@ sleep 30
   });
   assert.equal(printed.stdout.includes('gateway-config'), false);
 });
+
+test('the hosted script keeps a bare openclaw server and skips its own probes', async (t) => {
+  const start = DIAGNOSTIC_SCRIPT.indexOf('# A gateway started by');
+  const end = DIAGNOSTIC_SCRIPT.indexOf('if lsof -i');
+  assert.ok(start > 0 && end > start);
+  const snippet = DIAGNOSTIC_SCRIPT.slice(start, end);
+  assert.equal(snippet.includes('pgrep -f "openclaw.*gateway"'), false);
+  assert.match(snippet, /pgrep -af openclaw/);
+
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-gateway-pid-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, 'pgrep');
+  const fixture = join(home, 'listing');
+  await writeFile(bin, `#!/bin/sh
+if [ "$1" = "-af" ] && [ "$2" = "openclaw" ]; then
+  if [ -n "\${CLAWFIX_SELF_PID:-}" ]; then
+    printf '%s openclaw\\n' "$CLAWFIX_SELF_PID"
+  fi
+  cat ${JSON.stringify(fixture)}
+fi
+`);
+  await chmod(bin, 0o755);
+
+  const run = async (listing, extraEnv = {}) => {
+    await writeFile(fixture, listing);
+    const printed = spawnSync('bash', ['-c', `export CLAWFIX_SELF_PID=$$\n${snippet}\nprintf '%s|%s' "$GATEWAY_PID" "$PROCESS_EXISTS"`], {
+      env: { ...process.env, PATH: `${home}:${process.env.PATH}`, ...extraEnv },
+      encoding: 'utf8',
+    });
+    assert.equal(printed.status, 0, printed.stderr);
+    return printed.stdout;
+  };
+
+  assert.equal(await run([
+    '111 /usr/local/bin/node /usr/local/bin/openclaw gateway status',
+    '112 /usr/local/bin/node /usr/local/bin/openclaw gateway restart',
+    '113 /usr/local/bin/node /usr/local/bin/openclaw doctor',
+    '114 openclaw',
+  ].join('\n') + '\n'), '114|true');
+  assert.equal(await run('500 /usr/bin/openclaw gateway run\n'), '500|true');
+  assert.equal(await run('114 openclaw\n', { CLAWFIX_SELF_PID: '1' }), '114|true');
+  assert.equal(await run([
+    '201 sh -c pgrep -af openclaw gateway',
+    '202 grep openclaw gateway',
+    '203 tail -f /tmp/openclaw/openclaw.log',
+  ].join('\n') + '\n'), '|false');
+  assert.equal(await run(''), '|false');
+});
