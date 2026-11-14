@@ -220,6 +220,83 @@ test('native collectors reject runtime exit code 2 even with plausible JSON', ()
   assert.equal(collectNativeSecurityAudit('/usr/local/bin/openclaw', failed({ summary: {}, findings: [] })).available, false);
 });
 
+test('native doctor keeps a real 2026.11.3 lint report, including requirement', async () => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    signal: null,
+    stdout,
+    stderr: '',
+  }));
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.exitCode, 1);
+  assert.equal(doctor.checksRun, 40);
+  assert.equal(doctor.checksSkipped, 30);
+  const heartbeat = doctor.findings.find(finding => finding.checkId === 'core/doctor/heartbeat-cadence-migration');
+  assert.equal(heartbeat.requirement, 'heartbeat-monitor-create');
+  assert.equal(heartbeat.path, '~/.openclaw/cron/jobs.json');
+  assert.equal(heartbeat.errorCode, undefined);
+  const runtime = doctor.findings.find(finding => finding.checkId === 'core/doctor/node-runtime');
+  assert.equal(runtime.requirement, 'recommended Node security patches');
+  assert.equal(Object.hasOwn(runtime, 'source'), false);
+});
+
+test('native doctor accepts the documented exit-2 lint-inspection envelope', async () => {
+  const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url), 'utf8');
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 2,
+    signal: null,
+    stdout,
+    stderr: '',
+  }));
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.exitCode, 2);
+  assert.equal(doctor.checksRun, 0);
+  assert.equal(doctor.checksSkipped, 0);
+  assert.deepEqual(doctor.findings, [{
+    checkId: 'core/doctor/lint-inspection',
+    severity: 'error',
+    message: 'Invalid --severity-min value. Expected one of: info, warning, error.',
+    path: null,
+    fixHint: 'Resolve this inspection error, then rerun `openclaw doctor --lint`.',
+  }]);
+});
+
+test('native doctor keeps errorCode and line and drops a free-form error code', () => {
+  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+    status: 1,
+    signal: null,
+    stdout: JSON.stringify({
+      ok: false,
+      checksRun: 1,
+      checksSkipped: 0,
+      findings: [{
+        checkId: 'core/doctor/state-schema',
+        severity: 'warning',
+        message: 'migration pending token=ghp_' + 'd'.repeat(36),
+        errorCode: 'OPENCLAW_STATE_LEASE_ABORTED',
+        line: 12,
+        requirement: 'state-schema-migration-pending',
+      }, {
+        checkId: 'core/doctor/node-runtime',
+        severity: 'warning',
+        message: 'runtime',
+        errorCode: 'not a code',
+        line: -1,
+      }],
+    }),
+    stderr: '',
+  }));
+  assert.equal(doctor.findings[0].errorCode, 'OPENCLAW_STATE_LEASE_ABORTED');
+  assert.equal(doctor.findings[0].line, 12);
+  assert.equal(doctor.findings[0].requirement, 'state-schema-migration-pending');
+  assert.doesNotMatch(doctor.findings[0].message, /ghp_/);
+  assert.equal(doctor.findings[1].errorCode, undefined);
+  assert.equal(doctor.findings[1].line, undefined);
+});
+
 test('listening-port collection returns schema evidence for invalid configured ports', () => {
   for (const port of ['18789', 'not-a-port', 0, 65536, null]) {
     let spawned = false;
@@ -291,6 +368,36 @@ test('port conflict requires evidence that the listener is a competing owner', (
   assert.equal(competingOwner.some(issue => issue.id === 'gateway-not-running'), false);
 });
 
+test('a connectivity check decides gateway liveness ahead of a diagnostic-only stopped line', () => {
+  const up = detectIssues({
+    openclaw: {
+      processExists: true,
+      portListening: true,
+      gatewayPid: '4242',
+      gatewayStatus: [
+        'Runtime: stopped (diagnostic only, not the check target)',
+        'Connectivity check: ok',
+        'Listening: 127.0.0.1:18789',
+      ].join('\n'),
+    },
+    ports: { gateway: { listening: true, process: 'openclaw', pid: 4242 } },
+  });
+  assert.equal(up.some(issue => issue.id === 'gateway-not-running'), false);
+
+  const down = detectIssues({
+    openclaw: {
+      processExists: false,
+      portListening: false,
+      gatewayStatus: [
+        'Runtime: stopped (diagnostic only, not the check target)',
+        'Connectivity check: failed',
+      ].join('\n'),
+    },
+    ports: { gateway: { listening: false, process: null, pid: null } },
+  });
+  assert.equal(down.some(issue => issue.id === 'gateway-not-running'), true);
+});
+
 test('an unowned or invalid listener does not hide gateway-not-running', () => {
   for (const gateway of [
     { listening: true, process: null, pid: null },
@@ -304,6 +411,34 @@ test('an unowned or invalid listener does not hide gateway-not-running', () => {
     assert.equal(issues.some(issue => issue.id === 'port-conflict'), false);
     assert.equal(issues.some(issue => issue.id === 'gateway-not-running'), true);
   }
+});
+
+test('the hosted script uses the connectivity check instead of a diagnostic-only stopped line', () => {
+  const start = DIAGNOSTIC_SCRIPT.indexOf('GATEWAY_PROBE=');
+  const end = DIAGNOSTIC_SCRIPT.indexOf('if echo "$GATEWAY_LOG"');
+  assert.ok(start > 0 && end > start);
+  const snippet = DIAGNOSTIC_SCRIPT.slice(start, end);
+  const run = (status) => {
+    const printed = spawnSync('bash', ['-c', `${snippet}\nprintf '%s' "$ISSUES"`], {
+      env: { ...process.env, GATEWAY_STATUS: status, ISSUES: '0', ISSUE_LIST: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(printed.status, 0, printed.stderr);
+    return printed.stdout;
+  };
+  const up = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: ok',
+    'Listening: 127.0.0.1:18789',
+  ].join('\n');
+  const down = [
+    'Runtime: stopped (diagnostic only, not the check target)',
+    'Connectivity check: failed',
+  ].join('\n');
+  assert.equal(run(up), '0');
+  assert.equal(run(down), '1');
+  assert.equal(run('runtime: ok\nrunning, pid 4242'), '0');
+  assert.equal(run('not running'), '1');
 });
 
 test('local issue matching is exact or explicit and preserves local classification', () => {
@@ -428,6 +563,28 @@ printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkI
   assert.equal(printed.stdout.includes(token), false);
 });
 
+test('the hosted doctor collector keeps a blocked lint-inspection report', async (t) => {
+  const fixture = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url));
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-doctor-blocked-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const report = join(home, 'report.json');
+  const bin = join(home, 'openclaw');
+  await writeFile(report, fixture);
+  await writeFile(bin, `#!/bin/sh\ncat ${JSON.stringify(report)}\nexit 2\n`);
+  await chmod(bin, 0o755);
+  const printed = spawnSync('bash', ['-c', `${doctorSnippet()}\nprintf '%s' "$DOCTOR_JSON"`], {
+    env: { ...process.env, HOME: home, OPENCLAW_BIN: bin },
+    encoding: 'utf8',
+  });
+  assert.equal(printed.status, 0, printed.stderr);
+  const doctor = JSON.parse(printed.stdout);
+  assert.equal(doctor.available, true);
+  assert.equal(doctor.ok, false);
+  assert.equal(doctor.checksRun, 0);
+  assert.equal(doctor.findings[0].checkId, 'core/doctor/lint-inspection');
+  assert.match(doctor.findings[0].message, /Invalid --severity-min/);
+});
+
 test('the hosted doctor collector reports a timeout instead of a partial finding', async (t) => {
   const snippet = doctorSnippet().replace(
     'const DOCTOR_TIMEOUT_MS = 120000;',
@@ -458,4 +615,52 @@ sleep 30
     findings: [],
   });
   assert.equal(printed.stdout.includes('gateway-config'), false);
+});
+
+test('the hosted script keeps a bare openclaw server and skips its own probes', async (t) => {
+  const start = DIAGNOSTIC_SCRIPT.indexOf('# A gateway started by');
+  const end = DIAGNOSTIC_SCRIPT.indexOf('if lsof -i');
+  assert.ok(start > 0 && end > start);
+  const snippet = DIAGNOSTIC_SCRIPT.slice(start, end);
+  assert.equal(snippet.includes('pgrep -f "openclaw.*gateway"'), false);
+  assert.match(snippet, /pgrep -af openclaw/);
+
+  const home = await mkdtemp(join(tmpdir(), 'clawfix-gateway-pid-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const bin = join(home, 'pgrep');
+  const fixture = join(home, 'listing');
+  await writeFile(bin, `#!/bin/sh
+if [ "$1" = "-af" ] && [ "$2" = "openclaw" ]; then
+  if [ -n "\${CLAWFIX_SELF_PID:-}" ]; then
+    printf '%s openclaw\\n' "$CLAWFIX_SELF_PID"
+  fi
+  cat ${JSON.stringify(fixture)}
+fi
+`);
+  await chmod(bin, 0o755);
+
+  const run = async (listing, extraEnv = {}) => {
+    await writeFile(fixture, listing);
+    const printed = spawnSync('bash', ['-c', `export CLAWFIX_SELF_PID=$$\n${snippet}\nprintf '%s|%s' "$GATEWAY_PID" "$PROCESS_EXISTS"`], {
+      env: { ...process.env, PATH: `${home}:${process.env.PATH}`, ...extraEnv },
+      encoding: 'utf8',
+    });
+    assert.equal(printed.status, 0, printed.stderr);
+    return printed.stdout;
+  };
+
+  assert.equal(await run([
+    '111 /usr/local/bin/node /usr/local/bin/openclaw gateway status',
+    '112 /usr/local/bin/node /usr/local/bin/openclaw gateway restart',
+    '113 /usr/local/bin/node /usr/local/bin/openclaw doctor',
+    '114 openclaw',
+  ].join('\n') + '\n'), '114|true');
+  assert.equal(await run('500 /usr/bin/openclaw gateway run\n'), '500|true');
+  assert.equal(await run('114 openclaw\n', { CLAWFIX_SELF_PID: '1' }), '114|true');
+  assert.equal(await run([
+    '201 sh -c pgrep -af openclaw gateway',
+    '202 grep openclaw gateway',
+    '203 tail -f /tmp/openclaw/openclaw.log',
+  ].join('\n') + '\n'), '|false');
+  assert.equal(await run(''), '|false');
 });

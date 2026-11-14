@@ -168,6 +168,57 @@ function doctorUnavailable(result, error) {
   };
 }
 
+function cleanDoctorErrorCode(value) {
+  const text = cleanText(value, 80);
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(text) ? text : null;
+}
+
+function cleanDoctorLine(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
+}
+
+function projectDoctorFinding(finding) {
+  if (!isRecord(finding)) {
+    throw new TypeError('invalid Doctor finding');
+  }
+  const requirement = cleanPath(cleanText(finding.requirement, 200));
+  const errorCode = cleanDoctorErrorCode(finding.errorCode);
+  const line = cleanDoctorLine(finding.line);
+  return {
+    checkId: cleanText(finding.checkId, 200),
+    severity: ['info', 'warning', 'error'].includes(finding.severity)
+      ? finding.severity
+      : 'warning',
+    message: redactDiagnosticText(cleanText(finding.message, 2000)),
+    path: cleanPath(finding.path) || null,
+    fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
+    ...(requirement ? { requirement } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    ...(line !== null ? { line } : {}),
+  };
+}
+
+function isDoctorLintEnvelope(parsed) {
+  return isRecord(parsed)
+    && typeof parsed.ok === 'boolean'
+    && Number.isSafeInteger(parsed.checksRun)
+    && parsed.checksRun >= 0
+    && Number.isSafeInteger(parsed.checksSkipped)
+    && parsed.checksSkipped >= 0
+    && Array.isArray(parsed.findings);
+}
+
+// openclaw doctor --lint exits 2 with this document when inspection fails
+// before any check runs (docs/cli/doctor/lint.md, doctor-lint-output.ts).
+function isDoctorLintFailureEnvelope(parsed) {
+  if (!isDoctorLintEnvelope(parsed) || parsed.ok !== false || parsed.status !== 'blocked') return false;
+  if (parsed.checksRun !== 0 || parsed.checksSkipped !== 0 || parsed.findings.length !== 1) return false;
+  const finding = parsed.findings[0];
+  return isRecord(finding)
+    && finding.checkId === 'core/doctor/lint-inspection'
+    && finding.severity === 'error';
+}
+
 export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
   const result = normalizeProcessResult(runSync(openclawBin, [
     'doctor',
@@ -199,53 +250,44 @@ export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
   }
 
   const stdout = String(result.stdout ?? '').trim();
-  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true }) || !hasAcceptedJsonExitCode(result)) {
+  let parsed = null;
+  if (stdout) {
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      parsed = null;
+    }
+  }
+  const failureEnvelope = isDoctorLintFailureEnvelope(parsed);
+  const acceptedExit = hasAcceptedJsonExitCode(result) || (result.status === 2 && failureEnvelope);
+  if (hasTerminalProcessFailure(result, { rejectTruncatedOutput: true }) || !acceptedExit) {
     return doctorUnavailable(result, redactDiagnosticText(cleanText(
       processFailureText(result, `Doctor exited with status ${result.status}`),
       1000,
     )));
   }
-  if (!stdout) {
-    return doctorUnavailable(result, redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 1000)));
+  if (!isDoctorLintEnvelope(parsed)) {
+    return doctorUnavailable(result, stdout
+      ? 'OpenClaw Doctor returned invalid JSON'
+      : redactDiagnosticText(cleanText(result.stderr || result.errorSummary, 1000)));
   }
 
+  let findings;
   try {
-    const parsed = JSON.parse(stdout);
-    if (!isRecord(parsed)
-      || typeof parsed.ok !== 'boolean'
-      || !Number.isSafeInteger(parsed.checksRun)
-      || parsed.checksRun < 0
-      || !Number.isSafeInteger(parsed.checksSkipped)
-      || parsed.checksSkipped < 0
-      || !Array.isArray(parsed.findings)) {
-      throw new TypeError('invalid Doctor envelope');
-    }
-    const findings = parsed.findings.slice(0, 100).map(finding => {
-      const requirement = cleanPath(cleanText(finding.requirement, 200));
-      return {
-        checkId: cleanText(finding.checkId, 200),
-        severity: ['info', 'warning', 'error'].includes(finding.severity)
-          ? finding.severity
-          : 'warning',
-        message: redactDiagnosticText(cleanText(finding.message, 2000)),
-        path: cleanPath(finding.path) || null,
-        fixHint: redactDiagnosticText(cleanText(finding.fixHint, 2000)) || null,
-        ...(requirement ? { requirement } : {}),
-      };
-    });
-
-    return {
-      available: true,
-      timedOut: false,
-      exitCode: result.status,
-      ok: parsed.ok === true,
-      checksRun: Number.isSafeInteger(parsed.checksRun) ? parsed.checksRun : 0,
-      checksSkipped: Number.isSafeInteger(parsed.checksSkipped) ? parsed.checksSkipped : 0,
-      findings,
-    };
+    findings = parsed.findings.slice(0, 100).map(projectDoctorFinding);
   } catch {
     return doctorUnavailable(result, 'OpenClaw Doctor returned invalid JSON');
   }
+
+  return {
+    available: true,
+    timedOut: false,
+    exitCode: result.status,
+    ok: parsed.ok === true,
+    checksRun: parsed.checksRun,
+    checksSkipped: parsed.checksSkipped,
+    findings,
+  };
 }
 
 export function collectNativeConfigValidation(openclawBin, runSync = defaultRunSync) {

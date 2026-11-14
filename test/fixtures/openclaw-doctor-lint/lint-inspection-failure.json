@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "error": {
+    "type": "cli_error",
+    "message": "Invalid --severity-min value. Expected one of: info, warning, error."
+  },
+  "status": "blocked",
+  "schemaVersion": 1,
+  "checksRun": 0,
+  "checksSkipped": 0,
+  "findings": [
+    {
+      "checkId": "core/doctor/lint-inspection",
+      "severity": "error",
+      "message": "Invalid --severity-min value. Expected one of: info, warning, error.",
+      "source": "doctor",
+      "fixHint": "Resolve this inspection error, then rerun `openclaw doctor --lint`."
+    }
+  ]
+}

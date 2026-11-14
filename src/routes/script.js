@@ -640,8 +640,27 @@ if [ -n "\$OPENCLAW_BIN" ]; then
   GATEWAY_STATUS=\$("\$OPENCLAW_BIN" gateway status 2>&1 || echo "error")
 fi
 
-# Try to find gateway process
-GATEWAY_PID=\$(pgrep -f "openclaw.*gateway" 2>/dev/null | head -1 || echo "")
+# A gateway started by \`openclaw gateway run\` re-execs with argv \`openclaw\`, so
+# \`pgrep -f 'openclaw.*gateway'\` misses it and matches ClawFix's own
+# \`openclaw gateway status\` instead. Transient CLI verbs are not the server.
+# The listening port, checked below, remains the liveness verdict.
+GATEWAY_PID=""
+while IFS= read -r GATEWAY_PROCESS_LINE || [ -n "\$GATEWAY_PROCESS_LINE" ]; do
+  [ -n "\$GATEWAY_PROCESS_LINE" ] || continue
+  GATEWAY_CANDIDATE_PID=\${GATEWAY_PROCESS_LINE%% *}
+  GATEWAY_CANDIDATE_CMD=\${GATEWAY_PROCESS_LINE#* }
+  case "\$GATEWAY_CANDIDATE_PID" in
+    ''|*[!0-9]*) continue ;;
+  esac
+  if [ "\$GATEWAY_CANDIDATE_PID" = "\$\$" ]; then
+    continue
+  fi
+  if printf '%s\n' "\$GATEWAY_CANDIDATE_CMD" | grep -Eq '(^|[[:space:]])(gateway[[:space:]]+(status|restart|stop|logs|probe|health|diagnostics|stability|call|discover|install)|doctor|config)([[:space:]]|\$)|--version|(^|[[:space:]])(pgrep|grep|tail|less|cat)([[:space:]]|\$)|sh -c|bash -c|node .*clawfix'; then
+    continue
+  fi
+  GATEWAY_PID=\$GATEWAY_CANDIDATE_PID
+  break
+done < <(pgrep -af openclaw 2>/dev/null || true)
 
 # Try to detect port from config
 if [ -n "\$OPENCLAW_CONFIG" ]; then
@@ -843,6 +862,58 @@ function clean(value, maxLength) {
     .slice(0, maxLength);
 }
 
+function cleanErrorCode(value) {
+  const text = clean(value, 80);
+  return /^[A-Za-z0-9_.:-]{1,80}$/.test(text) ? text : '';
+}
+
+function cleanLine(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1000000 ? value : null;
+}
+
+function projectFinding(finding) {
+  if (!finding || typeof finding !== 'object' || Array.isArray(finding)) return null;
+  const severity = finding.severity === 'info' || finding.severity === 'warning' || finding.severity === 'error'
+    ? finding.severity
+    : 'warning';
+  const requirement = redact(clean(finding.requirement, 200));
+  const errorCode = cleanErrorCode(finding.errorCode);
+  const line = cleanLine(finding.line);
+  const projected = {
+    checkId: clean(finding.checkId, 200),
+    severity: severity,
+    message: redact(finding.message),
+    path: redact(finding.path) || null,
+    fixHint: redact(finding.fixHint || finding.remediation) || null,
+  };
+  if (requirement) projected.requirement = requirement;
+  if (errorCode) projected.errorCode = errorCode;
+  if (line !== null) projected.line = line;
+  return projected;
+}
+
+function isEnvelope(parsed) {
+  return parsed
+    && typeof parsed === 'object'
+    && !Array.isArray(parsed)
+    && typeof parsed.ok === 'boolean'
+    && Number.isSafeInteger(parsed.checksRun)
+    && parsed.checksRun >= 0
+    && Number.isSafeInteger(parsed.checksSkipped)
+    && parsed.checksSkipped >= 0
+    && Array.isArray(parsed.findings);
+}
+
+function isFailureEnvelope(parsed) {
+  if (!isEnvelope(parsed) || parsed.ok !== false || parsed.status !== 'blocked') return false;
+  if (parsed.checksRun !== 0 || parsed.checksSkipped !== 0 || parsed.findings.length !== 1) return false;
+  const finding = parsed.findings[0];
+  return finding
+    && typeof finding === 'object'
+    && finding.checkId === 'core/doctor/lint-inspection'
+    && finding.severity === 'error';
+}
+
 function redact(value) {
   let text = clean(value, 2000);
   text = text
@@ -882,24 +953,22 @@ if (result.error && result.error.code === 'ETIMEDOUT') {
     findings: [],
   };
 } else {
-  const failed = Boolean(result.error) || result.signal != null || (result.status !== 0 && result.status !== 1);
   let parsed = null;
-  if (!failed && typeof result.stdout === 'string' && result.stdout.trim()) {
+  if (typeof result.stdout === 'string' && result.stdout.trim()) {
     try {
       parsed = JSON.parse(result.stdout);
     } catch (error) {
       parsed = null;
     }
   }
-  const findings = parsed && Array.isArray(parsed.findings) ? parsed.findings : null;
-  const envelope = parsed
-    && typeof parsed.ok === 'boolean'
-    && Number.isSafeInteger(parsed.checksRun)
-    && parsed.checksRun >= 0
-    && Number.isSafeInteger(parsed.checksSkipped)
-    && parsed.checksSkipped >= 0
-    && findings;
-  if (!envelope) {
+  const failureEnvelope = isFailureEnvelope(parsed);
+  const failed = Boolean(result.error)
+    || result.signal != null
+    || !((result.status === 0 || result.status === 1) || (result.status === 2 && failureEnvelope));
+  const findings = isEnvelope(parsed)
+    ? parsed.findings.slice(0, 100).map(projectFinding)
+    : null;
+  if (failed || !findings || findings.some(function (finding) { return !finding; })) {
     projected = {
       available: false,
       timedOut: false,
@@ -914,23 +983,7 @@ if (result.error && result.error.code === 'ETIMEDOUT') {
       ok: parsed.ok === true,
       checksRun: parsed.checksRun,
       checksSkipped: parsed.checksSkipped,
-      findings: findings.slice(0, 100).map(function (finding) {
-        const severity = finding && (finding.severity === 'info' || finding.severity === 'warning' || finding.severity === 'error')
-          ? finding.severity
-          : 'warning';
-        const path = redact(finding && finding.path);
-        const fixHint = redact(finding && (finding.fixHint || finding.remediation));
-        const requirement = redact(clean(finding && finding.requirement, 200));
-        const projected = {
-          checkId: clean(finding && finding.checkId, 200),
-          severity: severity,
-          message: redact(finding && finding.message),
-          path: path || null,
-          fixHint: fixHint || null,
-        };
-        if (requirement) projected.requirement = requirement;
-        return projected;
-      }),
+      findings: findings,
     };
   }
 }
@@ -1012,15 +1065,24 @@ echo ""
 ISSUES=0
 ISSUE_LIST=""
 
-# Check for common problems
+# Check for common problems.
+# A service-manager line marked "diagnostic only, not the check target" is not
+# the gateway verdict. "Connectivity check: ok" and "Listening:" mean it is up,
+# even when that discarded line says "Runtime: stopped".
+GATEWAY_PROBE=\$(printf '%s\n' "\$GATEWAY_STATUS" | grep -vi 'diagnostic only, not the check target' || true)
 GATEWAY_RUNNING=false
-if echo "\$GATEWAY_STATUS" | grep -qi "running.*pid\\|state active\\|listening"; then
+if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*ok|read check:[[:space:]]*ok|running.*pid|state active|^listening:'; then
   GATEWAY_RUNNING=true
 fi
-if echo "\$GATEWAY_STATUS" | grep -qi "not running\\|failed to start\\|stopped\\|inactive"; then
-  ISSUES=\$((ISSUES + 1))
-  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
-elif [ "\$GATEWAY_RUNNING" = "false" ] && ! echo "\$GATEWAY_STATUS" | grep -qi "warning"; then
+GATEWAY_DOWN=false
+if [ "\$GATEWAY_RUNNING" != "true" ]; then
+  if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*(failed|timed out)|read check:[[:space:]]*(failed|timed out)|not running|failed to start|stopped|inactive'; then
+    GATEWAY_DOWN=true
+  elif ! printf '%s\n' "\$GATEWAY_PROBE" | grep -qi 'warning'; then
+    GATEWAY_DOWN=true
+  fi
+fi
+if [ "\$GATEWAY_DOWN" = "true" ]; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
 fi
