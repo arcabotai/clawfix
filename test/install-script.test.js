@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 const root = new URL('../', import.meta.url);
 const read = path => readFile(new URL(path, root), 'utf8');
 
-function run(command, args, env = {}) {
+function run(command, args, env = {}, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       env: { ...process.env, ...env },
@@ -18,25 +18,46 @@ function run(command, args, env = {}) {
     });
     let stdout = '';
     let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`${command} timed out after ${timeoutMs}ms\n${stdout}\n${stderr}`));
+    }, timeoutMs);
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.on('error', reject);
-    child.on('close', code => resolve({ code, stdout, stderr }));
+    child.on('close', code => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
   });
 }
 
 test('install route is mounted and serves scripts/install.sh with sha256 metadata', async () => {
-  const [serverSource, installRoute, installScript] = await Promise.all([
+  const [serverSource, installRoute, installScript, workerSource, wrangler] = await Promise.all([
     read('src/server.js'),
     read('src/routes/install.js'),
     read('scripts/install.sh'),
+    read('src/worker.js'),
+    read('wrangler.jsonc'),
   ]);
+  assert.match(workerSource, /from '\.\/server\.js'/);
+  assert.match(wrangler, /\*\*\/\*\.sh/);
 
   assert.match(serverSource, /installRouter/);
-  assert.match(installRoute, /app\.use|installRouter\.get\('\/install'/);
+  assert.match(installRoute, /installRouter\.get\('\/install\.sh'/);
+  assert.match(installRoute, /installRouter\.get\('\/install'/);
   assert.match(installRoute, /install\/sha256/);
+  assert.match(installRoute, /install\.sh\.sha256/);
   assert.match(installScript, /^#!\/usr\/bin\/env bash/m);
-  assert.doesNotMatch(installScript, /curl[^\n]*\|\s*(?:ba)?sh/);
+  assert.equal(installScript.trimEnd().split('\n').at(-1), 'main "$@"');
+  assert.match(installScript, /<\/dev\/tty/);
+  assert.match(installScript, />\/dev\/tty/);
+  assert.match(installScript, /--dry-run/);
+  assert.match(installScript, /--help/);
+  assert.match(installScript, /--version/);
+  assert.doesNotMatch(installScript, /\bsudo\s/);
+  assert.match(installScript, /OpenClaw requires Node\.js >=24\.16\.0 <25, or >=26\.1\.0/);
+  assert.match(installScript, /https:\/\/docs\.openclaw\.ai\/install\/node/);
   assert.match(installScript, /Compare the printed hashes exactly before running the script/);
   assert.match(installScript, /CLAWFIX_VERSION/);
   assert.match(installScript, /registry\.npmjs\.org/);
@@ -45,6 +66,7 @@ test('install route is mounted and serves scripts/install.sh with sha256 metadat
   assert.match(installScript, /Node fetch|crypto/);
   assert.match(installScript, /\$\{HOME\}\/\.local\/bin|\$\{HOME\}\/\.clawfix/);
   assert.match(installScript, /CLAWFIX_BIN_DIR/);
+  assert.deepEqual(unexpectedInstallerPipes(installScript), []);
 
   const expectedHash = createHash('sha256').update(installScript).digest('hex');
   const { INSTALL_HASH, INSTALL_SCRIPT } = await import(new URL('../src/routes/install.js', import.meta.url).href);
@@ -86,19 +108,40 @@ test('the committed SCRIPT_HASH matches the diagnostic script actually served', 
   );
 });
 
-test('installer guidance never pipes curl into a shell on public surfaces', async () => {
+function pipeCommands(source) {
+  return (source.match(/curl[^\n]*\|\s*(?:ba)?sh[^\n]*/g) || []).map(line => line
+    .replace(/<[^>]+>/g, '')
+    .replaceAll('&amp;', '&')
+    .replace(/\s+/g, ' ')
+    .trim());
+}
+
+function unexpectedInstallerPipes(source) {
+  return pipeCommands(source).filter(pipe => {
+    if (/^curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash\b/.test(pipe)) return false;
+    if (/^curl -fsSL https:\/\/openclaw\.ai\/install\.sh \| bash\b/.test(pipe)) return false;
+    return true;
+  });
+}
+
+test('public install docs use the one-line installer and keep verification', async () => {
   const sources = await Promise.all([
     read('scripts/install.sh'),
     read('src/routes/install.js'),
     read('src/landing.js'),
     read('README.md'),
+    read('cli/README.md'),
   ]);
   for (const source of sources) {
-    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
+    assert.deepEqual(unexpectedInstallerPipes(source), []);
   }
-  assert.match(sources[2], /clawfix\.dev\/install/);
+  assert.match(sources[2], /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
   assert.match(sources[2], /install\/sha256/);
-  assert.match(sources[3], /clawfix\.dev\/install/);
+  assert.match(sources[2], /install\.sh\.sha256/);
+  assert.match(sources[3], /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
+  assert.match(sources[3], /install\.sh\.sha256/);
+  assert.match(sources[4], /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
+  assert.doesNotMatch(sources[1], /curl[^\n]*\|\s*(?:ba)?sh/);
 });
 
 test('install script installs a pinned package into a local prefix without npm install', async () => {
@@ -185,6 +228,20 @@ test('install script installs a pinned package into a local prefix without npm i
     const registry = `http://127.0.0.1:${port}`;
 
     const installScript = new URL('../scripts/install.sh', import.meta.url).pathname;
+    const dryRun = await run('bash', [installScript, '--dry-run'], {
+      CLAWFIX_VERSION: '0.10.0',
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: binDir,
+      CLAWFIX_REGISTRY: registry,
+      PATH: `${oldBinDir}:${binDir}:${process.env.PATH}`,
+      HOME: work,
+    });
+    assert.equal(dryRun.code, 0, dryRun.stdout + dryRun.stderr);
+    assert.match(dryRun.stdout, /Dry run complete/);
+    assert.match(dryRun.stdout, /Package integrity verified/);
+    assert.equal(await fileExists(join(prefix, 'versions/0.10.0')), false);
+    assert.equal(await fileExists(join(binDir, 'clawfix')), false);
+
     const result = await run('bash', [installScript], {
       CLAWFIX_VERSION: '0.10.0',
       CLAWFIX_PREFIX: prefix,
@@ -205,6 +262,99 @@ test('install script installs a pinned package into a local prefix without npm i
     assert.equal(version.code, 0, version.stderr);
     assert.match(version.stdout, /clawfix v0\.10\.0-test/);
 
+    const again = await run('bash', [installScript], {
+      CLAWFIX_VERSION: '0.10.0',
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: binDir,
+      CLAWFIX_REGISTRY: registry,
+      PATH: `${oldBinDir}:${binDir}:${process.env.PATH}`,
+      HOME: work,
+    });
+    assert.equal(again.code, 0, again.stdout + again.stderr);
+    assert.match(again.stdout, /Reinstalled clawfix 0\.10\.0/);
+    const rerun = await run(join(binDir, 'clawfix'), []);
+    assert.equal(rerun.code, 0, rerun.stderr);
+    assert.match(rerun.stdout, /clawfix v0\.10\.0-test/);
+
+    const hiddenBin = join(work, 'hidden-bin');
+    await run('mkdir', ['-p', hiddenBin]);
+    const unattended = await run('setsid', ['-w', 'bash', installScript], {
+      CLAWFIX_VERSION: '0.10.0',
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: hiddenBin,
+      CLAWFIX_REGISTRY: registry,
+      PATH: process.env.PATH,
+      HOME: work,
+      SHELL: '/bin/bash',
+    });
+    assert.equal(unattended.code, 0, unattended.stdout + unattended.stderr);
+    assert.match(unattended.stdout, /is not on PATH/);
+    assert.match(unattended.stdout, /export PATH=/);
+    assert.match(unattended.stdout, /set -gx PATH/);
+    assert.doesNotMatch(`${unattended.stdout}\n${unattended.stderr}`, /shell startup file\?/);
+    assert.equal(await fileExists(join(work, '.bashrc')), false);
+    await access(join(hiddenBin, 'clawfix'));
+
+    const ttyBin = join(work, 'tty-bin');
+    const ptyHelper = join(work, 'pty-install.py');
+    await run('mkdir', ['-p', ttyBin]);
+    await writeFile(ptyHelper, `
+import fcntl, os, pty, select, struct, sys, termios
+script, answer = sys.argv[1], sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 240, 0, 0))
+    os.execvp("bash", ["bash", script])
+buf = b""
+sent = False
+while True:
+    readable, _, _ = select.select([fd], [], [], 20)
+    if not readable:
+        os.kill(pid, 9)
+        sys.stderr.buffer.write(buf)
+        sys.stderr.write("\\npty timeout\\n")
+        sys.exit(3)
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    buf += chunk
+    if (not sent) and b"[y/N]" in buf:
+        os.write(fd, (answer + "\\n").encode())
+        sent = True
+_, status = os.waitpid(pid, 0)
+sys.stdout.buffer.write(buf)
+sys.exit(os.waitstatus_to_exitcode(status))
+`);
+    const prompted = await run('python3', [ptyHelper, installScript, 'y'], {
+      CLAWFIX_VERSION: '0.10.0',
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: ttyBin,
+      CLAWFIX_REGISTRY: registry,
+      HOME: work,
+      SHELL: '/bin/bash',
+    });
+    assert.equal(prompted.code, 0, prompted.stdout + prompted.stderr);
+    assert.match(prompted.stdout, /\[y\/N\]/);
+    assert.match(prompted.stdout, /Added .+ to PATH/);
+    const bashrc = await readFile(join(work, '.bashrc'), 'utf8');
+    assert.match(bashrc, /ClawFix command/);
+    assert.equal(bashrc.match(/ClawFix command/g).length, 1);
+
+    const promptedAgain = await run('python3', [ptyHelper, installScript, 'y'], {
+      CLAWFIX_VERSION: '0.10.0',
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: ttyBin,
+      CLAWFIX_REGISTRY: registry,
+      HOME: work,
+      SHELL: '/bin/bash',
+    });
+    assert.equal(promptedAgain.code, 0, promptedAgain.stdout + promptedAgain.stderr);
+    const bashrcAgain = await readFile(join(work, '.bashrc'), 'utf8');
+    assert.equal(bashrcAgain.match(/ClawFix command/g).length, 1);
+
   } finally {
     if (server?.listening) {
       await new Promise((resolve, reject) => {
@@ -214,3 +364,130 @@ test('install script installs a pinned package into a local prefix without npm i
     await rm(work, { recursive: true, force: true });
   }
 });
+
+test('installer flags print help and version without writing an install', async () => {
+  const installScript = new URL('../scripts/install.sh', import.meta.url).pathname;
+  const help = await run('bash', [installScript, '--help']);
+  assert.equal(help.code, 0, help.stderr);
+  assert.match(help.stdout, /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
+  assert.match(help.stdout, /--dry-run/);
+  assert.match(help.stdout, /--no-prompt/);
+
+  const version = await run('bash', [installScript, '--version'], { CLAWFIX_VERSION: '0.12.0' });
+  assert.equal(version.code, 0, version.stderr);
+  assert.equal(version.stdout, 'clawfix-installer 0.12.0\n');
+  assert.doesNotMatch(version.stdout, /Fetching package metadata/);
+
+  const unknown = await run('bash', [installScript, '--not-a-flag']);
+  assert.equal(unknown.code, 2);
+  assert.match(unknown.stderr, /Unknown option/);
+});
+
+test('installer explains the OpenClaw Node.js requirement when Node is missing or too old', async () => {
+  const installScript = new URL('../scripts/install.sh', import.meta.url).pathname;
+  const work = await mkdtemp(join(tmpdir(), 'clawfix-install-node-'));
+  try {
+    const missing = await run('bash', [installScript], {
+      PATH: '/usr/bin:/bin',
+      CLAWFIX_PREFIX: join(work, 'prefix'),
+      HOME: work,
+    });
+    assert.notEqual(missing.code, 0);
+    assert.match(missing.stderr, /Node\.js 22 or newer is required/);
+    assert.match(missing.stderr, /OpenClaw requires Node\.js >=24\.16\.0 <25, or >=26\.1\.0/);
+    assert.match(missing.stderr, /https:\/\/docs\.openclaw\.ai\/install\/node/);
+    assert.match(missing.stderr, /does not use sudo/);
+    assert.equal(await fileExists(join(work, 'prefix')), false);
+
+    const stub = join(work, 'stub');
+    await run('mkdir', ['-p', stub]);
+    await writeFile(join(stub, 'node'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo v18.20.0; exit 0; fi\necho 18\n');
+    await chmod(join(stub, 'node'), 0o755);
+    const old = await run('bash', [installScript], {
+      PATH: `${stub}:/usr/bin:/bin`,
+      CLAWFIX_PREFIX: join(work, 'prefix'),
+      HOME: work,
+    });
+    assert.notEqual(old.code, 0);
+    assert.match(old.stderr, /found: v18\.20\.0/);
+    assert.match(old.stderr, /OpenClaw requires Node\.js >=24\.16\.0 <25, or >=26\.1\.0/);
+    assert.equal(await fileExists(join(work, 'prefix')), false);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('a truncated installer does not install', async () => {
+  const installScript = await read('scripts/install.sh');
+  const work = await mkdtemp(join(tmpdir(), 'clawfix-install-trunc-'));
+  const prefix = join(work, 'prefix');
+  const droppedCall = join(work, 'dropped-call.sh');
+  const cutBody = join(work, 'cut-body.sh');
+  try {
+    await writeFile(droppedCall, installScript.replace(/\nmain "\$@"\s*$/, '\n'));
+    await chmod(droppedCall, 0o755);
+    const silent = await run('bash', [droppedCall], {
+      CLAWFIX_PREFIX: prefix,
+      CLAWFIX_BIN_DIR: join(work, 'bin'),
+      HOME: work,
+    });
+    assert.equal(silent.code, 0, silent.stderr);
+    assert.doesNotMatch(silent.stdout, /Installed clawfix|Reinstalled clawfix|Upgraded clawfix/);
+    assert.equal(await fileExists(prefix), false);
+
+    await writeFile(cutBody, installScript.slice(0, Math.floor(installScript.length / 2)));
+    await chmod(cutBody, 0o755);
+    const broken = await run('bash', [cutBody], {
+      CLAWFIX_PREFIX: prefix,
+      HOME: work,
+    });
+    assert.notEqual(broken.code, 0);
+    assert.equal(await fileExists(prefix), false);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test('express serves the installer and both hash aliases', async () => {
+  const { app } = await import(new URL('../src/server.js', import.meta.url).href);
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const [scriptRes, aliasRes, hashRes, aliasHashRes] = await Promise.all([
+      fetch(`${base}/install.sh`),
+      fetch(`${base}/install`),
+      fetch(`${base}/install.sh.sha256`),
+      fetch(`${base}/install/sha256`),
+    ]);
+    assert.equal(scriptRes.status, 200);
+    assert.equal(aliasRes.status, 200);
+    assert.equal(hashRes.status, 200);
+    assert.equal(aliasHashRes.status, 200);
+    const body = await scriptRes.text();
+    assert.equal(await aliasRes.text(), body);
+    assert.match(body, /^#!\/usr\/bin\/env bash/);
+    const expected = createHash('sha256').update(body).digest('hex');
+    assert.equal(scriptRes.headers.get('x-script-sha256'), expected);
+    assert.equal(aliasRes.headers.get('x-script-sha256'), expected);
+    assert.equal((await hashRes.json()).sha256, expected);
+    assert.equal((await aliasHashRes.json()).sha256, expected);
+  } finally {
+    await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
+test('installer shellcheck is clean', async () => {
+  const installScript = new URL('../scripts/install.sh', import.meta.url).pathname;
+  const result = await run('shellcheck', ['-s', 'bash', '-S', 'warning', installScript]);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+});
+
+async function fileExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

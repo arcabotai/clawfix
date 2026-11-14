@@ -60,7 +60,7 @@ app.use('/api', chatRouter);     // POST /api/chat — interactive TUI chat
 app.use('/api', agentV2Router);  // POST /api/v2/agent/messages — constrained agent protocol
 app.use('/', webhooksRouter);   // POST /webhooks/resend — inbound email
 app.use('/', scriptRouter);     // GET /fix — diagnostic script
-app.use('/', installRouter);    // GET /install — bash installer
+app.use('/', installRouter);    // GET /install.sh and /install — bash installer
 app.use('/', resultsRouter);    // GET /results/:fixId — web results page
 app.use('/', landingRouter);    // GET / — landing page (must be last)
 

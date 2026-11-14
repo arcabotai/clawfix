@@ -181,7 +181,7 @@ export function parseVerifierArgs(argv) {
 
 async function verifyFreeSurface({ baseUrl, expectedVersion, fetchImpl, timeoutMs }) {
   const requestOptions = { label: '', timeoutMs };
-  const [rootResult, healthResult, statsResult, installerResult, installerHashResult] = await Promise.all([
+  const [rootResult, healthResult, statsResult, installerResult, installerAliasResult, installerHashResult, installerAliasHashResult] = await Promise.all([
     requestText(fetchImpl, `${baseUrl}/`, { headers: { accept: 'text/html' } }, {
       ...requestOptions,
       label: 'root',
@@ -194,9 +194,17 @@ async function verifyFreeSurface({ baseUrl, expectedVersion, fetchImpl, timeoutM
       ...requestOptions,
       label: 'stats',
     }),
+    requestText(fetchImpl, `${baseUrl}/install.sh`, { headers: { accept: 'text/plain' } }, {
+      ...requestOptions,
+      label: 'installer script',
+    }),
     requestText(fetchImpl, `${baseUrl}/install`, { headers: { accept: 'text/plain' } }, {
       ...requestOptions,
       label: 'installer',
+    }),
+    requestText(fetchImpl, `${baseUrl}/install.sh.sha256`, { headers: { accept: 'application/json' } }, {
+      ...requestOptions,
+      label: 'installer script hash',
     }),
     requestText(fetchImpl, `${baseUrl}/install/sha256`, { headers: { accept: 'application/json' } }, {
       ...requestOptions,
@@ -217,13 +225,18 @@ async function verifyFreeSurface({ baseUrl, expectedVersion, fetchImpl, timeoutM
   );
   invariant(Number.isFinite(Number(stats?.totalDiagnoses)), 'stats totalDiagnoses was invalid');
 
+  invariant(installerResult.text === installerAliasResult.text, 'installer alias body mismatch');
   const hashDocument = parseJson(installerHashResult.text, 'installer hash');
+  const aliasHashDocument = parseJson(installerAliasHashResult.text, 'installer script hash');
   const advertisedHash = hashDocument?.sha256;
   invariant(typeof advertisedHash === 'string' && /^[a-f0-9]{64}$/i.test(advertisedHash), 'installer hash was invalid');
+  invariant(aliasHashDocument?.sha256 === advertisedHash, 'installer SHA-256 mismatch');
   const calculatedHash = createHash('sha256').update(installerResult.text).digest('hex');
   invariant(calculatedHash === advertisedHash, 'installer SHA-256 mismatch');
-  const headerHash = installerResult.response.headers?.get?.('x-script-sha256');
-  invariant(headerHash === advertisedHash, 'installer response header SHA-256 mismatch');
+  for (const result of [installerResult, installerAliasResult]) {
+    const headerHash = result.response.headers?.get?.('x-script-sha256');
+    invariant(headerHash === advertisedHash, 'installer response header SHA-256 mismatch');
+  }
 
   return [
     { name: 'root', ok: true },

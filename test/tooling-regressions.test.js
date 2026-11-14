@@ -141,7 +141,7 @@ test('script download guidance requires HTTPS and review before execution', asyn
 });
 
 
-test('bash installer is recommended and never pipes curl into a shell', async () => {
+test('bash installer is the one-line install and does not pipe package downloads', async () => {
   const [installScript, installRoute, landing, readme, server] = await Promise.all([
     read('scripts/install.sh'),
     read('src/routes/install.js'),
@@ -151,13 +151,16 @@ test('bash installer is recommended and never pipes curl into a shell', async ()
   ]);
   assert.match(server, /installRouter/);
   assert.match(installRoute, /install\/sha256/);
+  assert.match(installRoute, /install\.sh/);
   assert.match(installScript, /#!\/usr\/bin\/env bash/);
   assert.match(installScript, /openssl dgst -sha512/);
-  assert.match(readme, /clawfix\.dev\/install/);
+  assert.match(installScript, /main "\$@"\s*$/);
+  assert.doesNotMatch(installScript, /\bsudo\s/);
+  assert.match(readme, /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
   assert.match(landing, /cmd-install/);
-  for (const source of [installScript, installRoute, landing, readme]) {
-    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
-  }
+  assert.match(landing, /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
+  assert.doesNotMatch(installScript, /curl[^\n]*\|\s*(?:ba)?sh[^\n]*npm/);
+  assert.doesNotMatch(installRoute, /curl[^\n]*\|\s*(?:ba)?sh/);
 });
 
 test('public surfaces avoid remote shell pipes and privacy absolutes', async () => {
@@ -171,9 +174,12 @@ test('public surfaces avoid remote shell pipes and privacy absolutes', async () 
     read('cli/interfaces/plain.js'),
   ]);
   for (const source of sources) {
-    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
     assert.doesNotMatch(source, /all secrets redacted|all redacted|NEVER SENT|Personal data of any kind/i);
   }
+  for (const source of [sources[1], sources[2], sources[3], sources[5], sources[6]]) {
+    assert.doesNotMatch(source, /curl[^\n]*\|\s*(?:ba)?sh/);
+  }
+  assert.match(sources[0], /curl -fsSL https:\/\/clawfix\.dev\/install\.sh \| bash/);
   const landing = sources[0];
   assert.match(landing, /recognized secrets/i);
   assert.match(landing, /top-level config env block/i);

@@ -14,18 +14,28 @@ ClawFix scans locally, redacts recognized secrets, and matches failures against 
 ## Quick Start
 
 ```bash
-# Recommended: download, verify, then install with bash (no global npm)
-curl --fail --show-error --silent --location https://clawfix.dev/install --output install-clawfix.sh
-cat install-clawfix.sh
-shasum -a 256 install-clawfix.sh
-curl --fail --show-error --silent https://clawfix.dev/install/sha256
-# Compare the printed hashes exactly before running the script.
-bash install-clawfix.sh
+# Install. Node.js 22 or newer is required. No global npm, no sudo.
+curl -fsSL https://clawfix.dev/install.sh | bash
 
 # Then run
 clawfix --dry-run
 clawfix
 ```
+
+The installer downloads the pinned npm tarball, checks its registry integrity hash, and installs into `~/.clawfix` with a launcher at `~/.local/bin/clawfix`. Re-running it upgrades that install in place. It does not install Node.js. OpenClaw requires Node.js >=24.16.0 <25, or >=26.1.0, so a machine that already runs OpenClaw has a new enough Node.
+
+### Verify before running
+
+```bash
+curl --fail --show-error --silent --location https://clawfix.dev/install.sh --output install-clawfix.sh
+cat install-clawfix.sh
+shasum -a 256 install-clawfix.sh
+curl --fail --show-error --silent https://clawfix.dev/install.sh.sha256
+# Compare the printed hashes exactly before running the script.
+bash install-clawfix.sh
+```
+
+`/install` is an alias of `/install.sh`. `/install/sha256` is an alias of `/install.sh.sha256`.
 
 ### Alternative: npx
 
@@ -225,8 +235,10 @@ The scenario suite restores changed configuration and processes in a `finally` b
 | `/` | GET | Landing page |
 | `/fix` | GET | Diagnostic bash script |
 | `/fix/sha256` | GET | Diagnostic script hash for verification |
-| `/install` | GET | Pinned download-and-verify installer |
-| `/install/sha256` | GET | Installer hash for verification |
+| `/install.sh` | GET | Pinned one-line installer |
+| `/install` | GET | Alias of `/install.sh` |
+| `/install.sh.sha256` | GET | Installer hash for verification |
+| `/install/sha256` | GET | Alias of `/install.sh.sha256` |
 | `/api/diagnose` | POST | Submit consented diagnostic data |
 | `/api/chat` | POST | Legacy consented remote chat stream |
 | `/api/v2/agent/messages` | POST | Bounded agent-v2 SSE conversation |

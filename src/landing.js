@@ -9,7 +9,7 @@ landingRouter.get('/', (req, res) => {
       name: 'ClawFix',
       tagline: 'OpenClaw diagnostics and guarded repairs',
       version: '0.12.0',
-      install: 'curl --fail --show-error --silent --location https://clawfix.dev/install --output install.sh && bash install.sh',
+      install: 'curl -fsSL https://clawfix.dev/install.sh | bash',
       fix: 'npx clawfix@0.12.0',
     });
   }
@@ -603,11 +603,11 @@ const LANDING_HTML = `<!DOCTYPE html>
 
         <div class="command-box">
           <span class="prompt">$</span>
-          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install</span> <span>-o install.sh</span> <span>&amp;&amp; bash install.sh</span></code>
+          <code id="cmd-install"><span>curl -fsSL</span> <span>https://clawfix.dev/install.sh</span> <span>| bash</span></code>
           <button type="button" class="copy-btn" id="copyBtn-install" data-copy-command="install" aria-live="polite">Copy</button>
         </div>
         <p class="command-hint" style="margin-bottom: 6px;">
-          <strong style="color:var(--green)">Recommended</strong> Downloads and runs the installer. To inspect first, omit <code>&amp;&amp; bash install.sh</code>, verify with <code>shasum -a 256 install.sh</code> against <a href="/install/sha256">the published hash</a>, then run it. No global npm.
+          <strong style="color:var(--green)">Install</strong> One command writes <code>~/.local/bin/clawfix</code> and keeps the package under <code>~/.clawfix</code>. No global npm. Node.js 22 or newer is required; OpenClaw already requires a current Node.js. To inspect first, download <a href="/install.sh">install.sh</a>, compare <code>shasum -a 256</code> with <a href="/install.sh.sha256">/install.sh.sha256</a> or <a href="/install/sha256">/install/sha256</a>, then run it.
         </p>
         <p class="command-hint" style="margin-bottom: 18px;">
           Prefer npm? <code id="cmd-npx">npx clawfix@0.12.0</code> · Dry run: <code>npx clawfix@0.12.0 --dry-run</code> · macOS, Linux, WSL · <span style="white-space:nowrap">Node.js 22+</span>
@@ -634,7 +634,7 @@ const LANDING_HTML = `<!DOCTYPE html>
           <div class="release-grid">
             <div class="release-item">
               <h3>Bash installer</h3>
-              <p>Download, verify hash, install under ~/.clawfix — no global npm required.</p>
+              <p>One command installs under ~/.clawfix and writes ~/.local/bin/clawfix. Download and verify the script first when you want to inspect it. No global npm.</p>
             </div>
             <div class="release-item">
               <h3>Agent v2 + privacy</h3>
