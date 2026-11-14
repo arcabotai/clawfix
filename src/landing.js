@@ -701,7 +701,7 @@ gateway-not-running repair. Want me to?
           <div class="step">
             <div class="step-num">2</div>
             <h3>Deterministic Checks First</h3>
-            <p>52 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
+            <p>53 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
