@@ -640,8 +640,27 @@ if [ -n "\$OPENCLAW_BIN" ]; then
   GATEWAY_STATUS=\$("\$OPENCLAW_BIN" gateway status 2>&1 || echo "error")
 fi
 
-# Try to find gateway process
-GATEWAY_PID=\$(pgrep -f "openclaw.*gateway" 2>/dev/null | head -1 || echo "")
+# A gateway started by \`openclaw gateway run\` re-execs with argv \`openclaw\`, so
+# \`pgrep -f 'openclaw.*gateway'\` misses it and matches ClawFix's own
+# \`openclaw gateway status\` instead. Transient CLI verbs are not the server.
+# The listening port, checked below, remains the liveness verdict.
+GATEWAY_PID=""
+while IFS= read -r GATEWAY_PROCESS_LINE || [ -n "\$GATEWAY_PROCESS_LINE" ]; do
+  [ -n "\$GATEWAY_PROCESS_LINE" ] || continue
+  GATEWAY_CANDIDATE_PID=\${GATEWAY_PROCESS_LINE%% *}
+  GATEWAY_CANDIDATE_CMD=\${GATEWAY_PROCESS_LINE#* }
+  case "\$GATEWAY_CANDIDATE_PID" in
+    ''|*[!0-9]*) continue ;;
+  esac
+  if [ "\$GATEWAY_CANDIDATE_PID" = "\$\$" ]; then
+    continue
+  fi
+  if printf '%s\n' "\$GATEWAY_CANDIDATE_CMD" | grep -Eq '(^|[[:space:]])(gateway[[:space:]]+(status|restart|stop|logs|probe|health|diagnostics|stability|call|discover|install)|doctor|config)([[:space:]]|\$)|--version|(^|[[:space:]])(pgrep|grep|tail|less|cat)([[:space:]]|\$)|sh -c|bash -c|node .*clawfix'; then
+    continue
+  fi
+  GATEWAY_PID=\$GATEWAY_CANDIDATE_PID
+  break
+done < <(pgrep -af openclaw 2>/dev/null || true)
 
 # Try to detect port from config
 if [ -n "\$OPENCLAW_CONFIG" ]; then
@@ -1046,15 +1065,24 @@ echo ""
 ISSUES=0
 ISSUE_LIST=""
 
-# Check for common problems
+# Check for common problems.
+# A service-manager line marked "diagnostic only, not the check target" is not
+# the gateway verdict. "Connectivity check: ok" and "Listening:" mean it is up,
+# even when that discarded line says "Runtime: stopped".
+GATEWAY_PROBE=\$(printf '%s\n' "\$GATEWAY_STATUS" | grep -vi 'diagnostic only, not the check target' || true)
 GATEWAY_RUNNING=false
-if echo "\$GATEWAY_STATUS" | grep -qi "running.*pid\\|state active\\|listening"; then
+if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*ok|read check:[[:space:]]*ok|running.*pid|state active|^listening:'; then
   GATEWAY_RUNNING=true
 fi
-if echo "\$GATEWAY_STATUS" | grep -qi "not running\\|failed to start\\|stopped\\|inactive"; then
-  ISSUES=\$((ISSUES + 1))
-  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
-elif [ "\$GATEWAY_RUNNING" = "false" ] && ! echo "\$GATEWAY_STATUS" | grep -qi "warning"; then
+GATEWAY_DOWN=false
+if [ "\$GATEWAY_RUNNING" != "true" ]; then
+  if printf '%s\n' "\$GATEWAY_PROBE" | grep -Eqi 'connectivity check:[[:space:]]*(failed|timed out)|read check:[[:space:]]*(failed|timed out)|not running|failed to start|stopped|inactive'; then
+    GATEWAY_DOWN=true
+  elif ! printf '%s\n' "\$GATEWAY_PROBE" | grep -qi 'warning'; then
+    GATEWAY_DOWN=true
+  fi
+fi
+if [ "\$GATEWAY_DOWN" = "true" ]; then
   ISSUES=\$((ISSUES + 1))
   ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Gateway is not running\${NC}\\n"
 fi
