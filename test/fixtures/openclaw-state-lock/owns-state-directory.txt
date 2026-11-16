@@ -1,0 +1,2 @@
+Failed migrating legacy shared auth store: the Gateway or another SQLite maintenance command owns this state directory. Stop the Gateway and run `openclaw doctor --fix` again.
+Failing check shared-auth-store (step-refused): owns this state directory

@@ -20,7 +20,9 @@ import {
   describePostUpgradeMigration,
   describeStalledDoctor,
   classifyNodeEngineMismatch,
+  classifyStateLockDeadlock,
   describeNodeEngineMismatch,
+  describeStateLockDeadlock,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
   legacyHeartbeatPaths,
@@ -235,6 +237,16 @@ export function hasLegacyHeartbeatConfig(config) {
   return legacyHeartbeatPaths(config).length > 0;
 }
 
+function stateLockInput(diag) {
+  const doctor = nativeDoctorFromDiagnostic(diag);
+  const facts = isPlainRecord(diag?.openclaw?.stateLock) ? diag.openclaw.stateLock : {};
+  return {
+    text: [logText(diag), diag?.openclaw?.versionError, diag?.openclaw?.error].filter(Boolean).join('\n'),
+    warnings: Array.isArray(doctor?.warnings) ? doctor.warnings : facts.warnings,
+    holders: Array.isArray(facts.holders) ? facts.holders : diag?.openclaw?.stateLockHolders,
+  };
+}
+
 function nodeEngineInput(diag) {
   const openclaw = isPlainRecord(diag?.openclaw) ? diag.openclaw : {};
   const facts = isPlainRecord(openclaw.nodeRuntimes) ? openclaw.nodeRuntimes : {};
@@ -278,6 +290,27 @@ echo "Verify after you change it yourself:"
 echo "  node --version"
 echo "  openclaw --version"
 echo "ClawFix does not install or switch Node."`,
+  },
+  {
+    id: 'state-lock-deadlock',
+    severity: 'critical',
+    title: 'OpenClaw state lock or lease is blocking startup',
+    description: 'A state owner, state-lifecycle holder, GatewayLockError, or OPENCLAW_STATE_LEASE_ABORTED warning is blocking the gateway or doctor. The finding names the holder pid, command, age, and whether that process is alive when those facts can be read. A live holder is not repairable.',
+    detect: (diag) => {
+      try {
+        return classifyStateLockDeadlock(stateLockInput(diag)) !== null;
+      } catch { return false; }
+    },
+    severityFor: (diag) => classifyStateLockDeadlock(stateLockInput(diag))?.severity,
+    describe: (diag) => describeStateLockDeadlock(classifyStateLockDeadlock(stateLockInput(diag))),
+    fix: `# Detect first. Do not kill a process, and do not delete the state directory or SQLite files.
+echo "OpenClaw state ownership or a state lease is blocked."
+echo "If the holder pid is still an OpenClaw process, stop it through its service manager or container."
+echo "If you have confirmed that holder stopped, inspect the lock and run only the printed confirm command:"
+echo "  openclaw gateway recover-lock"
+echo "  openclaw gateway recover-lock --confirm <fingerprint>"
+echo "ClawFix runs that command only when every holder pid is proven dead or reused by a non-OpenClaw command, and only after copying lock files aside."
+echo "ClawFix does not delete the state directory or SQLite files."`,
   },
 
   {

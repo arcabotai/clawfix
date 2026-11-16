@@ -1,0 +1,2 @@
+GatewayLockError: cannot verify Gateway ownership from this process; heartbeat age does not prove that the holder stopped. holder 42856 at unknown host, last renewed 4405255 s ago.
+cause: GatewayLockNamespaceError: cannot verify Gateway ownership from this process

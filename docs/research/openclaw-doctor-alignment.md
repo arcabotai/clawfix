@@ -335,3 +335,20 @@ Doctor invocations ClawFix itself starts (`doctor --lint` in the CLI and the hos
 | Companion | `~/.openclaw/tools/node-v<version>/bin/node`, `detected Node <version>`, or `Node <version> is unsupported` | [openclaw#191386](https://github.com/openclaw/openclaw/issues/191386) pinned Node 24.19.0. [openclaw#145658](https://github.com/openclaw/openclaw/issues/145658) passed `--node-version 22.22.3`. |
 
 When a gateway node is present and inside the range, the finding stays, at medium severity, and says the gateway node is fine. A failing gateway node, or a shell or Companion failure with no readable gateway node, stays critical. A timed-out probe with no version is not treated as a pass. Home-directory usernames are replaced with `~`. There is no catalog repair and no Node install or PATH change.
+
+## State lock and lease deadlocks
+
+Item 7 is applied. Doctor lint `warnings` are kept when present, on the CLI collector and the hosted script. `OPENCLAW_STATE_LEASE_ABORTED` in that array is a state-lease deadlock even though the finding itself was parked below `--severity-min`.
+
+`state-lock-deadlock` matches:
+
+| Shape | Evidence | Report |
+|---|---|---|
+| `state-directory` | `owns this state directory` | [openclaw#158893](https://github.com/openclaw/openclaw/issues/158893). Doctor and startup both refused `shared-auth-store` on an empty volume. |
+| `state-lifecycle` | `owns state-lifecycle` | The same ownership family. |
+| `gateway-lock` | `GatewayLockError`, `cannot verify Gateway ownership`, or `state ownership is no longer current` | [openclaw#198757](https://github.com/openclaw/openclaw/issues/198757). [openclaw#174895](https://github.com/openclaw/openclaw/issues/174895). A live owner was treated as stale. |
+| `lease-aborted` | `OPENCLAW_STATE_LEASE_ABORTED` | Alignment item 7. The check did not run. |
+
+The finding reports each holder pid, command, and age when those are available, and whether the process is alive. A missing pid, `EPERM`, or an unreadable command stays unknown. Unknown is not treated as dead.
+
+OpenClaw's sanctioned recovery is `openclaw gateway recover-lock`, then the exact `openclaw gateway recover-lock --confirm <fingerprint>` that inspection prints (`src/cli/gateway-cli/register-recover-lock.ts`). It refuses a verified live holder and removes unchanged lock sidecars. It does not delete the state directory or the SQLite database. The catalog repair `state-lock-deadlock` runs that pair only when every lock file under the state directory has a pid that is gone (`ESRCH`) or reused by a command that is not OpenClaw. It copies each lock file to a sibling `.clawfix-bak` first and restores those copies if confirmation fails. A live holder is not repairable. ClawFix does not signal the holder and does not delete SQLite files.
