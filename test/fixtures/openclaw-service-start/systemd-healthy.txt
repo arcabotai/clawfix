@@ -1,0 +1,7 @@
+Active: active (running)
+ActiveState=active
+SubState=running
+Result=success
+systemd: Started openclaw-gateway.service - OpenClaw Gateway.
+[gateway] received SIGTERM; shutting down
+[gateway] ready

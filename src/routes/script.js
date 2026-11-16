@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\\.auth REMOVED|config reload: gateway\\.auth\\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite' | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\\.auth REMOVED|config reload: gateway\\.auth\\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite|Gateway start timed out|Readiness budget exhausted|waiting for Gateway listener|readiness is not yet confirmed|waiting for managed service|Gateway child failed|IDP\\.HELU\\.PSE|stop-sigterm|in-process restart' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -1489,6 +1489,114 @@ if [ -z "\$MEMORY_REINDEX_JSON" ]; then
   MEMORY_REINDEX_JSON=null
 fi
 
+# Scheduled-task and systemd start facts. Never edit the task or the unit.
+SERVICE_START_JSON=null
+SERVICE_START_JSON=\$(node <<'NODE'
+const { execFileSync } = require('node:child_process');
+const os = require('node:os');
+const path = require('node:path');
+function run(cmd, args) {
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', timeout: 5000, maxBuffer: 200000 });
+  } catch (error) {
+    return '';
+  }
+}
+function redact(value) {
+  let text = String(value || '');
+  const home = os.homedir();
+  if (home && (text === home || text.startsWith(home + path.sep))) {
+    text = '~' + text.slice(home.length);
+  }
+  const parts = text.split(path.sep);
+  const usersAt = parts.findIndex(function (part) { return part === 'Users' || part === 'home'; });
+  if (usersAt >= 0 && parts[usersAt + 1]) {
+    text = ['~'].concat(parts.slice(usersAt + 2)).join('/');
+  }
+  return text.slice(0, 180);
+}
+function linesOf(text) {
+  return String(text || '').split('\\n');
+}
+function field(text, label) {
+  const prefix = label.toLowerCase() + ':';
+  for (const raw of linesOf(text)) {
+    const trimmed = raw.trim();
+    if (trimmed.toLowerCase().startsWith(prefix)) return trimmed.slice(prefix.length).trim();
+  }
+  return '';
+}
+function parseResult(value) {
+  const text = String(value || '').trim();
+  if (/^0x[0-9a-f]+$/i.test(text)) return Number.parseInt(text, 16);
+  if (/^-?\\d+$/.test(text)) return Number.parseInt(text, 10);
+  return null;
+}
+function show(args) {
+  const out = run('systemctl', args);
+  const props = {};
+  for (const raw of linesOf(out)) {
+    const eq = raw.indexOf('=');
+    if (eq <= 0) continue;
+    props[raw.slice(0, eq).trim()] = raw.slice(eq + 1).trim();
+  }
+  return props;
+}
+const property = '--property=LoadState,NRestarts,ActiveState,SubState,Result,ExecMainStatus';
+let systemd = null;
+let journal = '';
+if (process.platform !== 'win32') {
+  let props = show(['show', 'openclaw-gateway', property]);
+  let user = false;
+  if (!props.ActiveState || props.LoadState === 'not-found') {
+    const userProps = show(['--user', 'show', 'openclaw-gateway.service', property]);
+    if (userProps.ActiveState && userProps.LoadState !== 'not-found') {
+      props = userProps;
+      user = true;
+    }
+  }
+  if (props.ActiveState) {
+    const active = props.ActiveState;
+    const sub = props.SubState || '';
+    const unhealthy = ['activating', 'deactivating', 'failed'].indexOf(active) !== -1
+      || ['stop-sigterm', 'auto-restart', 'failed', 'start', 'start-pre', 'final-sigterm'].indexOf(sub) !== -1;
+    if (unhealthy) {
+      const jargs = [];
+      if (user) jargs.push('--user');
+      jargs.push('-u', user ? 'openclaw-gateway.service' : 'openclaw-gateway', '-n', '30', '--no-pager', '-o', 'short');
+      journal = linesOf(run('journalctl', jargs)).map(redact).filter(Boolean).slice(0, 8).join('\\n');
+    }
+    const execMain = parseResult(props.ExecMainStatus);
+    systemd = {
+      activeState: active,
+      subState: sub || null,
+      result: props.Result || null,
+      execMainStatus: execMain,
+    };
+  }
+}
+let scheduledTask = null;
+if (process.platform === 'win32') {
+  const names = ['OpenClaw Gateway', 'openclaw-gateway'];
+  for (let i = 0; i < names.length; i += 1) {
+    const out = run('schtasks', ['/Query', '/TN', names[i], '/FO', 'LIST', '/V']);
+    if (!out) continue;
+    const last = parseResult(field(out, 'Last Result'));
+    scheduledTask = { name: names[i], status: field(out, 'Status') || null, lastResult: last };
+    break;
+  }
+}
+process.stdout.write(JSON.stringify({
+  scheduledTask: scheduledTask,
+  systemd: systemd,
+  journal: journal,
+}));
+NODE
+) || true
+if [ -z "\$SERVICE_START_JSON" ]; then
+  SERVICE_START_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -1522,7 +1630,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON,
     "nodeRuntimes": \$NODE_RUNTIMES_JSON,
     "gatewayAuth": \$GATEWAY_AUTH_JSON,
-    "memoryReindexLocks": \$MEMORY_REINDEX_JSON
+    "memoryReindexLocks": \$MEMORY_REINDEX_JSON,
+    "serviceStart": \$SERVICE_START_JSON
   },
   "service": {
     "manager": "\$SERVICE_MANAGER",

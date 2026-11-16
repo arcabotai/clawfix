@@ -1,0 +1,3 @@
+Quarantine stays empty.
+Norton History was not reviewed for earlier dates.
+Behavioral Protection was paused and the gateway reached ready.

@@ -22,12 +22,14 @@ import {
   classifyAuthProfileMigration,
   classifyGatewayAuthLoss,
   classifyMemorySearchStall,
+  classifyServiceStartFailure,
   classifyNodeEngineMismatch,
   classifyStaleDeviceToken,
   classifyStateLockDeadlock,
   describeAuthProfileMigration,
   describeGatewayAuthLoss,
   describeMemorySearchStall,
+  describeServiceStartFailure,
   describeNodeEngineMismatch,
   describeStaleDeviceToken,
   describeStateLockDeadlock,
@@ -272,6 +274,31 @@ function stateLockInput(diag) {
   };
 }
 
+function serviceStartInput(diag) {
+  const facts = isPlainRecord(diag?.serviceStart) ? diag.serviceStart : {};
+  const service = isPlainRecord(diag?.service) ? diag.service : {};
+  const scheduledTask = isPlainRecord(facts.scheduledTask)
+    ? facts.scheduledTask
+    : service.manager === 'schtasks'
+      ? { status: service.taskStatus || service.state, lastResult: service.lastResult }
+      : null;
+  const systemd = isPlainRecord(facts.systemd)
+    ? facts.systemd
+    : service.manager === 'systemd'
+      ? {
+          activeState: service.activeState || service.state,
+          subState: service.subState,
+          result: service.result,
+          execMainStatus: service.execMainStatus,
+        }
+      : null;
+  return {
+    text: [logText(diag), facts.journal, service.journal, diag?.openclaw?.gatewayStatus].filter(Boolean).join('\n'),
+    scheduledTask,
+    systemd,
+  };
+}
+
 function memorySearchInput(diag) {
   const facts = isPlainRecord(diag?.openclaw?.memoryReindexLocks) ? diag.openclaw.memoryReindexLocks : {};
   return {
@@ -410,6 +437,60 @@ echo "If the finding names a lock and no reindex process is alive, stop the gate
 echo "https://github.com/openclaw/openclaw/issues/153011"
 echo "https://github.com/openclaw/openclaw/issues/136405"
 echo "ClawFix does not delete the lock."`,
+  },
+  {
+    id: 'windows-task-readiness-timeout',
+    severity: 'high',
+    title: 'Scheduled task did not become ready',
+    description: 'The Windows scheduled task "OpenClaw Gateway" timed out waiting for /healthz and /readyz, or its last result is a failed run. OpenClaw says to run openclaw gateway status --deep and openclaw doctor. ClawFix does not edit the task.',
+    detect: (diag) => {
+      try { return classifyServiceStartFailure(serviceStartInput(diag))?.id === 'windows-task-readiness-timeout'; }
+      catch { return false; }
+    },
+    describe: (diag) => describeServiceStartFailure(classifyServiceStartFailure(serviceStartInput(diag))),
+    fix: `# Detect only. Do not change the scheduled task.
+echo "The Windows scheduled task did not become ready."
+echo "OpenClaw prints: openclaw gateway status --deep"
+echo "OpenClaw prints: openclaw doctor"
+echo "Until a release contains the readiness fix: stop the scheduled-task Gateway, install the target with npm, run openclaw doctor --fix, then openclaw gateway start."
+echo "If update recovery left the task disabled, openclaw gateway install --force re-registers it."
+echo "https://github.com/openclaw/openclaw/issues/166004"
+echo "ClawFix does not edit the task."`,
+  },
+  {
+    id: 'antivirus-gateway-blocked',
+    severity: 'high',
+    title: 'Antivirus blocked the gateway or node',
+    description: 'Norton Behavioral Protection reported IDP.HELU.PSE90, or a later IDP.HELU.PSE signature, while the gateway or node was starting. Exclusions did not stop it. ClawFix does not change antivirus settings.',
+    detect: (diag) => {
+      try { return classifyServiceStartFailure(serviceStartInput(diag))?.id === 'antivirus-gateway-blocked'; }
+      catch { return false; }
+    },
+    severityFor: (diag) => classifyServiceStartFailure(serviceStartInput(diag))?.severity,
+    describe: (diag) => describeServiceStartFailure(classifyServiceStartFailure(serviceStartInput(diag))),
+    fix: `# Detect only. Do not change antivirus settings.
+echo "Antivirus behavior protection reported an IDP.HELU.PSE signature while the gateway or node was starting."
+echo "OpenClaw removed the PowerShell Add-Type private-directory step after 2026.9.2. Exclusions did not stop the detection."
+echo "Check the gateway: openclaw gateway status --deep"
+echo "https://github.com/openclaw/openclaw/issues/139468"
+echo "ClawFix does not change antivirus settings."`,
+  },
+  {
+    id: 'systemd-service-stuck',
+    severity: 'high',
+    title: 'systemd gateway service is stuck or failed',
+    description: 'openclaw-gateway is activating, deactivating (stop-sigterm), or failed. openclaw gateway restart can leave the same process alive. ClawFix does not edit the unit.',
+    detect: (diag) => {
+      try { return classifyServiceStartFailure(serviceStartInput(diag))?.id === 'systemd-service-stuck'; }
+      catch { return false; }
+    },
+    describe: (diag) => describeServiceStartFailure(classifyServiceStartFailure(serviceStartInput(diag))),
+    fix: `# Detect only. Do not edit the systemd unit.
+echo "The systemd unit is stuck starting, stopping, or failed."
+echo "openclaw gateway stop, then openclaw gateway start, is the sequence that finished."
+echo "openclaw gateway restart can leave the unit deactivating (stop-sigterm)."
+echo "https://github.com/openclaw/openclaw/issues/140821"
+echo "ClawFix does not edit the unit."`,
   },
 
   {
@@ -698,6 +779,7 @@ echo "Expected agent metadata: agentHarnessId=codex and fallbackUsed=false."`,
         || (diag.openclaw?.processExists === true && diag.openclaw?.portListening === true)) {
         return false;
       }
+      if (classifyServiceStartFailure(serviceStartInput(diag))) return false;
       if (hasCompetingGatewayPortOwner(diag)) return false;
       // Don't double-report if zombie/corrupted-state is detected (more specific)
       if (diag.openclaw?.processExists === true && diag.openclaw?.portListening === false) return false;

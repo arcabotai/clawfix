@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\.auth REMOVED|config reload: gateway\.auth\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\.auth REMOVED|config reload: gateway\.auth\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite|Gateway start timed out|Readiness budget exhausted|waiting for Gateway listener|readiness is not yet confirmed|waiting for managed service|Gateway child failed|IDP\.HELU\.PSE|stop-sigterm|in-process restart/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -1517,5 +1517,143 @@ export function describeMemorySearchStall(detail) {
   }
   parts.push('https://github.com/openclaw/openclaw/issues/153011');
   parts.push('https://github.com/openclaw/openclaw/issues/136405');
+  return parts.join(' ');
+}
+
+// Service start failures outside the macOS LaunchAgent path.
+// Windows last results that are not a failed run: 0 (success),
+// 267009 / 0x41301 (task is running), 267011 / 0x41303 (task has not run).
+const SCHEDULED_TASK_SUCCESS = new Set([0, 267009, 267011]);
+const WINDOWS_READINESS = /Gateway start timed out after \d+s waiting for \/healthz and \/readyz|Readiness budget exhausted|waiting for Gateway listener|readiness is not yet confirmed|waiting for managed service|gateway\/task-supervisor[\s\S]{0,240}Gateway child failed|Gateway child failed[\s\S]{0,240}gateway\/task-supervisor/i;
+const ANTIVIRUS_SIGNATURE = /IDP\.HELU\.PSE\d+/i;
+const SYSTEMD_STUCK_TEXT = /Active:\s*deactivating \(stop-sigterm\)|Active:\s*activating(?:\s|\()|Active:\s*failed|ActiveState=(?:deactivating|activating|failed)|SubState=stop-sigterm/i;
+const SYSTEMD_UNHEALTHY_ACTIVE = new Set(['activating', 'deactivating', 'failed']);
+const SYSTEMD_UNHEALTHY_SUB = new Set(['stop-sigterm', 'auto-restart', 'failed', 'start', 'start-pre', 'final-sigterm']);
+
+export function parseScheduledTaskResult(value) {
+  if (typeof value === 'number' && Number.isInteger(value)) return value;
+  const text = String(value ?? '').trim();
+  if (/^0x[0-9a-f]+$/i.test(text)) return Number.parseInt(text, 16);
+  if (/^-?\d+$/.test(text)) return Number.parseInt(text, 10);
+  return null;
+}
+
+function scheduledTaskFailed(task) {
+  if (!task || typeof task !== 'object') return false;
+  const status = String(task.status || '').trim().toLowerCase();
+  if (status === 'running') return false;
+  const lastResult = parseScheduledTaskResult(task.lastResult);
+  if (lastResult === null || SCHEDULED_TASK_SUCCESS.has(lastResult)) return false;
+  return true;
+}
+
+function systemdUnhealthy(unit) {
+  if (!unit || typeof unit !== 'object') return false;
+  const active = String(unit.activeState || '').trim().toLowerCase();
+  const sub = String(unit.subState || '').trim().toLowerCase();
+  if (active === 'active' && (sub === 'running' || sub === '')) return false;
+  if (SYSTEMD_UNHEALTHY_ACTIVE.has(active)) return true;
+  if (SYSTEMD_UNHEALTHY_SUB.has(sub)) return true;
+  return false;
+}
+
+function journalExcerpt(text) {
+  const lines = String(text || '').split(/\r?\n/)
+    .map(line => redactHomePath(line).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const picked = lines.filter(line => SYSTEMD_STUCK_TEXT.test(line)
+    || /Stopping openclaw-gateway|received SIGTERM|in-process restart/i.test(line));
+  return (picked.length > 0 ? picked : []).slice(0, 4).map(line => line.slice(0, 180));
+}
+
+function gatewayLooksUp(text) {
+  return /(?:connectivity|read) check:\s*ok|Runtime:\s*running|Active:\s*active \(running\)|ActiveState=active/i.test(String(text || ''));
+}
+
+export function classifyServiceStartFailure({ text = '', scheduledTask = null, systemd = null } = {}) {
+  const source = String(text ?? '');
+  const signature = source.match(ANTIVIRUS_SIGNATURE);
+  if (signature && /gateway|node\b|powershell|openclaw/i.test(source)) {
+    return Object.freeze({
+      id: 'antivirus-gateway-blocked',
+      severity: gatewayLooksUp(source) ? 'medium' : 'high',
+      signature: signature[0],
+      gatewayUp: gatewayLooksUp(source),
+    });
+  }
+  const unitStuck = systemdUnhealthy(systemd) || SYSTEMD_STUCK_TEXT.test(source);
+  if (unitStuck && !(systemd && String(systemd.activeState || '').toLowerCase() === 'active' && String(systemd.subState || '').toLowerCase() === 'running')) {
+    const active = systemd ? String(systemd.activeState || '').trim() : '';
+    const sub = systemd ? String(systemd.subState || '').trim() : '';
+    return Object.freeze({
+      id: 'systemd-service-stuck',
+      severity: 'high',
+      activeState: active || null,
+      subState: sub || null,
+      result: systemd && systemd.result ? String(systemd.result).slice(0, 40) : null,
+      journal: Object.freeze(journalExcerpt(source)),
+    });
+  }
+  const taskFailed = scheduledTaskFailed(scheduledTask);
+  if (WINDOWS_READINESS.test(source) || taskFailed) {
+    const lastResult = scheduledTask ? parseScheduledTaskResult(scheduledTask.lastResult) : null;
+    return Object.freeze({
+      id: 'windows-task-readiness-timeout',
+      severity: 'high',
+      status: scheduledTask && scheduledTask.status ? String(scheduledTask.status).slice(0, 40) : null,
+      lastResult,
+      timedOut: WINDOWS_READINESS.test(source),
+    });
+  }
+  return null;
+}
+
+export function serviceStartRepeats(id, message) {
+  const text = String(message || '');
+  if (id === 'windows-task-readiness-timeout') return WINDOWS_READINESS.test(text);
+  if (id === 'antivirus-gateway-blocked') return ANTIVIRUS_SIGNATURE.test(text);
+  if (id === 'systemd-service-stuck') return SYSTEMD_STUCK_TEXT.test(text);
+  return false;
+}
+
+export function describeServiceStartFailure(detail) {
+  if (!detail) return 'The gateway service did not start.';
+  if (detail.id === 'antivirus-gateway-blocked') {
+    const parts = [`Antivirus behavior protection reported ${detail.signature} while the gateway or node was starting.`];
+    parts.push('OpenClaw removed the PowerShell Add-Type private-directory step after 2026.9.2. Folder and process exclusions did not stop the detection.');
+    if (detail.gatewayUp) {
+      parts.push('The gateway still answered. openclaw gateway status --deep is the check OpenClaw prints for this. A later IDP.HELU.PSE card on status or doctor can appear while the gateway is up.');
+    } else {
+      parts.push('openclaw gateway status --deep shows whether the gateway is actually up. Install a release that contains the private-directory change, then start the gateway again.');
+    }
+    parts.push('ClawFix does not change antivirus settings.');
+    parts.push('https://github.com/openclaw/openclaw/issues/139468');
+    return parts.join(' ');
+  }
+  if (detail.id === 'systemd-service-stuck') {
+    const state = [detail.activeState, detail.subState].filter(Boolean).join(' / ') || 'stuck or failed';
+    const parts = [`The systemd unit openclaw-gateway is ${state}${detail.result ? `, result ${detail.result}` : ''}.`];
+    if (Array.isArray(detail.journal) && detail.journal.length > 0) {
+      parts.push(`Journal: ${detail.journal.join(' | ')}`);
+    }
+    parts.push('openclaw gateway restart can leave the unit deactivating (stop-sigterm) while the same process stays alive. openclaw gateway stop, then openclaw gateway start, is the sequence that finished.');
+    parts.push('ClawFix does not edit the unit.');
+    parts.push('https://github.com/openclaw/openclaw/issues/140821');
+    return parts.join(' ');
+  }
+  const parts = ['The Windows scheduled task did not become ready.'];
+  if (detail.status || detail.lastResult !== null && detail.lastResult !== undefined) {
+    const bits = [];
+    if (detail.status) bits.push(`status ${detail.status}`);
+    if (detail.lastResult !== null && detail.lastResult !== undefined) bits.push(`last result ${detail.lastResult}`);
+    parts.push(`Scheduled task "OpenClaw Gateway": ${bits.join(', ')}.`);
+  }
+  if (detail.timedOut) {
+    parts.push('The log has the readiness timeout (Gateway start timed out waiting for /healthz and /readyz, the readiness budget, or waiting for the managed service).');
+  }
+  parts.push('OpenClaw prints: openclaw gateway status --deep, and openclaw doctor.');
+  parts.push('Until a release contains the scheduled-task readiness fix, stop the scheduled-task Gateway, install the target with npm, run openclaw doctor --fix, then openclaw gateway start. If update recovery left the task disabled, openclaw gateway install --force re-registers it.');
+  parts.push('ClawFix does not edit the task.');
+  parts.push('https://github.com/openclaw/openclaw/issues/166004');
   return parts.join(' ');
 }

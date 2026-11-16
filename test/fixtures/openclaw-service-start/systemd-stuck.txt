@@ -1,0 +1,8 @@
+[gateway] received SIGTERM; restarting from /home/ada/.openclaw
+Active: deactivating (stop-sigterm) since the restart
+ActiveState=deactivating
+SubState=stop-sigterm
+Result=success
+systemd: Stopping openclaw-gateway.service - OpenClaw Gateway...
+[gateway] received SIGTERM; restarting from /home/ada/.openclaw
+[gateway] restart mode: in-process restart (OPENCLAW_NO_RESPAWN)
