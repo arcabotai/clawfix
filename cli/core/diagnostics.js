@@ -4,18 +4,25 @@ import {
 
 import {
   classifyLegacyHeartbeat,
+  classifyAuthProfileMigration,
+  classifyGatewayAuthLoss,
   classifyNodeEngineMismatch,
   classifyPluginsInstalls,
   classifyStateLockDeadlock,
   classifyPostUpgradeMigration,
+  classifyStaleDeviceToken,
   classifyStalledDoctor,
   describeLegacyHeartbeat,
+  describeAuthProfileMigration,
+  describeGatewayAuthLoss,
   describeNodeEngineMismatch,
   describePluginsInstalls,
   describeStateLockDeadlock,
   describePostUpgradeMigration,
+  describeStaleDeviceToken,
   describeStalledDoctor,
   readGatewayLiveness,
+  summarizeGatewayAuth,
   retainDiagnosticLogLine,
 } from '../bin/security.js';
 import {
@@ -1021,6 +1028,7 @@ export function deriveIssues(collected) {
     nativeConfig,
     nativeStatus,
     nativeSecurity,
+    gatewayAuth,
   } = collected;
 
   const issues = [];
@@ -1366,8 +1374,52 @@ export function deriveIssues(collected) {
     });
   }
 
+  const authText = [combinedLogs, system.versionCommandText].filter(Boolean).join('\n');
+  const authFindings = nativeDoctor?.timedOut === true ? [] : nativeDoctor?.findings;
+  const gatewayAuthLoss = classifyGatewayAuthLoss({
+    current: gatewayAuth?.current,
+    backups: gatewayAuth?.backups,
+    text: authText,
+  });
+  if (gatewayAuthLoss) {
+    issues.push({
+      knownIssueId: 'gateway-auth-removed',
+      severity: 'critical',
+      kind: 'failure',
+      text: 'gateway.auth was removed from the config',
+      description: describeGatewayAuthLoss(gatewayAuthLoss),
+      repairable: false,
+      source: 'openclaw-gateway-auth',
+    });
+  }
+  const authProfile = classifyAuthProfileMigration({ text: authText, findings: authFindings });
+  if (authProfile) {
+    issues.push({
+      knownIssueId: 'auth-profile-migration-required',
+      severity: 'high',
+      kind: 'failure',
+      text: 'Auth profile migration is blocking credentials',
+      description: describeAuthProfileMigration(authProfile),
+      repairable: false,
+      source: 'openclaw-auth-profile',
+    });
+  }
+  const staleDevice = classifyStaleDeviceToken({ text: authText, findings: authFindings });
+  if (staleDevice) {
+    issues.push({
+      knownIssueId: 'stale-device-token',
+      severity: 'medium',
+      kind: 'warning',
+      text: 'Cached operator device token is stale',
+      description: describeStaleDeviceToken(staleDevice),
+      repairable: false,
+      source: 'openclaw-device-token',
+    });
+  }
+
   for (const finding of nativeSecurity.findings) {
     if (finding.severity === 'info') continue;
+    if (finding.checkId === LOOPBACK_NO_AUTH_CHECK_ID && gatewayAuthLoss) continue;
     issues.push({
       severity: finding.severity === 'critical' ? 'critical'
         : finding.severity === 'error' ? 'high' : 'medium',
@@ -1395,6 +1447,9 @@ export function deriveIssues(collected) {
     // reported twice — once with an actionable title, once as the raw parser output.
     // core/doctor/security stores the original audit id in requirement, and the
     // missing-token gateway-auth shape is the same repair as gateway.loopback_no_auth.
+    if (gatewayAuthLoss && isMissingGatewayTokenFinding(finding)) continue;
+    if (authProfile && /AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials/i.test(String(finding.message || ''))) continue;
+    if (staleDevice && /withheld-cross-device|device token mismatch|stale device-token pattern/i.test(String(finding.message || ''))) continue;
     const alias = doctorRepairAlias(finding);
     const message = String(finding.message || '').toLowerCase();
     const duplicate = issues.some((issue) => (
@@ -1817,6 +1872,37 @@ export function createDiagnosticsCore({
     };
   }
 
+  const GATEWAY_AUTH_BACKUPS = [
+    'openclaw.json.bak',
+    'openclaw.json.bak.1',
+    'openclaw.json.bak.2',
+    'openclaw.json.pre-update',
+    'openclaw.json.last-good',
+  ];
+
+  async function readGatewayAuthEvidence(openclawDir, config, cancellation) {
+    const summary = summarizeGatewayAuth(config);
+    const current = summary
+      ? { read: true, present: summary.present, mode: summary.mode }
+      : { read: false, present: false, mode: null };
+    const backups = [];
+    if (openclawDir && typeof fs.readJson === 'function') {
+      for (const name of GATEWAY_AUTH_BACKUPS) {
+        const path = join(openclawDir, name);
+        try {
+          if (typeof fs.exists === 'function' && !await cancellation.race(() => fs.exists(path))) continue;
+          const parsed = await cancellation.race(() => fs.readJson(path));
+          const backup = summarizeGatewayAuth(parsed);
+          if (!backup) continue;
+          backups.push({ name, present: backup.present, mode: backup.mode });
+        } catch (error) {
+          if (error === CANCELLED) throw error;
+        }
+      }
+    }
+    return { current, backups };
+  }
+
   async function readConfig(openclawDir, cancellation) {
     const configPath = openclawDir ? join(openclawDir, 'openclaw.json') : null;
     let config = null;
@@ -2082,6 +2168,13 @@ export function createDiagnosticsCore({
           nodeRuntimes = null;
         }
       }
+      let gatewayAuth = null;
+      try {
+        gatewayAuth = await readGatewayAuthEvidence(openclawDir, config, cancellation);
+      } catch (error) {
+        if (error === CANCELLED) throw error;
+        gatewayAuth = null;
+      }
       const issues = deriveIssues({
         config,
         system,
@@ -2098,6 +2191,7 @@ export function createDiagnosticsCore({
         updateAvailability,
         stuckSessionWindows,
         nodeRuntimes,
+        gatewayAuth,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -2158,6 +2252,9 @@ export function createDiagnosticsCore({
           runtimeCurrent: system.runtimeCurrent,
           ...(nodeRuntimes && Array.isArray(nodeRuntimes.runtimes)
             ? { nodeRuntimes }
+            : {}),
+          ...(gatewayAuth && (gatewayAuth.current?.present === true || gatewayAuth.backups?.length > 0)
+            ? { gatewayAuth }
             : {}),
           ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
           ...(cliVersion ? { cliVersion } : {}),

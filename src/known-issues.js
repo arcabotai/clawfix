@@ -19,9 +19,15 @@ import {
   describeOpenClawUpdateAvailable,
   describePostUpgradeMigration,
   describeStalledDoctor,
+  classifyAuthProfileMigration,
+  classifyGatewayAuthLoss,
   classifyNodeEngineMismatch,
+  classifyStaleDeviceToken,
   classifyStateLockDeadlock,
+  describeAuthProfileMigration,
+  describeGatewayAuthLoss,
   describeNodeEngineMismatch,
+  describeStaleDeviceToken,
   describeStateLockDeadlock,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
@@ -237,6 +243,23 @@ export function hasLegacyHeartbeatConfig(config) {
   return legacyHeartbeatPaths(config).length > 0;
 }
 
+function authEvidence(diag) {
+  const doctor = nativeDoctorFromDiagnostic(diag);
+  return {
+    text: logText(diag),
+    findings: Array.isArray(doctor?.findings) ? doctor.findings : [],
+  };
+}
+
+function gatewayAuthInput(diag) {
+  const facts = isPlainRecord(diag?.openclaw?.gatewayAuth) ? diag.openclaw.gatewayAuth : {};
+  return {
+    current: facts.current,
+    backups: facts.backups,
+    text: logText(diag),
+  };
+}
+
 function stateLockInput(diag) {
   const doctor = nativeDoctorFromDiagnostic(diag);
   const facts = isPlainRecord(diag?.openclaw?.stateLock) ? diag.openclaw.stateLock : {};
@@ -311,6 +334,52 @@ echo "  openclaw gateway recover-lock"
 echo "  openclaw gateway recover-lock --confirm <fingerprint>"
 echo "ClawFix runs that command only when every holder pid is proven dead or reused by a non-OpenClaw command, and only after copying lock files aside."
 echo "ClawFix does not delete the state directory or SQLite files."`,
+  },
+  {
+    id: 'gateway-auth-removed',
+    severity: 'critical',
+    title: 'gateway.auth was removed from the config',
+    description: 'A backup or the gateway log shows gateway.auth was present and then removed. The token is not printed. Restore the block from the rotated backup that still contains it. This is not the same as gateway auth never having been configured.',
+    detect: (diag) => {
+      try { return classifyGatewayAuthLoss(gatewayAuthInput(diag)) !== null; } catch { return false; }
+    },
+    describe: (diag) => describeGatewayAuthLoss(classifyGatewayAuthLoss(gatewayAuthInput(diag))),
+    fix: `# Detect only. Do not print the token and do not rewrite the config.
+echo "gateway.auth was removed. Restore that block from openclaw.json.bak, .bak.1, .bak.2, or .pre-update, then restart the gateway."
+echo "https://github.com/openclaw/openclaw/issues/143131"
+echo "ClawFix does not restore the block or print the token."`,
+  },
+  {
+    id: 'auth-profile-migration-required',
+    severity: 'high',
+    title: 'Auth profile migration is blocking credentials',
+    description: 'AUTH_PROFILE_MIGRATION_REQUIRED, a legacy credential migration refusal, or a Doctor archive that did not replay credentials. OpenClaw\'s recovery is doctor --fix on a build that contains the receipt repair, or a restored archive plus re-authentication. ClawFix does not run that repair.',
+    detect: (diag) => {
+      try { return classifyAuthProfileMigration(authEvidence(diag)) !== null; } catch { return false; }
+    },
+    describe: (diag) => describeAuthProfileMigration(classifyAuthProfileMigration(authEvidence(diag))),
+    fix: `# Detect only. Do not run doctor --fix and do not restore credential files.
+echo "Auth profile migration is blocking credentials."
+echo "On a build after 2026.8.2, OpenClaw documents: openclaw doctor --fix"
+echo "If the receipt is already inconsistent, restore the archived auth JSON from backup and run doctor --fix again, or re-authenticate the provider."
+echo "https://github.com/openclaw/openclaw/issues/134608"
+echo "ClawFix does not run doctor --fix and does not restore credentials."`,
+  },
+  {
+    id: 'stale-device-token',
+    severity: 'medium',
+    title: 'Cached operator device token is stale',
+    description: 'The CLI presents a device token that predates gateway rotation. Rotate can return withheld-cross-device, and the mismatch line repeats. OpenClaw tells you to reconnect with shared gateway auth or rotate the device. The token value is not printed.',
+    detect: (diag) => {
+      try { return classifyStaleDeviceToken(authEvidence(diag)) !== null; } catch { return false; }
+    },
+    describe: (diag) => describeStaleDeviceToken(classifyStaleDeviceToken(authEvidence(diag))),
+    fix: `# Detect only. Do not rotate, revoke, or print a token.
+echo "A cached operator device token is stale."
+echo "OpenClaw documents: reconnect with shared gateway auth, or openclaw devices rotate --device <id> --role operator."
+echo "On the reported host, rotate returned withheld-cross-device and doctor --fix left the warning in place."
+echo "https://github.com/openclaw/openclaw/issues/189206"
+echo "ClawFix does not rotate, revoke, or remove the device, and does not print the token."`,
   },
 
   {
