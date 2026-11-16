@@ -13,6 +13,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import {
   collectListeningPort,
+  collectMemoryReindexLocks,
   collectNativeConfigValidation,
   collectNativeDoctor,
   collectNativeSecurityAudit,
@@ -600,6 +601,7 @@ function createCliDiagnosticsCore() {
       collectNativeStatus,
       collectNativeSecurityAudit,
       collectOpenClawUpdateStatus,
+      collectMemoryReindexLocks,
     },
   });
 }

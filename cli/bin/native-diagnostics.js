@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { runProcess, runProcessSync } from '../adapters/process.js';
@@ -776,4 +776,62 @@ export function collectListeningPort(port, runSync = defaultRunSync) {
     collector: null,
     error,
   };
+}
+
+const REINDEX_LOCK_SUFFIX = '.reindex-lock.sqlite';
+const REINDEX_LOCK_MAX = 8;
+const REINDEX_LOCK_MAX_DEPTH = 6;
+
+function memoryReindexProcessAlive(runSync) {
+  try {
+    const result = normalizeProcessResult(runSync('ps', ['-eo', 'args='], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxStdoutBytes: 200_000,
+      maxStderrBytes: 400,
+    }));
+    return String(result.stdout || '').split('\n').some(line => {
+      if (/\bclawfix\b/i.test(line)) return false;
+      return /\bopenclaw\b/.test(line) && /\bmemory\b/.test(line) && /\b(?:index|reindex)\b/.test(line);
+    });
+  } catch {
+    return false;
+  }
+}
+
+// *.reindex-lock.sqlite is a SQLite coordination file, not a pid file.
+// Report path, size, and age. Never unlink it.
+export function collectMemoryReindexLocks({ stateDir, runSync = defaultRunSync, now = Date.now() } = {}) {
+  const reindexAlive = memoryReindexProcessAlive(runSync);
+  const locks = [];
+  const root = typeof stateDir === 'string' ? stateDir : '';
+  if (root) walk(root, 0);
+  return { reindexAlive, locks };
+
+  function walk(dir, depth) {
+    if (locks.length >= REINDEX_LOCK_MAX || depth > REINDEX_LOCK_MAX_DEPTH) return;
+    let names;
+    try { names = readdirSync(dir); }
+    catch { return; }
+    for (const name of names) {
+      if (locks.length >= REINDEX_LOCK_MAX) return;
+      const full = join(dir, name);
+      let info;
+      try { info = lstatSync(full); }
+      catch { continue; }
+      if (info.isSymbolicLink()) continue;
+      if (info.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+      if (!info.isFile() || !name.endsWith(REINDEX_LOCK_SUFFIX)) continue;
+      locks.push({
+        path: redactHomePath(full),
+        bytes: info.size,
+        ageMs: Math.max(0, Math.floor(now - info.mtimeMs)),
+        reindexAlive,
+      });
+    }
+  }
 }

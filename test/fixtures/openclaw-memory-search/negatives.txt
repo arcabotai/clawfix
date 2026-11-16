@@ -1,0 +1,5 @@
+memory_search timed out after 60s
+embedding client timed out after 120s
+Memory reindex lock is held at ~/.openclaw/agents/main/agent/openclaw-agent.sqlite.reindex-lock.sqlite; another reindex is active.
+memory search is disabled
+lock file removed

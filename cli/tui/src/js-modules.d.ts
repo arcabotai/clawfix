@@ -4,6 +4,7 @@
 
 declare module "../../bin/native-diagnostics.js" {
   export const collectListeningPort: any
+  export const collectMemoryReindexLocks: any
   export const collectNativeConfigValidation: any
   export const collectNativeDoctor: any
   export const collectNativeSecurityAudit: any

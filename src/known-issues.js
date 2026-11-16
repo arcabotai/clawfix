@@ -21,11 +21,13 @@ import {
   describeStalledDoctor,
   classifyAuthProfileMigration,
   classifyGatewayAuthLoss,
+  classifyMemorySearchStall,
   classifyNodeEngineMismatch,
   classifyStaleDeviceToken,
   classifyStateLockDeadlock,
   describeAuthProfileMigration,
   describeGatewayAuthLoss,
+  describeMemorySearchStall,
   describeNodeEngineMismatch,
   describeStaleDeviceToken,
   describeStateLockDeadlock,
@@ -270,6 +272,14 @@ function stateLockInput(diag) {
   };
 }
 
+function memorySearchInput(diag) {
+  const facts = isPlainRecord(diag?.openclaw?.memoryReindexLocks) ? diag.openclaw.memoryReindexLocks : {};
+  return {
+    text: logText(diag),
+    locks: Array.isArray(facts.locks) ? facts.locks : [],
+  };
+}
+
 function nodeEngineInput(diag) {
   const openclaw = isPlainRecord(diag?.openclaw) ? diag.openclaw : {};
   const facts = isPlainRecord(openclaw.nodeRuntimes) ? openclaw.nodeRuntimes : {};
@@ -380,6 +390,26 @@ echo "OpenClaw documents: reconnect with shared gateway auth, or openclaw device
 echo "On the reported host, rotate returned withheld-cross-device and doctor --fix left the warning in place."
 echo "https://github.com/openclaw/openclaw/issues/189206"
 echo "ClawFix does not rotate, revoke, or remove the device, and does not print the token."`,
+  },
+  {
+    id: 'memory-search-stall',
+    severity: 'medium',
+    title: 'memory_search stalled on a reindex lock',
+    description: 'memory_search hit the 15s tool deadline, or a .reindex-lock.sqlite file is 0 bytes or older than that deadline while no reindex process is alive. Doctor memory search is off unless you pass --all or --only core/doctor/memory-search. ClawFix does not delete the lock.',
+    detect: (diag) => {
+      try { return classifyMemorySearchStall(memorySearchInput(diag)) !== null; } catch { return false; }
+    },
+    describe: (diag) => describeMemorySearchStall(classifyMemorySearchStall(memorySearchInput(diag))),
+    fix: `# Detect only. Do not delete the reindex lock.
+echo "memory_search stalled. Doctor skips this check unless you opt in:"
+echo "  openclaw doctor --lint --json --only core/doctor/memory-search"
+echo "  openclaw doctor --lint --json --all"
+echo "Verify the index without taking the reindex lease:"
+echo "  openclaw memory status --deep"
+echo "If the finding names a lock and no reindex process is alive, stop the gateway and rename that .reindex-lock.sqlite aside."
+echo "https://github.com/openclaw/openclaw/issues/153011"
+echo "https://github.com/openclaw/openclaw/issues/136405"
+echo "ClawFix does not delete the lock."`,
   },
 
   {

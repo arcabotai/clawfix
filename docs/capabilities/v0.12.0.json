@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 61,
+    "deterministicCount": 62,
     "ids": [
       "auth-profile-migration-required",
       "auto-update-enabled-warning",
@@ -101,6 +101,7 @@
       "macos-app-metadata-upgrade",
       "matrix-sync-timeout-spam",
       "mem0-graph-free",
+      "memory-search-stall",
       "missing-agents-md",
       "native-codex-timeout-boundary",
       "no-compaction-config",

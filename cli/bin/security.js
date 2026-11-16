@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\.auth REMOVED|config reload: gateway\.auth\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\.auth REMOVED|config reload: gateway\.auth\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -1445,5 +1445,77 @@ export function describeStaleDeviceToken(detail) {
   parts.push('On the reported host both of those left the stale token in place. Passing the shared gateway token explicitly avoids the device-token handshake. The token value is not printed.');
   parts.push('https://github.com/openclaw/openclaw/issues/189206');
   parts.push('ClawFix does not rotate, revoke, or remove the device.');
+  return parts.join(' ');
+}
+
+// memory_search aborts at this whole-tool deadline (openclaw#136405,
+// DEFAULT_TIMEOUT_MS = 15000). The on-disk reindex lock wait is only 2s
+// (REINDEX_LOCK_WAIT_TIMEOUT_MS). A lock younger than the search deadline is
+// still fresh. Older than that, with no live reindex, it is residue.
+export const MEMORY_SEARCH_TIMEOUT_MS = 15_000;
+export const REINDEX_LOCK_STALE_MS = MEMORY_SEARCH_TIMEOUT_MS;
+
+export const MEMORY_SEARCH_TIMEOUT = /MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory[_ ]search\b[^.\n]{0,120}(?:timed out after 15s|15s timeout|15-second timeout)/i;
+
+export function classifyMemorySearchStall({ text = '', locks = [] } = {}) {
+  const timedOut = MEMORY_SEARCH_TIMEOUT.test(String(text ?? ''));
+  const staleLocks = [];
+  for (const lock of (Array.isArray(locks) ? locks : []).slice(0, 8)) {
+    const bytes = Number(lock?.bytes);
+    const ageMs = Math.floor(Number(lock?.ageMs));
+    if (!Number.isSafeInteger(bytes) || bytes < 0) continue;
+    if (!Number.isSafeInteger(ageMs) || ageMs < 0) continue;
+    // A live reindex owns the lock, including a long rebuild. Do not call it residue.
+    if (lock.reindexAlive === true) continue;
+    const empty = bytes === 0;
+    const old = ageMs >= REINDEX_LOCK_STALE_MS;
+    if (!empty && !old) continue;
+    const path = typeof lock.path === 'string' ? redactHomePath(lock.path).slice(0, 300) : null;
+    if (!path || !path.endsWith('.reindex-lock.sqlite')) continue;
+    staleLocks.push(Object.freeze({
+      path,
+      bytes,
+      ageMs,
+      reindexAlive: lock.reindexAlive === false ? false : null,
+      empty,
+    }));
+  }
+  if (!timedOut && staleLocks.length === 0) return null;
+  return Object.freeze({
+    timedOut,
+    locks: Object.freeze(staleLocks),
+  });
+}
+
+function formatLockAgeMs(ageMs) {
+  const seconds = Math.floor(ageMs / 1000);
+  if (seconds < 90) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+
+export function describeMemorySearchStall(detail) {
+  if (!detail) return 'memory_search stalled.';
+  const parts = [];
+  if (detail.timedOut) {
+    parts.push('memory_search hit the 15s tool deadline (MemorySearch timed out after 15s, or memory-lancedb embedding timed out).');
+  }
+  for (const lock of detail.locks || []) {
+    const kind = lock.empty ? '0-byte' : `${lock.bytes} bytes`;
+    const liveness = lock.reindexAlive === false
+      ? 'no reindex process is alive'
+      : 'whether a reindex process is alive was not checked';
+    parts.push(`Reindex lock ${lock.path} is ${kind}, age ${formatLockAgeMs(lock.ageMs)}, and ${liveness}.`);
+  }
+  parts.push('Doctor skips memory search unless you pass --all or --only core/doctor/memory-search. openclaw memory status --deep checks the index without taking the reindex lease.');
+  parts.push('OpenClaw waits 2s for the lock (REINDEX_LOCK_WAIT_TIMEOUT_MS) and does not delete it by age. A 0-byte file, or a non-empty file older than the 15s search deadline, is leftover only when no reindex is running.');
+  if ((detail.locks || []).length > 0) {
+    parts.push('After you confirm no reindex is running, stop the gateway and rename that lock aside. Search returned immediately when the reported lock was renamed. ClawFix does not delete it.');
+  } else {
+    parts.push('No stale reindex lock was found. If a reindex is still running, let it finish. ClawFix does not delete a lock a live process holds.');
+  }
+  parts.push('https://github.com/openclaw/openclaw/issues/153011');
+  parts.push('https://github.com/openclaw/openclaw/issues/136405');
   return parts.join(' ');
 }

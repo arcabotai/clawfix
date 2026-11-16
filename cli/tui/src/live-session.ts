@@ -14,6 +14,7 @@ import { arch, homedir, hostname, platform, release } from "node:os"
 
 import {
   collectListeningPort,
+  collectMemoryReindexLocks,
   collectNativeConfigValidation,
   collectNativeDoctor,
   collectNativeSecurityAudit,
@@ -84,6 +85,7 @@ export function createLiveSession(options: LiveSessionOptions): SessionBridge {
       collectNativeConfigValidation,
       collectNativeStatus,
       collectNativeSecurityAudit,
+      collectMemoryReindexLocks,
     },
   })
 

@@ -10,6 +10,7 @@ import {
   classifyPluginsInstalls,
   classifyStateLockDeadlock,
   classifyPostUpgradeMigration,
+  classifyMemorySearchStall,
   classifyStaleDeviceToken,
   classifyStalledDoctor,
   describeLegacyHeartbeat,
@@ -19,8 +20,10 @@ import {
   describePluginsInstalls,
   describeStateLockDeadlock,
   describePostUpgradeMigration,
+  describeMemorySearchStall,
   describeStaleDeviceToken,
   describeStalledDoctor,
+  MEMORY_SEARCH_TIMEOUT,
   readGatewayLiveness,
   summarizeGatewayAuth,
   retainDiagnosticLogLine,
@@ -1416,6 +1419,21 @@ export function deriveIssues(collected) {
       source: 'openclaw-device-token',
     });
   }
+  const memoryStall = classifyMemorySearchStall({
+    text: authText,
+    locks: collected.memoryReindexLocks?.locks,
+  });
+  if (memoryStall) {
+    issues.push({
+      knownIssueId: 'memory-search-stall',
+      severity: 'medium',
+      kind: 'warning',
+      text: 'memory_search stalled on a reindex lock',
+      description: describeMemorySearchStall(memoryStall),
+      repairable: false,
+      source: 'openclaw-memory-search',
+    });
+  }
 
   for (const finding of nativeSecurity.findings) {
     if (finding.severity === 'info') continue;
@@ -1450,6 +1468,7 @@ export function deriveIssues(collected) {
     if (gatewayAuthLoss && isMissingGatewayTokenFinding(finding)) continue;
     if (authProfile && /AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials/i.test(String(finding.message || ''))) continue;
     if (staleDevice && /withheld-cross-device|device token mismatch|stale device-token pattern/i.test(String(finding.message || ''))) continue;
+    if (memoryStall && MEMORY_SEARCH_TIMEOUT.test(String(finding.message || ''))) continue;
     const alias = doctorRepairAlias(finding);
     const message = String(finding.message || '').toLowerCase();
     const duplicate = issues.some((issue) => (
@@ -2175,6 +2194,18 @@ export function createDiagnosticsCore({
         if (error === CANCELLED) throw error;
         gatewayAuth = null;
       }
+      let memoryReindexLocks = null;
+      const collectMemoryReindexLocks = nativeCollectors?.collectMemoryReindexLocks;
+      if (openclawDir && typeof collectMemoryReindexLocks === 'function') {
+        try {
+          memoryReindexLocks = await cancellation.race(() => Promise.resolve(collectMemoryReindexLocks({
+            stateDir: openclawDir,
+          })));
+        } catch (error) {
+          if (error === CANCELLED) throw error;
+          memoryReindexLocks = null;
+        }
+      }
       const issues = deriveIssues({
         config,
         system,
@@ -2192,6 +2223,7 @@ export function createDiagnosticsCore({
         stuckSessionWindows,
         nodeRuntimes,
         gatewayAuth,
+        memoryReindexLocks,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -2255,6 +2287,9 @@ export function createDiagnosticsCore({
             : {}),
           ...(gatewayAuth && (gatewayAuth.current?.present === true || gatewayAuth.backups?.length > 0)
             ? { gatewayAuth }
+            : {}),
+          ...(memoryReindexLocks && Array.isArray(memoryReindexLocks.locks) && memoryReindexLocks.locks.length > 0
+            ? { memoryReindexLocks }
             : {}),
           ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
           ...(cliVersion ? { cliVersion } : {}),
