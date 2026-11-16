@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership' | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\\.auth REMOVED|config reload: gateway\\.auth\\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -1381,6 +1381,53 @@ if [ -z "\$NODE_RUNTIMES_JSON" ]; then
   NODE_RUNTIMES_JSON=null
 fi
 
+# gateway.auth presence only. Mode is token, password, none, or trusted-proxy.
+# The token value is never written into this payload.
+GATEWAY_AUTH_JSON=null
+GATEWAY_AUTH_JSON=\$(node - "\$OPENCLAW_CONFIG" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const configPath = process.argv[2] || '';
+const names = [
+  'openclaw.json.bak',
+  'openclaw.json.bak.1',
+  'openclaw.json.bak.2',
+  'openclaw.json.pre-update',
+  'openclaw.json.last-good',
+];
+const modes = { token: true, password: true, none: true, 'trusted-proxy': true };
+function summarize(file) {
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { return null; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const gateway = parsed.gateway;
+  if (!gateway || typeof gateway !== 'object' || Array.isArray(gateway)) return { present: false, mode: null };
+  const auth = gateway.auth;
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) return { present: false, mode: null };
+  const mode = typeof auth.mode === 'string' && modes[auth.mode] ? auth.mode : null;
+  return { present: true, mode: mode };
+}
+let current = { read: false, present: false, mode: null };
+if (configPath) {
+  const summary = summarize(configPath);
+  if (summary) current = { read: true, present: summary.present, mode: summary.mode };
+}
+const backups = [];
+const dir = configPath ? path.dirname(configPath) : '';
+if (dir) {
+  for (let i = 0; i < names.length; i += 1) {
+    const summary = summarize(path.join(dir, names[i]));
+    if (!summary) continue;
+    backups.push({ name: names[i], present: summary.present, mode: summary.mode });
+  }
+}
+process.stdout.write(JSON.stringify({ current: current, backups: backups }));
+NODE
+) || true
+if [ -z "\$GATEWAY_AUTH_JSON" ]; then
+  GATEWAY_AUTH_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -1412,7 +1459,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "portListening": \$PORT_LISTENING,
     "doctorProcesses": \$DOCTOR_PROCESSES_JSON,
     "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON,
-    "nodeRuntimes": \$NODE_RUNTIMES_JSON
+    "nodeRuntimes": \$NODE_RUNTIMES_JSON,
+    "gatewayAuth": \$GATEWAY_AUTH_JSON
   },
   "service": {
     "manager": "\$SERVICE_MANAGER",

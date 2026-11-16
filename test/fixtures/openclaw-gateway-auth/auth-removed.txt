@@ -1,0 +1,4 @@
+12:20:11  config.write by pid 12298, argv [node, dist/index.js, gateway, --port, 18789]
+          978 -> 914 bytes, gateway.auth REMOVED
+12:20:13  gateway_boot_lifecycle: planned_restart, reason "config reload: gateway.auth.mode, gateway.tailscale"
+12:20:20  914-byte auth-less config promoted to last_known_good and openclaw.json.last-good

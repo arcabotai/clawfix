@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\.auth REMOVED|config reload: gateway\.auth\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -1341,5 +1341,109 @@ export function describeStateLockDeadlock(detail) {
     parts.push('This is detect-only until every holder pid is proven dead or reused by a non-OpenClaw command. Run openclaw gateway recover-lock only after you have confirmed the holder stopped, then run the --confirm command it prints.');
   }
   parts.push('ClawFix does not delete the state directory or SQLite files.');
+  return parts.join(' ');
+}
+
+const GATEWAY_AUTH_MODES = new Set(['token', 'password', 'none', 'trusted-proxy']);
+
+export function summarizeGatewayAuth(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
+  const gateway = config.gateway;
+  if (!gateway || typeof gateway !== 'object' || Array.isArray(gateway)) {
+    return Object.freeze({ present: false, mode: null });
+  }
+  const auth = gateway.auth;
+  if (!auth || typeof auth !== 'object' || Array.isArray(auth)) {
+    return Object.freeze({ present: false, mode: null });
+  }
+  const mode = typeof auth.mode === 'string' && GATEWAY_AUTH_MODES.has(auth.mode) ? auth.mode : null;
+  return Object.freeze({ present: true, mode });
+}
+
+function authEvidenceText(text, findings) {
+  const messages = (Array.isArray(findings) ? findings : [])
+    .map(finding => [finding?.message, finding?.checkId, finding?.errorCode].filter(Boolean).join(' '))
+    .join('\n');
+  return [text, messages].filter(Boolean).join('\n');
+}
+
+/**
+ * gateway.auth was present and then removed. A missing block alone is not evidence.
+ * A backup that still has token or password mode, or the removal log, is.
+ */
+export function classifyGatewayAuthLoss({ current, backups = [], text = '' } = {}) {
+  if (current?.read === true && current.present === true) return null;
+  const prior = (Array.isArray(backups) ? backups : []).find(backup => (
+    backup?.present === true && (backup.mode === 'token' || backup.mode === 'password')
+  ));
+  const logged = /gateway\.auth REMOVED/i.test(text)
+    && /config reload:\s*gateway\.auth\.mode/i.test(text);
+  if (!prior && !logged) return null;
+  if (current?.read === true && current.present !== false && !logged) return null;
+  return Object.freeze({
+    backup: prior ? String(prior.name || '').slice(0, 80) : null,
+    mode: prior?.mode || null,
+    logged,
+  });
+}
+
+export function describeGatewayAuthLoss(detail) {
+  if (!detail) return 'gateway.auth was removed.';
+  const where = detail.backup
+    ? `The backup ${detail.backup} still has gateway.auth mode ${detail.mode || 'set'}.`
+    : 'The gateway log records gateway.auth REMOVED during config reload: gateway.auth.mode.';
+  return [
+    'gateway.auth was removed after the gateway rewrote its config.',
+    where,
+    'The token is not printed.',
+    'OpenClaw does not document an automatic migration of that block into the state database.',
+    'Restore the gateway.auth block from the rotated backup that still contains it (openclaw.json.bak, .bak.1, .bak.2, or .pre-update), then restart the gateway.',
+    'https://github.com/openclaw/openclaw/issues/143131',
+    'ClawFix does not restore the block or print the token.',
+  ].join(' ');
+}
+
+export function classifyAuthProfileMigration({ text = '', findings = [] } = {}) {
+  const source = authEvidenceText(text, findings);
+  const shapes = [];
+  if (/AUTH_PROFILE_MIGRATION_REQUIRED/.test(source)) shapes.push('code');
+  if (/requires legacy credential migration/i.test(source)) shapes.push('store');
+  if (/Archived a previously migrated legacy auth source without replaying credentials/i.test(source)) shapes.push('archived');
+  if (shapes.length === 0) return null;
+  return Object.freeze({ shapes: Object.freeze(shapes) });
+}
+
+export function describeAuthProfileMigration(detail) {
+  const shapes = detail?.shapes || [];
+  const parts = ['Auth profile migration is blocking provider credentials.'];
+  if (shapes.includes('code')) parts.push('The runtime returns AUTH_PROFILE_MIGRATION_REQUIRED.');
+  if (shapes.includes('store')) parts.push('The auth profile store requires legacy credential migration.');
+  if (shapes.includes('archived')) parts.push('Doctor archived a previously migrated legacy auth source without replaying credentials.');
+  parts.push('OpenClaw\'s documented recovery is openclaw doctor --fix on a build that contains the receipt repair (after 2026.8.2). If the success receipt is already inconsistent, restore the archived auth JSON from backup and run doctor --fix again, or re-authenticate the provider.');
+  parts.push('https://github.com/openclaw/openclaw/issues/134608');
+  parts.push('ClawFix does not run doctor --fix and does not restore credentials.');
+  return parts.join(' ');
+}
+
+export function classifyStaleDeviceToken({ text = '', findings = [] } = {}) {
+  const source = authEvidenceText(text, findings);
+  const shapes = [];
+  if (/withheld-cross-device/.test(source)) shapes.push('withheld');
+  if (/device token mismatch \(rotate\/reissue device token\)/.test(source)) shapes.push('mismatch');
+  if (/stale device-token pattern/.test(source)) shapes.push('stale-pattern');
+  if (shapes.length === 0) return null;
+  return Object.freeze({ shapes: Object.freeze(shapes) });
+}
+
+export function describeStaleDeviceToken(detail) {
+  const shapes = detail?.shapes || [];
+  const parts = ['A cached operator device token is stale.'];
+  if (shapes.includes('mismatch')) parts.push('Gateway connect fails with unauthorized: device token mismatch (rotate/reissue device token).');
+  if (shapes.includes('withheld')) parts.push('devices rotate returns tokenDelivery withheld-cross-device, so the replacement token is not delivered.');
+  if (shapes.includes('stale-pattern')) parts.push('Doctor calls this a stale device-token pattern that predates the gateway rotation.');
+  parts.push('OpenClaw\'s doctor text says to reconnect with shared gateway auth, or run openclaw devices rotate --device <id> --role operator.');
+  parts.push('On the reported host both of those left the stale token in place. Passing the shared gateway token explicitly avoids the device-token handshake. The token value is not printed.');
+  parts.push('https://github.com/openclaw/openclaw/issues/189206');
+  parts.push('ClawFix does not rotate, revoke, or remove the device.');
   return parts.join(' ');
 }

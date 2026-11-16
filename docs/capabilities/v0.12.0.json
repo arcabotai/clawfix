@@ -64,8 +64,9 @@
     }
   },
   "detectors": {
-    "deterministicCount": 58,
+    "deterministicCount": 61,
     "ids": [
+      "auth-profile-migration-required",
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
       "browser-port-binding",
@@ -83,6 +84,7 @@
       "doctor-fix-stalled",
       "duplicate-plugin",
       "filevault-blocks-reboot",
+      "gateway-auth-removed",
       "gateway-extended-downtime",
       "gateway-not-listening",
       "gateway-not-running",
@@ -119,6 +121,7 @@
       "redacted-placeholder-corruption",
       "session-transcript-not-indexed",
       "stale-bundled-plugin-load-paths",
+      "stale-device-token",
       "stale-plist-env-secrets",
       "stale-self-paired-node",
       "state-dir-migration",
