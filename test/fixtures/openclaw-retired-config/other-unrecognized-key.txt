@@ -1,0 +1,3 @@
+Update refused: configuration is invalid at ~/.openclaw/openclaw.json.
+- agents.defaults: unrecognized key "sandbox"
+Failing check candidate-admission (invalid-config)

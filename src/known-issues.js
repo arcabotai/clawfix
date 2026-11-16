@@ -6,17 +6,23 @@
 
 import {
   classifyHeartbeatScratchFile,
+  classifyLegacyHeartbeat,
+  classifyPluginsInstalls,
   classifyPostUpgradeMigration,
   classifyStalledDoctor,
   configWrittenByNewerVersion,
   describeConfigWrittenByNewerVersion,
   describeIncompleteNpmInstall,
+  describeLegacyHeartbeat,
+  describePluginsInstalls,
   describeOpenClawRedactedPlaceholders,
   describeOpenClawUpdateAvailable,
   describePostUpgradeMigration,
   describeStalledDoctor,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
+  legacyHeartbeatPaths,
+  nativeDoctorFromDiagnostic,
   openclawUpdateAvailable,
   readGatewayLiveness,
   stuckSessionWindowCount,
@@ -224,19 +230,15 @@ export function applySessionTranscriptIndexing(config) {
 }
 
 export function hasLegacyHeartbeatConfig(config) {
-  if (isPlainRecord(config?.agents?.defaults?.heartbeat)) return true;
-  const entries = config?.agents?.entries;
-  if (isPlainRecord(entries)) {
-    for (const entry of Object.values(entries)) {
-      if (isPlainRecord(entry?.heartbeat)) return true;
-    }
-  }
-  if (Array.isArray(config?.agents?.list)) {
-    for (const entry of config.agents.list) {
-      if (isPlainRecord(entry?.heartbeat)) return true;
-    }
-  }
-  return false;
+  return legacyHeartbeatPaths(config).length > 0;
+}
+
+function retiredHeartbeatDetail(diag) {
+  return classifyLegacyHeartbeat({
+    config: diag?.config,
+    text: logText(diag),
+    nativeDoctor: nativeDoctorFromDiagnostic(diag),
+  });
 }
 
 export const KNOWN_ISSUES = [
@@ -899,18 +901,61 @@ echo "This check does not edit the file."`,
     id: 'heartbeat-no-model-override',
     severity: 'low',
     title: 'Legacy heartbeat config needs migration',
-    description: 'agents.defaults.heartbeat and per-agent heartbeat keys are not in the current OpenClaw config schema. Heartbeat monitors moved to ordinary automation jobs. Run openclaw doctor --fix, then edit the job in Automations. Writing heartbeat.model or heartbeat.every is rejected.',
+    description: 'agents.defaults.heartbeat and per-agent heartbeat keys are not in the current OpenClaw config schema. Update admission can return invalid-config for that key before Doctor migrates it. Run openclaw doctor --fix, then edit the automation. Do not delete the key first.',
     detect: (diag) => {
       try {
-        return hasLegacyHeartbeatConfig(diag.config);
+        return retiredHeartbeatDetail(diag) !== null;
       } catch { return false; }
     },
+    describe: (diag) => describeLegacyHeartbeat(retiredHeartbeatDetail(diag)),
     fix: `# Advisory only. Current OpenClaw rejects agents.defaults.heartbeat.
 # Doctor migrates supported heartbeat settings into an automation job, then deletes the legacy key.
+# Deleting the key first drops the saved schedule and model.
 echo "Heartbeat configuration moved to ordinary automation jobs."
+echo "Key path: agents.defaults.heartbeat or agents.entries.<id>.heartbeat"
+echo "Update admission can refuse with invalid-config before that migration runs."
 echo "Run: openclaw doctor --fix"
 echo "Then inspect the migrated job: openclaw automations list --all"
-echo "Edit that job's model and schedule in Automations. Do not write agents.defaults.heartbeat."`,
+echo "Do not delete agents.defaults.heartbeat by hand."`,
+  },
+
+  {
+    id: 'plugins-installs-unrecognized',
+    severity: 'high',
+    title: 'Retired plugins.installs key is rejected',
+    description: 'plugins.installs is not in the current plugins schema. Gateway startup fails with plugins: Unrecognized key: "installs". An empty object can be removed after a config backup. Populated install records must be imported before the key is deleted.',
+    detect: (diag) => {
+      try {
+        return classifyPluginsInstalls({ config: diag.config, text: logText(diag) }) !== null;
+      } catch { return false; }
+    },
+    describe: (diag) => describePluginsInstalls(classifyPluginsInstalls({
+      config: diag.config,
+      text: logText(diag),
+    })),
+    fix: `# Remove only an empty plugins.installs object. Populated records are left untouched.
+CONFIG="$HOME/.openclaw/openclaw.json"
+if [ ! -f "$CONFIG" ]; then
+  echo "No OpenClaw config file found. Left it unchanged."
+  exit 0
+fi
+if ! jq -e '.plugins.installs == {}' "$CONFIG" >/dev/null; then
+  echo "plugins.installs is missing or not an empty object. Left the config unchanged."
+  exit 0
+fi
+STAMP=$(date +%Y%m%d-%H%M%S)
+BACKUP="$CONFIG.bak.$STAMP"
+cp "$CONFIG" "$BACKUP"
+jq 'del(.plugins.installs)' "$CONFIG" > /tmp/oc-fix.json && mv /tmp/oc-fix.json "$CONFIG"
+if command -v openclaw >/dev/null 2>&1; then
+  if ! openclaw config validate --json >/dev/null 2>&1; then
+    cp "$BACKUP" "$CONFIG"
+    echo "openclaw config validate failed. Restored $BACKUP"
+    exit 1
+  fi
+fi
+echo "Removed empty plugins.installs. Backup: $BACKUP"
+echo "Rollback: cp $BACKUP $CONFIG"`,
   },
 
   {
