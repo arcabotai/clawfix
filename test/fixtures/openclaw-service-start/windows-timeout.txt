@@ -1,0 +1,6 @@
+Gateway start timed out after 90s waiting for /healthz and /readyz.
+Tip: openclaw gateway status --deep
+Tip: openclaw doctor
+{"subsystem":"gateway/task-supervisor"} {"exitCode":1,"exitSignal":null,"reason":"exit","stderr":""} "Gateway child failed"
+Readiness budget exhausted after 300s. Last observed startup phase: waiting for Gateway listener.
+Gateway did not settle; startup phase: waiting for managed service

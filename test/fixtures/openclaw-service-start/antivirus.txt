@@ -1,0 +1,4 @@
+powershell (IDP.HELU.PSE90) detected by Behavioral Protection
+Threat name IDP.HELU.PSE90 - Command line detection
+powershell.exe Terminated
+The scheduled task OpenClaw Gateway exited before node opened the gateway port.

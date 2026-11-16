@@ -325,7 +325,7 @@ test('runtime collectors pass hostile values as literal argv and parse Linux ser
       argv: [
         'show',
         'openclaw-gateway',
-        '--property=NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp',
+        '--property=LoadState,NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp,Result,ExecMainStatus',
       ],
     },
   ]);

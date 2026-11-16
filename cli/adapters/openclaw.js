@@ -3,7 +3,7 @@ import * as nodeFs from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
 import { TextDecoder } from 'node:util';
 
-import { projectDoctorProcesses } from '../bin/security.js';
+import { projectDoctorProcesses, redactText } from '../bin/security.js';
 import { processAdapter as defaultProcessAdapter } from './process.js';
 
 export const OPENCLAW_TIMEOUT_MS = 10_000;
@@ -412,11 +412,16 @@ export function createOpenClawAdapter({
     }
 
     if (platform === 'linux') {
-      const systemdInfo = await successfulText('systemctl', [
-        'show',
-        'openclaw-gateway',
-        '--property=NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp',
-      ], options);
+      const property = '--property=LoadState,NRestarts,ActiveState,SubState,ExecMainPID,ExecMainStartTimestamp,Result,ExecMainStatus';
+      let systemdInfo = await successfulText('systemctl', ['show', 'openclaw-gateway', property], options);
+      let userUnit = false;
+      if (!systemdInfo || /(?:^|\n)LoadState=not-found(?:\n|$)/.test(systemdInfo)) {
+        const userInfo = await successfulText('systemctl', ['--user', 'show', 'openclaw-gateway.service', property], options);
+        if (userInfo && !/(?:^|\n)LoadState=not-found(?:\n|$)/.test(userInfo)) {
+          systemdInfo = userInfo;
+          userUnit = true;
+        }
+      }
       if (!systemdInfo) return Object.freeze({});
       const properties = {};
       for (const line of systemdInfo.split('\n')) {
@@ -424,12 +429,65 @@ export function createOpenClawAdapter({
         if (separator <= 0) continue;
         properties[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();
       }
+      const active = properties.ActiveState || 'unknown';
+      const sub = properties.SubState || 'unknown';
+      const unhealthy = ['activating', 'deactivating', 'failed'].includes(active)
+        || ['stop-sigterm', 'auto-restart', 'failed', 'start', 'start-pre', 'final-sigterm'].includes(sub);
+      let journal = '';
+      if (unhealthy) {
+        journal = await successfulText('journalctl', [
+          ...(userUnit ? ['--user'] : []),
+          '-u', userUnit ? 'openclaw-gateway.service' : 'openclaw-gateway',
+          '-n', '30',
+          '--no-pager',
+          '-o', 'short',
+        ], options);
+      }
+      const execMainStatus = Number.parseInt(properties.ExecMainStatus, 10);
       return Object.freeze({
         manager: 'systemd',
         nRestarts: Number.parseInt(properties.NRestarts, 10) || 0,
-        state: properties.ActiveState || 'unknown',
-        subState: properties.SubState || 'unknown',
+        state: active,
+        subState: sub,
         pid: Number.parseInt(properties.ExecMainPID, 10) || 0,
+        ...(properties.Result ? { result: properties.Result } : {}),
+        ...(Number.isInteger(execMainStatus) ? { execMainStatus } : {}),
+        ...(journal ? { journal: redactText(journal).slice(0, 2000) } : {}),
+      });
+    }
+
+    if (platform === 'win32') {
+      const names = ['OpenClaw Gateway', 'openclaw-gateway'];
+      let output = '';
+      let taskName = '';
+      for (const name of names) {
+        output = await successfulText('schtasks', ['/Query', '/TN', name, '/FO', 'LIST', '/V'], options);
+        if (output) {
+          taskName = name;
+          break;
+        }
+      }
+      if (!output) return Object.freeze({});
+      const field = (label) => {
+        for (const line of output.split('\n')) {
+          const trimmed = line.trim();
+          const prefix = `${label}:`;
+          if (trimmed.toLowerCase().startsWith(prefix.toLowerCase())) {
+            return trimmed.slice(prefix.length).trim();
+          }
+        }
+        return '';
+      };
+      const status = field('Status');
+      const lastResultText = field('Last Result');
+      const lastResult = /^0x[0-9a-f]+$/i.test(lastResultText)
+        ? Number.parseInt(lastResultText, 16)
+        : Number.parseInt(lastResultText, 10);
+      return Object.freeze({
+        manager: 'schtasks',
+        state: status || 'unknown',
+        taskName: taskName || null,
+        ...(Number.isInteger(lastResult) ? { lastResult } : {}),
       });
     }
 

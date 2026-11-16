@@ -64,8 +64,9 @@
     }
   },
   "detectors": {
-    "deterministicCount": 62,
+    "deterministicCount": 65,
     "ids": [
+      "antivirus-gateway-blocked",
       "auth-profile-migration-required",
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -127,7 +128,9 @@
       "stale-self-paired-node",
       "state-dir-migration",
       "state-lock-deadlock",
-      "stuck-invalid-session-window"
+      "stuck-invalid-session-window",
+      "systemd-service-stuck",
+      "windows-task-readiness-timeout"
     ]
   },
   "executableRepairs": {

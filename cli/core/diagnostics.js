@@ -11,6 +11,7 @@ import {
   classifyStateLockDeadlock,
   classifyPostUpgradeMigration,
   classifyMemorySearchStall,
+  classifyServiceStartFailure,
   classifyStaleDeviceToken,
   classifyStalledDoctor,
   describeLegacyHeartbeat,
@@ -21,9 +22,11 @@ import {
   describeStateLockDeadlock,
   describePostUpgradeMigration,
   describeMemorySearchStall,
+  describeServiceStartFailure,
   describeStaleDeviceToken,
   describeStalledDoctor,
   MEMORY_SEARCH_TIMEOUT,
+  serviceStartRepeats,
   readGatewayLiveness,
   summarizeGatewayAuth,
   retainDiagnosticLogLine,
@@ -1091,6 +1094,20 @@ export function deriveIssues(collected) {
   const shellCodexHomeMatchesExpected = workspace?.codexHome?.matchesExpected === true;
   const combinedLogs = [logs.errorLogs, logs.stderrLogs, logs.gatewayLogTail, gateway.gatewayStatus]
     .filter(Boolean).join('\n');
+  const serviceStart = classifyServiceStartFailure({
+    text: [combinedLogs, serviceHealth?.journal].filter(Boolean).join('\n'),
+    scheduledTask: serviceHealth?.manager === 'schtasks'
+      ? { status: serviceHealth.state, lastResult: serviceHealth.lastResult }
+      : null,
+    systemd: serviceHealth?.manager === 'systemd'
+      ? {
+          activeState: serviceHealth.state,
+          subState: serviceHealth.subState,
+          result: serviceHealth.result,
+          execMainStatus: serviceHealth.execMainStatus,
+        }
+      : null,
+  });
 
   const { gatewayStatus } = gateway;
   const gatewayLiveness = readGatewayLiveness(gatewayStatus);
@@ -1103,7 +1120,7 @@ export function deriveIssues(collected) {
       (Number.isSafeInteger(expectedGatewayPid) && expectedGatewayPid > 0 && listenerPid !== expectedGatewayPid)
       || !gateway.gatewayPid
     );
-  if ((gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) && !competingPortOwner) {
+  if (!serviceStart && (gatewayFailed || (!gatewayRunning && !/warning/i.test(gatewayStatus))) && !competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Gateway is not running' });
   }
   if (competingPortOwner) {
@@ -1188,8 +1205,23 @@ export function deriveIssues(collected) {
 
   if (serviceHealth.runs > 2 && (serviceHealth.uptimeSeconds || 0) < 300) {
     issues.push({ severity: 'critical', text: `Gateway crash loop — ${serviceHealth.runs} restarts, only ${serviceHealth.uptimeStr} uptime` });
-  } else if ((serviceHealth.nRestarts || 0) > 0) {
+  } else if ((serviceHealth.nRestarts || 0) > 0 && serviceStart?.id !== 'systemd-service-stuck') {
     issues.push({ severity: 'high', text: `Gateway has restarted ${serviceHealth.nRestarts} time(s) (systemd)` });
+  }
+  if (serviceStart) {
+    issues.push({
+      knownIssueId: serviceStart.id,
+      severity: serviceStart.severity,
+      kind: serviceStart.severity === 'critical' || serviceStart.severity === 'high' ? 'failure' : 'warning',
+      text: serviceStart.id === 'antivirus-gateway-blocked'
+        ? 'Antivirus blocked the gateway or node'
+        : serviceStart.id === 'systemd-service-stuck'
+          ? 'systemd gateway service is stuck or failed'
+          : 'Scheduled task did not become ready',
+      description: describeServiceStartFailure(serviceStart),
+      repairable: false,
+      source: 'openclaw-service',
+    });
   }
 
   const migrationCrash = classifyPostUpgradeMigration(combinedLogs);
@@ -1469,6 +1501,7 @@ export function deriveIssues(collected) {
     if (authProfile && /AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials/i.test(String(finding.message || ''))) continue;
     if (staleDevice && /withheld-cross-device|device token mismatch|stale device-token pattern/i.test(String(finding.message || ''))) continue;
     if (memoryStall && MEMORY_SEARCH_TIMEOUT.test(String(finding.message || ''))) continue;
+    if (serviceStart && serviceStartRepeats(serviceStart.id, finding.message)) continue;
     const alias = doctorRepairAlias(finding);
     const message = String(finding.message || '').toLowerCase();
     const duplicate = issues.some((issue) => (

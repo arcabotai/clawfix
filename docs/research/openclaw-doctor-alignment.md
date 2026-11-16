@@ -377,3 +377,28 @@ OpenClaw's lock file is `${dbPath}.reindex-lock.sqlite` (`extensions/memory-core
 | a non-empty lock younger than 15 seconds with a live `openclaw memory index` or reindex process | no match | [openclaw#137366](https://github.com/openclaw/openclaw/issues/137366). A dirty index can hold the lock for a long rebuild. That live process is not residue, and the lock is not renamed. |
 
 The finding says whether a reindex process was seen. Unknown liveness is not described as a dead process. Doctor's memory-search check is `defaultEnabled: false` (`doctor-health-contributions-final.ts:518-522`), so the guidance is `openclaw doctor --lint --json --only core/doctor/memory-search` or `--all`, then `openclaw memory status --deep`. Recovery, after the gateway is stopped and no reindex is alive, is to rename the lock aside. ClawFix does not delete it. A doctor finding that only repeats the 15s timeout is not listed a second time.
+
+## Service start failures outside LaunchAgent
+
+`launchd-corrupted-state` is unchanged. It still matches a macOS LaunchAgent whose last exit is SIGTERM (`-15`) or whose `launchctl` load returns an I/O error. The three findings below do not fire on that evidence, and they do not edit a unit, a scheduled task, or antivirus settings.
+
+| Finding | Evidence ClawFix can read | Remedy |
+|---|---|---|
+| `windows-task-readiness-timeout` | `Gateway start timed out after 90s waiting for /healthz and /readyz`, `Readiness budget exhausted`, `waiting for Gateway listener`, `waiting for managed service`, or `gateway/task-supervisor` with `Gateway child failed`. Also a scheduled task `OpenClaw Gateway` whose status is not Running and whose last result is not `0`, `267009` (running), or `267011` (has not run). A Ready task with last result `0`, and a Running task with last result `267009`, do not match. | `openclaw gateway status --deep` and `openclaw doctor`. Until a release contains the readiness fix, stop the scheduled-task Gateway, install with npm, run `openclaw doctor --fix`, then `openclaw gateway start`. `openclaw gateway install --force` re-registers a task update recovery left disabled. [openclaw#166004](https://github.com/openclaw/openclaw/issues/166004). |
+| `antivirus-gateway-blocked` | `IDP.HELU.PSE90` or a later `IDP.HELU.PSE` signature in logs or tool output that also names the gateway, node, PowerShell, or OpenClaw. A Norton mention without that signature does not match. When this matches, the readiness finding is not added again. Severity stays medium when the gateway probe is already ok. | OpenClaw removed the PowerShell `Add-Type` private-directory step after 2026.9.2. Exclusions did not stop the detection. `openclaw gateway status --deep` shows whether the gateway is up. ClawFix does not change antivirus settings. [openclaw#139468](https://github.com/openclaw/openclaw/issues/139468). |
+| `systemd-service-stuck` | `systemctl show` `ActiveState` of `activating`, `deactivating`, or `failed`, or `SubState` `stop-sigterm`, including a user unit. Also `Active: deactivating (stop-sigterm)`, `Active: activating`, or `Active: failed`, with the matching journal lines. An `active` / `running` unit does not match, including a journal that only records a finished SIGTERM and a later ready line. | `openclaw gateway stop`, then `openclaw gateway start`. `openclaw gateway restart` can leave the unit deactivating while the same process stays alive. ClawFix does not edit the unit. [openclaw#140821](https://github.com/openclaw/openclaw/issues/140821). |
+
+A generic `gateway-not-running` finding is omitted when one of these three already names the cause. A doctor line that only repeats the same sentence is not listed again.
+
+## Survey items A–H
+
+| Item | What it covers | Detector |
+|---|---|---|
+| A | Post-upgrade migration crash loop | `post-upgrade-migration-crash-loop` |
+| B | Stalled `doctor --fix` | `doctor-fix-stalled` |
+| C | Retired config keys that block update | `heartbeat-no-model-override`, `plugins-installs-unrecognized` |
+| D | Node engine mismatch, naming the binary | `openclaw-node-engine-mismatch` |
+| E | State lock and lease deadlock | `state-lock-deadlock` |
+| F | Gateway auth loss beyond `mode=none` | `gateway-auth-removed`, `auth-profile-migration-required`, `stale-device-token` |
+| G | `memory_search` stall and reindex lock | `memory-search-stall` |
+| H | Service start failures outside LaunchAgent | `windows-task-readiness-timeout`, `antivirus-gateway-blocked`, `systemd-service-stuck` |

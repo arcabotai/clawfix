@@ -1,0 +1,5 @@
+SUCCESS: Attempted to run the scheduled task "OpenClaw Gateway".
+SUCCESS: The scheduled task "OpenClaw Gateway" has been terminated successfully.
+openclaw restart done source=update
+Status: Ready
+Last Result: 0
