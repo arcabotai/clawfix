@@ -8,6 +8,7 @@
  * local scan, offline help, and guarded repair execution work without consent.
  */
 import { access, readFile, readdir, stat } from "node:fs/promises"
+import { join } from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { arch, homedir, hostname, platform, release } from "node:os"
 
@@ -107,6 +108,7 @@ export function createLiveSession(options: LiveSessionOptions): SessionBridge {
     remoteBaseUrl: process.env.CLAWFIX_API || "https://clawfix.dev",
     repairContext: {
       openclaw: openClawAdapter,
+      stateDir: join(homedir(), ".openclaw"),
       wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
     },
   })

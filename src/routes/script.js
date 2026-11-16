@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js' | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -1076,6 +1076,11 @@ const doctorArgs = [
     const findings = isEnvelope(parsed)
       ? parsed.findings.slice(0, 100).map(projectFinding)
       : null;
+    const warnings = isEnvelope(parsed) && Array.isArray(parsed.warnings)
+      ? parsed.warnings.slice(0, 20).map(function (item) {
+        return projectFinding(typeof item === 'string' ? { message: item, severity: 'info' } : item);
+      }).filter(Boolean)
+      : [];
     if (failed || !findings || findings.some(function (finding) { return !finding; })) {
       projected = {
         available: false,
@@ -1093,6 +1098,7 @@ const doctorArgs = [
         checksSkipped: parsed.checksSkipped,
         findings: findings,
       };
+      if (warnings.length) projected.warnings = warnings;
     }
   }
   if (wasListening) {

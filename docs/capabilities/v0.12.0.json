@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 57,
+    "deterministicCount": 58,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -122,11 +122,12 @@
       "stale-plist-env-secrets",
       "stale-self-paired-node",
       "state-dir-migration",
+      "state-lock-deadlock",
       "stuck-invalid-session-window"
     ]
   },
   "executableRepairs": {
-    "count": 5,
+    "count": 6,
     "items": [
       {
         "id": "auto-update-enabled-warning",
@@ -152,6 +153,11 @@
         "id": "plugins-installs-unrecognized",
         "title": "Remove empty plugins.installs",
         "risk": "low"
+      },
+      {
+        "id": "state-lock-deadlock",
+        "title": "Recover a dead OpenClaw state lock",
+        "risk": "medium"
       }
     ],
     "safetyBoundary": "Repairs are deterministic catalog entries with preview, apply, verify, and rollback contracts."

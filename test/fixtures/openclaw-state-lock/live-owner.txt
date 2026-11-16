@@ -1,0 +1,2 @@
+GUARD blocked reclaim of a still-live owner {"path":"~/.openclaw/locks/state.abc123.lock","pid":43152,"role":"gateway"}
+OpenClaw state ownership is no longer current at ~/.openclaw/tmp/openclaw-1000/state.abc123.lock

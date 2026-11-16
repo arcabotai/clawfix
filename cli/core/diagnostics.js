@@ -6,11 +6,13 @@ import {
   classifyLegacyHeartbeat,
   classifyNodeEngineMismatch,
   classifyPluginsInstalls,
+  classifyStateLockDeadlock,
   classifyPostUpgradeMigration,
   classifyStalledDoctor,
   describeLegacyHeartbeat,
   describeNodeEngineMismatch,
   describePluginsInstalls,
+  describeStateLockDeadlock,
   describePostUpgradeMigration,
   describeStalledDoctor,
   readGatewayLiveness,
@@ -1112,6 +1114,22 @@ export function deriveIssues(collected) {
       text: 'Node.js runtime is incompatible with this OpenClaw release',
       description: describeNodeEngineMismatch(nodeEngine),
       source: 'openclaw-runtime',
+    });
+  }
+  const stateLock = classifyStateLockDeadlock({
+    text: [combinedLogs, system.versionCommandText].filter(Boolean).join('\n'),
+    warnings: nativeDoctor?.warnings,
+    holders: collected.lockHolders,
+  });
+  if (stateLock) {
+    issues.push({
+      knownIssueId: 'state-lock-deadlock',
+      severity: stateLock.severity,
+      kind: stateLock.severity === 'critical' || stateLock.severity === 'high' ? 'failure' : 'warning',
+      text: 'OpenClaw state lock or lease is blocking startup',
+      description: describeStateLockDeadlock(stateLock),
+      repairable: stateLock.repairable,
+      source: 'openclaw-state-lock',
     });
   }
   if ((config?.plugins?.load?.paths || []).some((path) => (

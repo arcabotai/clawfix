@@ -12,10 +12,15 @@
 // which itself only ever spawns argv arrays (shell: false). ctx.wait is an injectable delay hook
 // so tests can drive apply -> verify without real timers.
 
+import { copyFile, lstat, readFile, readdir, unlink } from 'node:fs/promises';
+import { isAbsolute, join, sep } from 'node:path';
+
 import {
   DOCTOR_INVOCATION_TIMEOUT_MS,
   DOCTOR_KILL_GRACE_MS,
   DOCTOR_KILL_SIGNALS,
+  assessLockHolder,
+  stateLockRecoveryAllowed,
 } from '../bin/security.js';
 import { applyFailureReason } from './repair-engine.js';
 
@@ -606,6 +611,248 @@ const pluginsInstallsUnrecognized = Object.freeze({
   },
 });
 
+const LOCK_BACKUP_SUFFIX = '.clawfix-bak';
+const defaultLockFs = Object.freeze({ copyFile, lstat, readFile, readdir, unlink });
+
+function lockFs(ctx) {
+  return ctx?.fs && typeof ctx.fs.readdir === 'function' ? ctx.fs : defaultLockFs;
+}
+
+function insideDir(root, candidate) {
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return candidate === root || candidate.startsWith(prefix);
+}
+
+function pidFromLockText(text) {
+  const match = String(text ?? '').match(/"pid"\s*:\s*(\d{1,10})/);
+  const pid = Number(match?.[1]);
+  return Number.isSafeInteger(pid) && pid >= 1 && pid <= 2_147_483_647 ? pid : null;
+}
+
+async function collectStateLockFiles(root, fsApi) {
+  const found = [];
+  const pending = [{ dir: root, depth: 0 }];
+  const seen = new Set();
+  while (pending.length > 0 && found.length < 32) {
+    const current = pending.shift();
+    if (!current || seen.has(current.dir) || current.depth > 6) continue;
+    seen.add(current.dir);
+    let names = [];
+    try {
+      names = await fsApi.readdir(current.dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name === 'node_modules' || name.startsWith('.')) continue;
+      const full = join(current.dir, String(name));
+      if (!insideDir(root, full)) continue;
+      let info;
+      try {
+        info = await fsApi.lstat(full);
+      } catch {
+        continue;
+      }
+      if (typeof info.isSymbolicLink === 'function' && info.isSymbolicLink()) continue;
+      if (typeof info.isDirectory === 'function' && info.isDirectory()) {
+        pending.push({ dir: full, depth: current.depth + 1 });
+        continue;
+      }
+      if (typeof info.isFile !== 'function' || !info.isFile()) continue;
+      if (!String(name).endsWith('.lock') || String(name).includes('sqlite') || String(name).endsWith(LOCK_BACKUP_SUFFIX)) continue;
+      if (Number(info.size) > 65_536) continue;
+      let text = '';
+      try {
+        text = await fsApi.readFile(full, 'utf8');
+      } catch {
+        continue;
+      }
+      found.push({ path: full, pid: pidFromLockText(text) });
+    }
+  }
+  return found;
+}
+
+async function defaultProbeLockPid(pid) {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return { signalCode: error?.code === 'ESRCH' ? 'ESRCH' : (error?.code || 'UNKNOWN'), command: null };
+  }
+  try {
+    const raw = await readFile(`/proc/${pid}/cmdline`);
+    return { signalCode: 'OK', command: Buffer.from(raw).toString('utf8').replace(/\0/g, ' ').trim() };
+  } catch {
+    return { signalCode: 'OK', command: null };
+  }
+}
+
+async function inspectStateLocks(ctx) {
+  const stateDir = typeof ctx?.stateDir === 'string' ? ctx.stateDir : '';
+  if (!isAbsolute(stateDir)) return { files: [], holders: [] };
+  const files = await collectStateLockFiles(stateDir, lockFs(ctx));
+  const probe = typeof ctx.probeLockPid === 'function' ? ctx.probeLockPid : defaultProbeLockPid;
+  const holders = [];
+  for (const file of files) {
+    if (!file.pid) continue;
+    const observed = await probe(file.pid);
+    const holder = assessLockHolder({ pid: file.pid, ...observed });
+    if (holder) holders.push(Object.freeze({ ...holder, path: file.path }));
+  }
+  return { files, holders };
+}
+
+async function removeLockBackups(fsApi, backups) {
+  for (const item of backups) {
+    if (typeof item?.backupPath === 'string' && item.backupPath.endsWith(LOCK_BACKUP_SUFFIX)) {
+      try { await fsApi.unlink(item.backupPath); } catch { /* the copy may already be gone */ }
+    }
+  }
+}
+
+const stateLockDeadlock = Object.freeze({
+  id: 'state-lock-deadlock',
+  title: 'Recover a dead OpenClaw state lock',
+  description:
+    'Runs openclaw gateway recover-lock and the confirmation it prints, only when every lock-file '
+    + 'pid is gone or reused by a non-OpenClaw command. Lock files are copied aside first. A live or '
+    + 'unproven holder is refused. The state directory and SQLite files are not deleted.',
+  risk: 'medium',
+
+  async preflight(ctx) {
+    const inspected = await inspectStateLocks(ctx);
+    if (!stateLockRecoveryAllowed(inspected.holders)) {
+      return Object.freeze({
+        ok: false,
+        reason: inspected.holders.some(holder => holder.status === 'alive')
+          ? 'live_holder'
+          : 'holder_not_proven_dead',
+        evidence: Object.freeze({ holders: inspected.holders.length }),
+      });
+    }
+    return Object.freeze({
+      ok: true,
+      evidence: Object.freeze({ holders: inspected.holders.length, locks: inspected.files.length }),
+    });
+  },
+
+  async preview() {
+    return Object.freeze({
+      steps: Object.freeze([
+        'Read lock files under the OpenClaw state directory and check each holder pid.',
+        'Refuse the repair when any holder is alive, unreadable, or not recorded.',
+        'Copy each lock file to a sibling .clawfix-bak file.',
+        'Run openclaw gateway recover-lock --json, then --confirm with that fingerprint only.',
+        'Restore the lock files from those copies if confirmation fails.',
+      ]),
+    });
+  },
+
+  async apply(ctx) {
+    const inspected = await inspectStateLocks(ctx);
+    if (!stateLockRecoveryAllowed(inspected.holders)) {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: 'holder is not proven dead',
+      });
+    }
+    const fsApi = lockFs(ctx);
+    const backups = [];
+    for (const file of inspected.files) {
+      if (!file.pid) continue;
+      const backupPath = `${file.path}${LOCK_BACKUP_SUFFIX}`;
+      if (!insideDir(ctx.stateDir, backupPath)) {
+        return terminalResult(null, {
+          changed: false,
+          error: true,
+          errorSummary: 'lock backup path escaped the state directory',
+          backups,
+        });
+      }
+      await fsApi.copyFile(file.path, backupPath);
+      backups.push({ path: file.path, backupPath });
+    }
+    const inspection = await ctx.openclaw.invoke(
+      ['gateway', 'recover-lock', '--json'],
+      { timeoutMs: 30_000 },
+    );
+    if (applyFailureReason(inspection) !== null) {
+      return terminalResult(inspection, { changed: false, backups, stage: 'inspect' });
+    }
+    let parsed = null;
+    try { parsed = JSON.parse(inspection.stdout); } catch { parsed = null; }
+    const confirmation = parsed?.confirmation;
+    if (typeof confirmation !== 'string' || !/^[a-f0-9]{64}$/.test(confirmation)) {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: 'recover-lock did not return a confirmation fingerprint',
+        backups,
+        stage: 'inspect',
+      });
+    }
+    const again = await inspectStateLocks(ctx);
+    if (!stateLockRecoveryAllowed(again.holders)) {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: 'holder changed before confirmation',
+        backups,
+        stage: 'inspect',
+      });
+    }
+    const confirmed = await ctx.openclaw.invoke(
+      ['gateway', 'recover-lock', '--confirm', confirmation, '--json'],
+      { timeoutMs: 30_000 },
+    );
+    if (applyFailureReason(confirmed) !== null) {
+      return terminalResult(confirmed, { changed: true, backups, stage: 'confirm' });
+    }
+    return terminalResult(confirmed, { changed: true, backups, stage: 'confirm' });
+  },
+
+  async verify(ctx) {
+    const result = await ctx.openclaw.invoke(
+      ['gateway', 'recover-lock', '--json'],
+      { timeoutMs: 30_000 },
+    );
+    if (applyFailureReason(result) !== null) return Object.freeze({ ok: false, evidence: Object.freeze({}) });
+    let parsed = null;
+    try { parsed = JSON.parse(result.stdout); } catch { parsed = null; }
+    return Object.freeze({
+      ok: parsed?.present === false,
+      evidence: Object.freeze({ present: parsed?.present === true }),
+    });
+  },
+
+  async rollback(ctx, { applyResult } = {}) {
+    const fsApi = lockFs(ctx);
+    const backups = Array.isArray(applyResult?.backups) ? applyResult.backups : [];
+    if (applyResult?.changed !== true) {
+      await removeLockBackups(fsApi, backups);
+      return Object.freeze({
+        rolledBack: true,
+        note: 'Lock files were not recovered. The backup copies were removed.',
+      });
+    }
+    try {
+      for (const item of backups) {
+        if (typeof item?.path !== 'string' || typeof item?.backupPath !== 'string') continue;
+        if (!item.backupPath.endsWith(LOCK_BACKUP_SUFFIX)) continue;
+        if (!insideDir(ctx.stateDir, item.path) || !insideDir(ctx.stateDir, item.backupPath)) continue;
+        await fsApi.copyFile(item.backupPath, item.path);
+      }
+    } catch (error) {
+      return Object.freeze({ rolledBack: false, note: `Could not restore a lock file: ${error.message}` });
+    }
+    return Object.freeze({
+      rolledBack: true,
+      note: 'Restored lock files from the copies taken before gateway recover-lock.',
+    });
+  },
+});
+
 // post-upgrade-migration-crash-loop and doctor-fix-stalled are detect-only.
 // doctor --fix is not a bounded repair for those shapes: it stops the gateway,
 // and the reported workspace and per-agent session failures were not fixed by it.
@@ -615,4 +862,5 @@ export const repairCatalog = Object.freeze({
   'gateway-loopback-no-auth': gatewayLoopbackNoAuth,
   'no-memory-flush': memoryFlushDisabled,
   'plugins-installs-unrecognized': pluginsInstallsUnrecognized,
+  'state-lock-deadlock': stateLockDeadlock,
 });

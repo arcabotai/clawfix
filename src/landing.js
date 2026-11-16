@@ -27,7 +27,7 @@ const LANDING_HTML = `<!DOCTYPE html>
   <title>ClawFix 0.12.0 — OpenClaw Diagnostics & Repair</title>
   <meta name="description" content="Run local, auditable OpenClaw diagnostics and review guarded repairs before applying them. ClawFix 0.12.0 is signed on npm, and ships the chat-first TUI as a standalone binary.">
   <meta property="og:title" content="ClawFix 0.12.0 — Evidence Before Repair">
-  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, five guarded repairs, and a chat-first TUI standalone binary.">
+  <meta property="og:description" content="Local OpenClaw diagnostics, redacted evidence, six guarded repairs, and a chat-first TUI standalone binary.">
   <meta property="og:url" content="https://clawfix.dev">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
@@ -593,7 +593,7 @@ const LANDING_HTML = `<!DOCTYPE html>
         <div class="status-row" aria-label="Release status">
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/releases/tag/v0.12.0">
             <strong>Current release</strong>
-            <span>v0.12.0 · chat-first TUI + 5 repairs</span>
+            <span>v0.12.0 · chat-first TUI + 6 repairs</span>
           </a>
           <a class="status-pill" href="https://github.com/arcabotai/clawfix/pull/20">
             <strong>Standalone binary</strong>
@@ -701,12 +701,12 @@ gateway-not-running repair. Want me to?
           <div class="step">
             <div class="step-num">2</div>
             <h3>Deterministic Checks First</h3>
-            <p>57 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
+            <p>58 known issue detectors run first. Optional AI analysis can explain unmatched problems when it is configured.</p>
           </div>
           <div class="step">
             <div class="step-num">3</div>
             <h3>Review & Apply</h3>
-            <p>Five reviewed catalog repairs show a plan, require explicit approval, apply locally, verify the result, and report rollback. Legacy hosted findings provide reviewable script guidance. Everything else ClawFix detects remains diagnosis and guidance.</p>
+            <p>Six reviewed catalog repairs show a plan, require explicit approval, apply locally, verify the result, and report rollback. Legacy hosted findings provide reviewable script guidance. Everything else ClawFix detects remains diagnosis and guidance.</p>
           </div>
         </div>
       </div>

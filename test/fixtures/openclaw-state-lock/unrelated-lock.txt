@@ -1,0 +1,3 @@
+npm WARN package-lock.json needs an update
+Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 2211 (apt)
+SQLite database is locked

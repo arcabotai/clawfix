@@ -469,6 +469,15 @@ export async function collectNativeDoctor(openclawBin, runCommand = defaultRunDo
   } catch {
     return doctorUnavailable(result, 'OpenClaw Doctor returned invalid JSON');
   }
+  const warnings = Array.isArray(parsed.warnings)
+    ? parsed.warnings.slice(0, 20).flatMap(item => {
+      try {
+        return [projectDoctorFinding(typeof item === 'string' ? { message: item, severity: 'info' } : item)];
+      } catch {
+        return [];
+      }
+    })
+    : [];
 
   return {
     available: true,
@@ -478,6 +487,7 @@ export async function collectNativeDoctor(openclawBin, runCommand = defaultRunDo
     checksRun: parsed.checksRun,
     checksSkipped: parsed.checksSkipped,
     findings,
+    ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
 

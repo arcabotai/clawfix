@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -1169,5 +1169,177 @@ export function describeNodeEngineMismatch(detail) {
   }
   for (const runtime of detail.failing) parts.push(nodeRemedy(runtime));
   parts.push('ClawFix does not install or switch Node.');
+  return parts.join(' ');
+}
+
+const STATE_LOCK_SHAPES = Object.freeze([
+  ['state-directory', /owns this state directory/i],
+  ['state-lifecycle', /owns state-lifecycle/i],
+  ['gateway-lock', /GatewayLockError|failed to acquire gateway (?:state )?lock|cannot verify Gateway ownership|state ownership is no longer current|no longer current; lock removed\/replaced/i],
+  ['lease-aborted', /OPENCLAW_STATE_LEASE_ABORTED/],
+]);
+
+function lockPid(value) {
+  const pid = Number(value);
+  return Number.isSafeInteger(pid) && pid >= 1 && pid <= 2_147_483_647 ? pid : null;
+}
+
+function openClawCommand(command) {
+  return /(^|[\s/])openclaw(\s|$)/i.test(command) && !/\bclawfix\b/i.test(command);
+}
+
+/**
+ * A holder is proven dead only when the pid is gone, or the pid exists and
+ * its command is not OpenClaw. Permission failures stay unknown.
+ */
+export function assessLockHolder({ pid, signalCode, command } = {}) {
+  const parsed = lockPid(pid);
+  if (!parsed) return null;
+  const text = typeof command === 'string' ? command.replace(/\0/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180) : '';
+  if (signalCode === 'ESRCH') {
+    return Object.freeze({ pid: parsed, command: null, status: 'dead', ageSeconds: null, provenDead: true });
+  }
+  if (signalCode === 'OK' && text && !openClawCommand(text)) {
+    return Object.freeze({ pid: parsed, command: text, status: 'reused', ageSeconds: null, provenDead: true });
+  }
+  if (signalCode === 'OK' && text && openClawCommand(text)) {
+    return Object.freeze({ pid: parsed, command: text, status: 'alive', ageSeconds: null, provenDead: false });
+  }
+  return Object.freeze({
+    pid: parsed,
+    command: text || null,
+    status: 'unknown',
+    ageSeconds: null,
+    provenDead: false,
+  });
+}
+
+function holderFromRecord(entry) {
+  const pid = lockPid(entry?.pid);
+  if (!pid) return null;
+  if (entry.status === 'alive' || entry.status === 'dead' || entry.status === 'reused' || entry.status === 'unknown') {
+    const command = typeof entry.command === 'string' && entry.command.trim()
+      ? entry.command.trim().slice(0, 180)
+      : null;
+    const ageSeconds = Number.isSafeInteger(entry.ageSeconds) && entry.ageSeconds >= 0 && entry.ageSeconds <= 10 ** 10
+      ? entry.ageSeconds
+      : null;
+    const status = entry.status;
+    return Object.freeze({
+      pid,
+      command,
+      status,
+      ageSeconds,
+      provenDead: status === 'dead' || status === 'reused',
+    });
+  }
+  return assessLockHolder({
+    pid,
+    signalCode: entry.signalCode,
+    command: entry.command,
+  });
+}
+
+function pidsInLockText(text) {
+  const found = [];
+  const source = String(text ?? '');
+  for (const match of source.matchAll(/"pid"\s*:\s*(\d{1,10})|(?:holder|owner)\s+(?:pid\s*)?(\d{1,10})|\bpid\s*[:=]\s*(\d{1,10})/gi)) {
+    const pid = lockPid(match[1] || match[2] || match[3]);
+    if (pid && !found.includes(pid)) found.push(pid);
+    if (found.length >= 8) break;
+  }
+  return found;
+}
+
+function ageForPid(text, pid) {
+  const source = String(text ?? '');
+  const specific = source.match(new RegExp(`holder\\s+${pid}[^\\n]{0,120}last renewed\\s+(\\d+)\\s*s`, 'i'))
+    || source.match(/last renewed\s+(\d+)\s*s(?:econds)?\s+ago/i);
+  if (!specific) return null;
+  const age = Number(specific[1]);
+  return Number.isSafeInteger(age) && age >= 0 && age <= 10 ** 10 ? age : null;
+}
+
+export function stateLockRecoveryAllowed(holders) {
+  return Array.isArray(holders) && holders.length > 0 && holders.every(holder => holder?.provenDead === true);
+}
+
+export function classifyStateLockDeadlock({ text = '', warnings = [], holders = [] } = {}) {
+  const warningText = (Array.isArray(warnings) ? warnings : []).map(warning => {
+    if (typeof warning === 'string') return warning;
+    return [warning?.errorCode, warning?.message, warning?.checkId].filter(Boolean).join(' ');
+  }).join('\n');
+  const source = [text, warningText].filter(Boolean).join('\n');
+  const shapes = STATE_LOCK_SHAPES.filter(([, pattern]) => pattern.test(source)).map(([name]) => name);
+  if (shapes.length === 0) return null;
+  const byPid = new Map();
+  for (const entry of (Array.isArray(holders) ? holders : []).slice(0, 8)) {
+    const holder = holderFromRecord(entry);
+    if (holder) byPid.set(holder.pid, holder);
+  }
+  for (const pid of pidsInLockText(source)) {
+    if (byPid.has(pid)) continue;
+    const ageSeconds = ageForPid(source, pid);
+    byPid.set(pid, Object.freeze({
+      pid,
+      command: null,
+      status: 'unknown',
+      ageSeconds,
+      provenDead: false,
+    }));
+  }
+  const normalized = [...byPid.values()].map(holder => {
+    if (holder.ageSeconds != null) return holder;
+    const ageSeconds = ageForPid(source, holder.pid);
+    return ageSeconds == null ? holder : Object.freeze({ ...holder, ageSeconds });
+  });
+  const leaseOnly = shapes.length === 1 && shapes[0] === 'lease-aborted';
+  return Object.freeze({
+    shapes: Object.freeze(shapes),
+    holders: Object.freeze(normalized),
+    repairable: stateLockRecoveryAllowed(normalized),
+    severity: leaseOnly ? 'medium' : 'critical',
+  });
+}
+
+function formatLockAge(ageSeconds) {
+  if (!Number.isSafeInteger(ageSeconds)) return '';
+  if (ageSeconds < 90) return `, age ${ageSeconds}s`;
+  if (ageSeconds < 7200) return `, age ${Math.round(ageSeconds / 60)}m`;
+  return `, age ${Math.round(ageSeconds / 3600)}h`;
+}
+
+function describeLockHolder(holder) {
+  const command = holder.command ? ` command ${holder.command}` : ' command unavailable';
+  const age = formatLockAge(holder.ageSeconds);
+  if (holder.status === 'alive') {
+    return `Holder pid ${holder.pid}${command} is alive${age}.`;
+  }
+  if (holder.status === 'dead') {
+    return `Holder pid ${holder.pid} does not exist${age}, so that holder is proven dead.`;
+  }
+  if (holder.status === 'reused') {
+    return `Holder pid ${holder.pid} is now${command}${age}. That command is not OpenClaw, so the pid was reused and the recorded holder is proven dead.`;
+  }
+  return `Holder pid ${holder.pid}${holder.command ? command : ''} liveness was not proven${age}.`;
+}
+
+export function describeStateLockDeadlock(detail) {
+  if (!detail) return 'OpenClaw state ownership or a state lease is blocked.';
+  const parts = ['OpenClaw state ownership or a state lease is blocked.'];
+  if (detail.shapes?.includes('state-directory')) parts.push('A startup or doctor step says another command owns this state directory.');
+  if (detail.shapes?.includes('state-lifecycle')) parts.push('A holder owns state-lifecycle.');
+  if (detail.shapes?.includes('gateway-lock')) parts.push('GatewayLockError or a state-ownership check refused the lock.');
+  if (detail.shapes?.includes('lease-aborted')) parts.push('Doctor lint warnings include OPENCLAW_STATE_LEASE_ABORTED, so that check did not run.');
+  if (!detail.holders?.length) parts.push('No holder pid was recorded.');
+  for (const holder of detail.holders || []) parts.push(describeLockHolder(holder));
+  if (detail.repairable) {
+    parts.push('Every recorded holder is proven dead or reused by a non-OpenClaw command. The catalog repair may run openclaw gateway recover-lock, then the exact --confirm fingerprint that inspection prints, after copying each lock file aside. It does not kill a process.');
+  } else if ((detail.holders || []).some(holder => holder.status === 'alive')) {
+    parts.push('A live holder is not repairable. Do not kill it. Stop it through its service manager or container, then run openclaw gateway recover-lock and the --confirm command it prints.');
+  } else {
+    parts.push('This is detect-only until every holder pid is proven dead or reused by a non-OpenClaw command. Run openclaw gateway recover-lock only after you have confirmed the holder stopped, then run the --confirm command it prints.');
+  }
+  parts.push('ClawFix does not delete the state directory or SQLite files.');
   return parts.join(' ');
 }

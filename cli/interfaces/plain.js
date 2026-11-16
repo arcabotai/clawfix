@@ -413,6 +413,7 @@ async function applyCatalogRepair(issue, rl, session) {
     findingId: issue.id,
     ctx: {
       openclaw: openClawAdapter,
+      stateDir: join(homedir(), '.openclaw'),
       wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
       backupConfig: async () => {
         const backupPath = `${CONFIG_PATH}.bak.${Date.now()}`;

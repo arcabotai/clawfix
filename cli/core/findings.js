@@ -27,6 +27,7 @@ const LOCAL_ISSUE_TEXT_REPAIR_MAP = new Map([
 // added together; an unmapped knownIssueId stays advisory-only.
 const LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP = new Map([
   ['plugins-installs-unrecognized', 'plugins-installs-unrecognized'],
+  ['state-lock-deadlock', 'state-lock-deadlock'],
 ]);
 
 // Explicit native checkId -> repairId map (exact checkId equality only).
@@ -44,6 +45,7 @@ function slug(value) {
 }
 
 function resolveLocalRepairId(issue) {
+  if (issue?.repairable === false) return null;
   if (typeof issue.knownIssueId === 'string' && LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP.has(issue.knownIssueId)) {
     return LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP.get(issue.knownIssueId);
   }
