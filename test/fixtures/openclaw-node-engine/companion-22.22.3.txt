@@ -1,0 +1,2 @@
+--node-version 22.22.3
+ERROR: Node 22.22.3 is unsupported; use Node 24.16.0+ or Node 26.1.0+.

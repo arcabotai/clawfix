@@ -17,6 +17,7 @@ import {
   collectNativeDoctor,
   collectNativeSecurityAudit,
   collectNativeStatus,
+  collectNodeRuntimes,
   collectOpenClawUpdateStatus,
   collectOpenClawVersion,
 } from '../bin/native-diagnostics.js';
@@ -590,6 +591,7 @@ function createCliDiagnosticsCore() {
     },
     collectStuckSessionWindows,
     nativeCollectors: {
+      collectNodeRuntimes,
       collectOpenClawVersion,
       collectListeningPort,
       collectNativeDoctor,

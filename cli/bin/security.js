@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|is unsupported|preflight-node-runtime|Active Gateway runtime/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -961,4 +961,213 @@ export function describePluginsInstalls(detail) {
     return 'plugins.installs is still present and is not an empty object. Startup can fail with plugins: Unrecognized key: "installs". Populated install records belong in the SQLite plugin index before the key is removed. This check does not delete them.';
   }
   return 'Gateway startup failed with plugins: Unrecognized key: "installs" at plugins.installs. If the value is an empty object, back up the config and delete only that key. If it contains install records, do not delete it by hand.';
+}
+
+// Documented OpenClaw engine when the installed package.json cannot be read.
+// 22, 23, and 25 are outside this range.
+export const FALLBACK_NODE_ENGINE = '>=24.22.1 <25 || >=26.12.1';
+
+export function parseNodeVersion(value) {
+  const match = String(value ?? '').trim().match(/v?(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  const parts = match.slice(1).map(Number);
+  if (parts.some(part => !Number.isSafeInteger(part) || part < 0 || part > 100000)) return null;
+  return Object.freeze({
+    major: parts[0],
+    minor: parts[1],
+    patch: parts[2],
+    text: `${parts[0]}.${parts[1]}.${parts[2]}`,
+  });
+}
+
+export function parseNodeEngineRange(expression) {
+  const text = String(expression ?? '').trim();
+  if (!text || text.length > 200) return null;
+  const alternatives = text.split(/\s*\|\|\s*/);
+  const parsed = [];
+  for (const alternative of alternatives) {
+    const tokens = [...alternative.matchAll(/(>=|<=|>|<|=)\s*(\d+(?:\.\d+){0,2})/g)];
+    if (tokens.length === 0) return null;
+    parsed.push(tokens.map(token => {
+      const numbers = token[2].split('.').map(Number);
+      while (numbers.length < 3) numbers.push(0);
+      return Object.freeze({ op: token[1], version: Object.freeze(numbers.slice(0, 3)) });
+    }));
+  }
+  return parsed;
+}
+
+function compareNode(version, check) {
+  let diff = 0;
+  const left = [version.major, version.minor, version.patch];
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== check.version[index]) {
+      diff = left[index] - check.version[index];
+      break;
+    }
+  }
+  if (check.op === '>=') return diff >= 0;
+  if (check.op === '>') return diff > 0;
+  if (check.op === '<=') return diff <= 0;
+  if (check.op === '<') return diff < 0;
+  if (check.op === '=') return diff === 0;
+  return false;
+}
+
+export function nodeSatisfiesEngine(versionText, expression) {
+  const version = parseNodeVersion(versionText);
+  const range = parseNodeEngineRange(expression);
+  if (!version || !range) return null;
+  return range.some(alternative => alternative.every(check => compareNode(version, check)));
+}
+
+export function redactHomePath(value, home) {
+  let text = redactText(value, home ? { home } : {});
+  text = text.replace(/[A-Za-z]:\\Users\\[^\\]+/gi, '~');
+  text = text.replace(/\/(?:Users|home)\/[^/\s]+/g, '~');
+  return text;
+}
+
+function extractEngineExpression(text) {
+  const match = String(text ?? '').match(/(>=\d+\.\d+\.\d+(?:\s+<\d+(?:\.\d+\.\d+)?)?(?:\s*\|\|\s*>=\d+\.\d+\.\d+(?:\s+<\d+(?:\.\d+\.\d+)?)?)*)/);
+  return match ? match[1].replace(/\s+/g, ' ').trim() : null;
+}
+
+function runtimeSourceForPath(filePath) {
+  const text = String(filePath ?? '');
+  if (/\.openclaw[/\\]tools[/\\]node-v\d/.test(text)) return 'companion';
+  return 'shell';
+}
+
+function pushRuntime(list, runtime) {
+  const version = parseNodeVersion(runtime.version);
+  if (!version) return;
+  const path = runtime.path ? redactHomePath(runtime.path).slice(0, 300) : null;
+  const source = runtime.source === 'gateway' || runtime.source === 'companion' || runtime.source === 'shell'
+    ? runtime.source
+    : runtimeSourceForPath(path);
+  const key = `${source}|${path || ''}|${version.text}`;
+  if (list.some(item => item.key === key)) return;
+  list.push({ key, source, path, version: version.text });
+}
+
+function runtimesFromText(text) {
+  const source = String(text ?? '');
+  const found = [];
+  for (const match of source.matchAll(/detected:\s*Node\s+v?(\d+\.\d+\.\d+)\s+at\s+(\S+)/gi)) {
+    pushRuntime(found, { source: runtimeSourceForPath(match[2]), path: match[2].replace(/[),.;]+$/, ''), version: match[1] });
+  }
+  const gateway = source.match(/Active Gateway runtime:\s*node=v?(\d+\.\d+\.\d+)/i);
+  if (gateway) pushRuntime(found, { source: 'gateway', version: gateway[1] });
+  const detected = source.match(/detected Node\s+v?(\d+\.\d+\.\d+)/i);
+  const companion = source.match(/(~?[/\\]?(?:[^\s]*[/\\])?\.openclaw[/\\]tools[/\\]node-v\d+\.\d+\.\d+[/\\]bin[/\\]node)/i);
+  if (companion) {
+    const fromPath = companion[1].match(/node-v(\d+\.\d+\.\d+)/);
+    pushRuntime(found, {
+      source: 'companion',
+      path: companion[1],
+      version: fromPath?.[1] || detected?.[1],
+    });
+  } else if (detected && !/detected:\s*Node/i.test(source)) {
+    pushRuntime(found, { source: 'companion', version: detected[1] });
+  }
+  const unsupported = source.match(/Node\s+(\d+\.\d+\.\d+)\s+is unsupported/i);
+  if (unsupported) pushRuntime(found, { source: 'companion', version: unsupported[1] });
+  const current = source.match(/Node\.js\s+.+?\s+is required\s+\(current:\s*v?([^)]+)\)/i);
+  if (current) pushRuntime(found, { source: 'shell', version: current[1] });
+  return found;
+}
+
+function normalizeProvidedRuntimes(value) {
+  if (!Array.isArray(value)) return [];
+  const found = [];
+  for (const entry of value.slice(0, 8)) {
+    if (!entry || typeof entry !== 'object') continue;
+    pushRuntime(found, entry);
+  }
+  return found;
+}
+
+/**
+ * Which Node binaries are outside OpenClaw's engine range.
+ * A compatible gateway node keeps the finding, at lower severity.
+ */
+export function classifyNodeEngineMismatch({
+  engines,
+  runtimes,
+  text = '',
+  runtimeCompatible,
+  runtimeRequired,
+  runtimeCurrent,
+  home,
+} = {}) {
+  const combined = [text, runtimeRequired, runtimeCurrent].filter(Boolean).join('\n');
+  const fromPackage = typeof engines === 'string' && parseNodeEngineRange(engines) ? engines.trim() : null;
+  const fromCommand = extractEngineExpression(runtimeRequired) || extractEngineExpression(combined);
+  const enginesText = fromPackage || fromCommand || FALLBACK_NODE_ENGINE;
+  const enginesSource = fromPackage ? 'package.json engines.node' : fromCommand ? 'OpenClaw version check' : 'documented fallback';
+  if (!parseNodeEngineRange(enginesText)) return null;
+  const collected = normalizeProvidedRuntimes(runtimes);
+  const fromText = runtimesFromText(combined);
+  for (const runtime of fromText) {
+    pushRuntime(collected, { ...runtime, path: runtime.path ? redactHomePath(runtime.path, home) : null });
+  }
+  const currentVersion = parseNodeVersion(runtimeCurrent);
+  if (currentVersion && !collected.some(item => item.version === currentVersion.text)) {
+    pushRuntime(collected, { source: 'shell', version: runtimeCurrent });
+  }
+  const judged = collected.map(runtime => Object.freeze({
+    source: runtime.source,
+    path: runtime.path,
+    version: runtime.version,
+    compatible: nodeSatisfiesEngine(runtime.version, enginesText) === true,
+  }));
+  const failing = judged.filter(runtime => runtime.compatible !== true);
+  const legacyMismatch = runtimeCompatible === false && Boolean(runtimeRequired || runtimeCurrent);
+  if (failing.length === 0 && !legacyMismatch) return null;
+  if (failing.length === 0) return null;
+  const gateway = judged.find(runtime => runtime.source === 'gateway');
+  const gatewayCompatible = gateway ? gateway.compatible === true : null;
+  return Object.freeze({
+    engines: enginesText,
+    enginesSource,
+    runtimes: Object.freeze(judged),
+    failing: Object.freeze(failing),
+    gatewayCompatible,
+    severity: gatewayCompatible === true ? 'medium' : 'critical',
+  });
+}
+
+function nodeSourceLabel(source) {
+  if (source === 'gateway') return 'Gateway service';
+  if (source === 'companion') return 'Companion';
+  return 'Shell';
+}
+
+function nodeRemedy(runtime) {
+  if (runtime.source === 'gateway') {
+    return `The gateway service node ${runtime.version}${runtime.path ? ` at ${runtime.path}` : ''} is outside the range. Edit the LaunchAgent plist, systemd unit, or scheduled task so it starts a supported Node. ClawFix does not rewrite the service.`;
+  }
+  if (runtime.source === 'companion') {
+    if (runtime.path && /\.openclaw\/tools\/node-/.test(runtime.path)) {
+      return `Companion pinned ${runtime.path} (${runtime.version}). That build is below the current engine floor. Update Companion, or replace that tools node with 24.22.1+ or 26.12.1+. ClawFix does not replace it.`;
+    }
+    return `Companion or its installer selected Node ${runtime.version}, which is unsupported. Node 22, 23, and 25 are outside the range. Use Node 24.22.1+ or 26.12.1+. ClawFix does not install Node.`;
+  }
+  return `The shell node ${runtime.version}${runtime.path ? ` at ${runtime.path}` : ''} is what update preflight checks. Point this shell at a Node that satisfies the range, often the Node the gateway service already runs. ClawFix does not change PATH.`;
+}
+
+export function describeNodeEngineMismatch(detail) {
+  if (!detail) return 'A Node binary is outside OpenClaw\'s supported engine range.';
+  const parts = [`OpenClaw's Node engine range is ${detail.engines} (${detail.enginesSource}).`];
+  for (const runtime of detail.runtimes) {
+    const where = runtime.path ? ` at ${runtime.path}` : '';
+    parts.push(`${nodeSourceLabel(runtime.source)} node ${runtime.version}${where} is ${runtime.compatible ? 'inside the supported range' : 'outside the supported range'}.`);
+  }
+  if (detail.gatewayCompatible === true) {
+    parts.push('The gateway service Node is inside the supported range, so this mismatch is lower severity. The failing binary is the shell, the update preflight, or the Companion tools node.');
+  }
+  for (const runtime of detail.failing) parts.push(nodeRemedy(runtime));
+  parts.push('ClawFix does not install or switch Node.');
+  return parts.join(' ');
 }

@@ -323,3 +323,15 @@ There is no catalog repair. `doctor --fix` rebuilt the missing index in #150797 
 ClawFix does not start another `doctor --fix` from this finding.
 
 Doctor invocations ClawFix itself starts (`doctor --lint` in the CLI and the hosted script, and `doctor --fix --generate-gateway-token` in the token repair) use the 120 second budget, send SIGTERM, then SIGKILL after 5 seconds. If the gateway was listening before the invocation and is not listening after it, ClawFix runs `gateway restart` once. It does not run doctor again. A killed lint is still a collector timeout, not an OpenClaw finding.
+
+## Node engine mismatch and the binary that failed
+
+`openclaw-node-engine-mismatch` still matches an unsupported Node, and it now names which binary failed. The range is the installed OpenClaw `package.json` `engines.node` when that field parses. Otherwise it is the range printed by OpenClaw's own version check. If neither is present, the documented floor is Node 24.22.1+ or 26.12.1+ (`>=24.22.1 <25 || >=26.12.1`). Node 22, 23, and 25 are outside that floor.
+
+| Source | Where it is read | Report |
+|---|---|---|
+| Shell | the Node running ClawFix, or `detected: Node <version> at <path>` | [openclaw#189048](https://github.com/openclaw/openclaw/issues/189048). Homebrew Node 26.8.2 at `/opt/homebrew/Cellar/node/26.8.2/bin/node` failed update preflight. |
+| Gateway service | LaunchAgent `ai.openclaw.gateway.plist`, systemd `openclaw-gateway.service`, a scheduled task named `OpenClaw Gateway` or `openclaw-gateway`, or `Active Gateway runtime: node=v<version>` | #189048. The gateway was already on Node 24.22.1. |
+| Companion | `~/.openclaw/tools/node-v<version>/bin/node`, `detected Node <version>`, or `Node <version> is unsupported` | [openclaw#191386](https://github.com/openclaw/openclaw/issues/191386) pinned Node 24.19.0. [openclaw#145658](https://github.com/openclaw/openclaw/issues/145658) passed `--node-version 22.22.3`. |
+
+When a gateway node is present and inside the range, the finding stays, at medium severity, and says the gateway node is fine. A failing gateway node, or a shell or Companion failure with no readable gateway node, stays critical. A timed-out probe with no version is not treated as a pass. Home-directory usernames are replaced with `~`. There is no catalog repair and no Node install or PATH change.

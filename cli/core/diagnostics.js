@@ -4,10 +4,12 @@ import {
 
 import {
   classifyLegacyHeartbeat,
+  classifyNodeEngineMismatch,
   classifyPluginsInstalls,
   classifyPostUpgradeMigration,
   classifyStalledDoctor,
   describeLegacyHeartbeat,
+  describeNodeEngineMismatch,
   describePluginsInstalls,
   describePostUpgradeMigration,
   describeStalledDoctor,
@@ -1094,10 +1096,21 @@ export function deriveIssues(collected) {
   if (competingPortOwner) {
     issues.push({ severity: 'critical', text: 'Port conflict detected' });
   }
-  if (system.runtimeCompatible === false && system.runtimeRequired) {
+  const nodeEngine = classifyNodeEngineMismatch({
+    engines: system.nodeEngines || collected.nodeRuntimes?.engines,
+    runtimes: system.nodeRuntimes || collected.nodeRuntimes?.runtimes,
+    text: [combinedLogs, system.versionCommandText].filter(Boolean).join('\n'),
+    runtimeCompatible: system.runtimeCompatible,
+    runtimeRequired: system.runtimeRequired,
+    runtimeCurrent: system.runtimeCurrent,
+  });
+  if (nodeEngine) {
     issues.push({
-      severity: 'critical',
-      text: `OpenClaw requires Node ${system.runtimeRequired} (current: ${system.runtimeCurrent || system.nodeVersion})`,
+      knownIssueId: 'openclaw-node-engine-mismatch',
+      severity: nodeEngine.severity,
+      kind: nodeEngine.severity === 'critical' || nodeEngine.severity === 'high' ? 'failure' : 'warning',
+      text: 'Node.js runtime is incompatible with this OpenClaw release',
+      description: describeNodeEngineMismatch(nodeEngine),
       source: 'openclaw-runtime',
     });
   }
@@ -2037,6 +2050,20 @@ export function createDiagnosticsCore({
           stuckSessionWindows = null;
         }
       }
+      let nodeRuntimes = null;
+      const collectNodeRuntimes = nativeCollectors?.collectNodeRuntimes;
+      if (openclawBin && typeof collectNodeRuntimes === 'function') {
+        try {
+          nodeRuntimes = await cancellation.race(() => Promise.resolve(collectNodeRuntimes({
+            home,
+            openclawBin,
+            gatewayPid: gateway.gatewayPid,
+          })));
+        } catch (error) {
+          if (error === CANCELLED) throw error;
+          nodeRuntimes = null;
+        }
+      }
       const issues = deriveIssues({
         config,
         system,
@@ -2052,6 +2079,7 @@ export function createDiagnosticsCore({
         install,
         updateAvailability,
         stuckSessionWindows,
+        nodeRuntimes,
       });
       cancellation.checkCancelled();
       const optimizationCount = issues.filter((issue) => issue.kind === 'optimization').length;
@@ -2110,6 +2138,9 @@ export function createDiagnosticsCore({
           runtimeCompatible: system.runtimeCompatible,
           runtimeRequired: system.runtimeRequired,
           runtimeCurrent: system.runtimeCurrent,
+          ...(nodeRuntimes && Array.isArray(nodeRuntimes.runtimes)
+            ? { nodeRuntimes }
+            : {}),
           ...(redactedPlaceholderPaths.length > 0 ? { redactedPlaceholderPaths } : {}),
           ...(cliVersion ? { cliVersion } : {}),
           ...(configLastTouchedVersion ? { configLastTouchedVersion } : {}),

@@ -1870,10 +1870,12 @@ test('deriveIssues golden: comprehensive representative facts produce the exact 
   assert.deepEqual(issues, [
     { severity: 'critical', text: 'Gateway is not running', kind: 'failure' },
     {
+      knownIssueId: 'openclaw-node-engine-mismatch',
       severity: 'critical',
-      text: 'OpenClaw requires Node >=20.0.0 (current: 18.0.0)',
-      source: 'openclaw-runtime',
       kind: 'failure',
+      text: 'Node.js runtime is incompatible with this OpenClaw release',
+      description: 'OpenClaw\'s Node engine range is >=20.0.0 (OpenClaw version check). Shell node 18.0.0 is outside the supported range. The shell node 18.0.0 is what update preflight checks. Point this shell at a Node that satisfies the range, often the Node the gateway service already runs. ClawFix does not change PATH. ClawFix does not install or switch Node.',
+      source: 'openclaw-runtime',
     },
     { severity: 'medium', text: 'Stale bundled plugin load paths configured', kind: 'warning' },
     {
