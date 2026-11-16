@@ -3,8 +3,18 @@ import {
 } from 'node:path';
 
 import {
+  classifyPostUpgradeMigration,
+  classifyStalledDoctor,
+  describePostUpgradeMigration,
+  describeStalledDoctor,
+  readGatewayLiveness,
+  retainDiagnosticLogLine,
+} from '../bin/security.js';
+import {
   scanCompleted, scanError, scanStarted, scanStep,
 } from './events.js';
+
+export { readGatewayLiveness };
 
 // ClawFix Task 4 extracts collectDiagnostics() (cli/bin/clawfix.js) into this console-free,
 // transport-neutral, cancellable core in small vertical RED-GREEN slices. This module currently
@@ -878,25 +888,6 @@ export async function inspectOpenClawInstall({
   }
 }
 
-// OpenClaw 2026.11.3 prints the service-manager line even when that line is not
-// the health check. A gateway started by hand looks like:
-//   Runtime: stopped (diagnostic only, not the check target)
-//   Connectivity check: ok
-//   Listening: 127.0.0.1:18789
-// The connectivity check is the verdict. A diagnostic-only "stopped" is not.
-export function readGatewayLiveness(status) {
-  const probe = String(status || '')
-    .split('\n')
-    .filter((line) => !/diagnostic only, not the check target/i.test(line))
-    .join('\n');
-  const connectivity = /(?:connectivity|read) check:\s*(ok|failed|timed out)/i.exec(probe);
-  if (connectivity) return connectivity[1].toLowerCase() === 'ok' ? 'up' : 'down';
-  if (/running.*pid|state active|^listening:/im.test(probe)) return 'up';
-  if (/not running|failed to start|\bstopped\b|\binactive\b/i.test(probe)) return 'down';
-  if (/warning/i.test(probe)) return 'unknown';
-  return 'down';
-}
-
 // deriveIssues() is the verbatim-behavior port of the original collectDiagnostics() "Local Issue
 // Detection" block (cli/bin/clawfix.js lines ~860-1098). It is a pure function: every fact it
 // reasons about (config, per-band collection results) is read from the `collected` argument, and
@@ -1153,6 +1144,31 @@ export function deriveIssues(collected) {
     issues.push({ severity: 'critical', text: `Gateway crash loop — ${serviceHealth.runs} restarts, only ${serviceHealth.uptimeStr} uptime` });
   } else if ((serviceHealth.nRestarts || 0) > 0) {
     issues.push({ severity: 'high', text: `Gateway has restarted ${serviceHealth.nRestarts} time(s) (systemd)` });
+  }
+
+  const migrationCrash = classifyPostUpgradeMigration(combinedLogs);
+  if (migrationCrash) {
+    issues.push({
+      knownIssueId: 'post-upgrade-migration-crash-loop',
+      severity: 'critical',
+      kind: 'failure',
+      text: 'Post-upgrade migration is crash-looping',
+      description: describePostUpgradeMigration(migrationCrash),
+    });
+  }
+  const stalledDoctor = classifyStalledDoctor({
+    text: combinedLogs,
+    gatewayDown: gatewayLiveness === 'down',
+    doctorProcesses: gateway.doctorProcesses,
+  });
+  if (stalledDoctor) {
+    issues.push({
+      knownIssueId: 'doctor-fix-stalled',
+      severity: 'critical',
+      kind: 'failure',
+      text: 'Doctor repair is stalled',
+      description: describeStalledDoctor(stalledDoctor),
+    });
   }
 
   const handshakeSpam = (logs.stderrLogs.match(/invalid handshake.*chrome-extension|closed before connect.*chrome-extension/gi) || []).length;
@@ -1497,15 +1513,54 @@ export function createDiagnosticsCore({
     return projected;
   }
 
-  function collectNative(openclawBin, runtimeCompatible, cliVersion, cancellation) {
-    // Native collectors are sync spawnSync boundaries with intrinsic timeouts. Cancellation cannot
-    // interrupt a collector already executing, but is observed before and after each call.
+  async function collectNative(openclawBin, runtimeCompatible, cliVersion, gatewayPort, cancellation) {
+    // Doctor is async so a timeout can send SIGTERM and then SIGKILL. The other
+    // collectors stay sync. Cancellation cannot interrupt a collector already
+    // executing, but is observed before and after each call.
     cancellation.checkCancelled();
+    let gatewayWasRunning = null;
+    if (openclawBin && typeof openclaw.gatewayListening === 'function') {
+      try {
+        gatewayWasRunning = await cancellation.race(() => openclaw.gatewayListening(gatewayPort, {
+          timeoutMs: cancellation.boundTimeout(5000),
+          signal: cancellation.signal,
+        }));
+      } catch (error) {
+        if (error === CANCELLED) throw error;
+        gatewayWasRunning = null;
+      }
+    }
     let nativeDoctor = openclawBin
-      ? nativeCollectors.collectNativeDoctor(openclawBin)
+      ? await nativeCollectors.collectNativeDoctor(openclawBin)
       : {
         available: false, timedOut: false, checksRun: 0, checksSkipped: 0, findings: [],
       };
+    if (gatewayWasRunning === true
+        && typeof openclaw.gatewayListening === 'function'
+        && typeof openclaw.invoke === 'function') {
+      let stillRunning = null;
+      try {
+        stillRunning = await cancellation.race(() => openclaw.gatewayListening(gatewayPort, {
+          timeoutMs: cancellation.boundTimeout(5000),
+          signal: cancellation.signal,
+        }));
+      } catch (error) {
+        if (error === CANCELLED) throw error;
+        stillRunning = null;
+      }
+      // One restart, never another doctor invocation. Lint is read-only, but a
+      // doctor --fix that ClawFix started can leave the gateway stopped.
+      if (stillRunning === false) {
+        try {
+          await cancellation.race(() => openclaw.invoke(['gateway', 'restart'], {
+            timeoutMs: cancellation.boundTimeout(60_000),
+            signal: cancellation.signal,
+          }));
+        } catch (error) {
+          if (error === CANCELLED) throw error;
+        }
+      }
+    }
     if (nativeDoctor?.timedOut === true) {
       nativeDoctor = {
         available: false,
@@ -1566,8 +1621,20 @@ export function createDiagnosticsCore({
       || gatewayStatus.split('\n')[0]
     ).trim();
     const running = readGatewayLiveness(gatewayStatus) === 'up';
+    let doctorProcesses = [];
+    if (typeof openclaw.doctorProcesses === 'function') {
+      try {
+        const listed = await cancellation.race(() => openclaw.doctorProcesses({
+          timeoutMs: cancellation.boundTimeout(5000),
+          signal: cancellation.signal,
+        }));
+        doctorProcesses = Array.isArray(listed) ? listed.slice(0, 8) : [];
+      } catch (error) {
+        if (error === CANCELLED) throw error;
+      }
+    }
     return {
-      gatewayStatus, gatewayPort, gatewayPid, statusLine, running,
+      gatewayStatus, gatewayPort, gatewayPid, statusLine, running, doctorProcesses,
     };
   }
 
@@ -1590,7 +1657,7 @@ export function createDiagnosticsCore({
         }))).text;
         const lines = tailContent.split('\n');
         errorLogs = lines
-          .filter((line) => /error|warn|fail|crash|EADDRINUSE|EACCES/i.test(line))
+          .filter((line) => retainDiagnosticLogLine(line))
           .slice(-30)
           .join('\n');
         gatewayLogTail = lines
@@ -1865,7 +1932,13 @@ export function createDiagnosticsCore({
 
       const {
         nativeDoctor, nativeConfig, nativeStatus, nativeSecurity, updateAvailability: collectedUpdate,
-      } = collectNative(openclawBin, system.runtimeCompatible, system.ocVersion, cancellation);
+      } = await collectNative(
+        openclawBin,
+        system.runtimeCompatible,
+        system.ocVersion,
+        gateway.gatewayPort,
+        cancellation,
+      );
       const updateAvailability = narrowUploadedUpdate(collectedUpdate);
       emit?.(scanStep({
         revision,
@@ -2003,6 +2076,9 @@ export function createDiagnosticsCore({
           gatewayPort: gateway.gatewayPort,
           processExists: Boolean(gateway.gatewayPid),
           portListening: ports.gateway.listening === true,
+          ...(Array.isArray(gateway.doctorProcesses) && gateway.doctorProcesses.length > 0
+            ? { doctorProcesses: gateway.doctorProcesses }
+            : {}),
           runtimeCompatible: system.runtimeCompatible,
           runtimeRequired: system.runtimeRequired,
           runtimeCurrent: system.runtimeCurrent,

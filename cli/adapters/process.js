@@ -5,6 +5,15 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 1024 * 1024;
 export const DEFAULT_KILL_GRACE_MS = 250;
 
+function normalizeKillSignals(value) {
+  if (value === undefined) return Object.freeze(['SIGKILL']);
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3
+      || value.some((signal) => typeof signal !== 'string' || !/^SIG[A-Z0-9]+$/.test(signal))) {
+    throw new TypeError('killSignals must contain one to three signal names');
+  }
+  return Object.freeze([...value]);
+}
+
 function validateInvocation(executable, argv, options = {}) {
   if (typeof executable !== 'string' || executable.length === 0 || executable.includes('\0')) {
     throw new TypeError('executable must be a non-empty string without NUL bytes');
@@ -41,12 +50,22 @@ function validateInvocation(executable, argv, options = {}) {
   if (options.windowsHide !== undefined && typeof options.windowsHide !== 'boolean') {
     throw new TypeError('windowsHide must be a boolean');
   }
+  if (options.killGraceMs !== undefined
+      && (!Number.isSafeInteger(options.killGraceMs) || options.killGraceMs < 0)) {
+    throw new TypeError('killGraceMs must be a non-negative safe integer');
+  }
+  if (options.killProcessGroup !== undefined && typeof options.killProcessGroup !== 'boolean') {
+    throw new TypeError('killProcessGroup must be a boolean');
+  }
 
   return {
     argv: Object.freeze([...argv]),
     timeoutMs,
     maxStdoutBytes,
     maxStderrBytes,
+    killSignals: normalizeKillSignals(options.killSignals),
+    killGraceMs: options.killGraceMs,
+    killProcessGroup: options.killProcessGroup === true,
     signal: options.signal,
     cwd: options.cwd instanceof URL ? new URL(options.cwd) : options.cwd,
     env: options.env === undefined ? undefined : Object.freeze({ ...options.env }),
@@ -150,6 +169,7 @@ export function createProcessAdapter({
 
   async function run(executable, argv, options = {}) {
     const invocation = validateInvocation(executable, argv, options);
+    const graceMs = invocation.killGraceMs ?? killGraceMs;
     if (invocation.signal?.aborted) return abortedResult();
 
     const stdout = createCollector(invocation.maxStdoutBytes);
@@ -164,7 +184,9 @@ export function createProcessAdapter({
       let timedOut = false;
       let aborted = false;
 
+      let onParentExit = () => {};
       const cleanup = () => {
+        process.removeListener('exit', onParentExit);
         if (timer !== undefined) clearTimeout(timer);
         if (killTimer !== undefined) clearTimeout(killTimer);
         invocation.signal?.removeEventListener('abort', onAbort);
@@ -189,44 +211,73 @@ export function createProcessAdapter({
           stderrTruncated: stderr.truncated,
         }));
       };
-      const stop = () => {
-        if (settled || killTimer !== undefined) return;
-        try {
-          if (!child?.killed) child?.kill('SIGKILL');
-        } catch {
-          // The primary timeout/abort error remains authoritative.
-        }
+      const unconfirmed = () => {
         if (settled) return;
-        killTimer = setTimeout(() => {
-          if (settled) return;
-          const primaryError = processError ?? new Error('Process stopped');
-          const unconfirmedError = new Error(
-            `${primaryError.message}; termination unconfirmed after ${killGraceMs}ms`,
-            { cause: primaryError },
-          );
-          Object.assign(unconfirmedError, primaryError);
-          processError = unconfirmedError;
-          for (const resource of [child?.stdin, child?.stdout, child?.stderr]) {
-            try {
-              resource?.destroy?.();
-            } catch {
-              // Best-effort handle release must not escape a timer callback.
-            }
-          }
+        const primaryError = processError ?? new Error('Process stopped');
+        const unconfirmedError = new Error(
+          `${primaryError.message}; termination unconfirmed after ${graceMs}ms`,
+          { cause: primaryError },
+        );
+        Object.assign(unconfirmedError, primaryError);
+        processError = unconfirmedError;
+        for (const resource of [child?.stdin, child?.stdout, child?.stderr]) {
           try {
-            child?.unref?.();
+            resource?.destroy?.();
           } catch {
             // Best-effort handle release must not escape a timer callback.
           }
-          const onLateError = () => {};
-          const onLateClose = () => {
-            child?.removeListener('error', onLateError);
-            child?.removeListener('close', onLateClose);
-          };
-          child?.on('error', onLateError);
-          child?.on('close', onLateClose);
-          finish();
-        }, killGraceMs);
+        }
+        try {
+          child?.unref?.();
+        } catch {
+          // Best-effort handle release must not escape a timer callback.
+        }
+        const onLateError = () => {};
+        const onLateClose = () => {
+          child?.removeListener('error', onLateError);
+          child?.removeListener('close', onLateClose);
+        };
+        child?.on('error', onLateError);
+        child?.on('close', onLateClose);
+        finish();
+      };
+      let stopping = false;
+      let signalIndex = 0;
+      const deliverSignal = () => {
+        if (settled) return;
+        const signal = invocation.killSignals[signalIndex];
+        signalIndex += 1;
+        const pid = child?.pid;
+        // child.kill() ignores every signal after the first. Doctor workers also
+        // outlive a parent-only signal, so a grouped doctor invocation is killed
+        // by process-group id.
+        try {
+          if (invocation.killProcessGroup && Number.isInteger(pid) && pid > 0) {
+            process.kill(-pid, signal);
+          } else if (Number.isInteger(pid) && pid > 0) {
+            process.kill(pid, signal);
+          } else {
+            child?.kill(signal);
+          }
+        } catch {
+          try {
+            child?.kill(signal);
+          } catch {
+            // The primary timeout/abort error remains authoritative.
+          }
+        }
+        if (settled) return;
+        const more = signalIndex < invocation.killSignals.length;
+        killTimer = setTimeout(() => {
+          if (settled) return;
+          if (more) deliverSignal();
+          else unconfirmed();
+        }, graceMs);
+      };
+      const stop = () => {
+        if (settled || stopping) return;
+        stopping = true;
+        deliverSignal();
       };
       const onAbort = () => {
         if (timedOut || aborted) return;
@@ -248,6 +299,7 @@ export function createProcessAdapter({
           windowsHide: invocation.windowsHide,
           stdio: ['ignore', 'pipe', 'pipe'],
           shell: false,
+          detached: invocation.killProcessGroup,
         });
       } catch (error) {
         processError = error;
@@ -259,6 +311,16 @@ export function createProcessAdapter({
       child.stderr?.on('data', onStderr);
       child.on('error', onError);
       child.on('close', onClose);
+      onParentExit = () => {
+        const pid = child?.pid;
+        if (!invocation.killProcessGroup || !Number.isInteger(pid) || pid <= 0) return;
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          // The parent is already exiting.
+        }
+      };
+      if (invocation.killProcessGroup) process.once('exit', onParentExit);
       timer = setTimeout(() => {
         if (aborted || timedOut) return;
         timedOut = true;

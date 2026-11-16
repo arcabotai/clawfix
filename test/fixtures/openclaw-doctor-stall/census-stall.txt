@@ -1,0 +1,10 @@
+┌  OpenClaw doctor
+Stopped the managed Gateway for Doctor repair.
+(~79 minutes of complete silence, 0% CPU)
+inspect OpenClaw processes: Error: OpenClaw process census is incomplete.   # repeated
+...normal check/repair output, ~4 min...
+Gateway restarted and verified after Doctor repair.
+└  Doctor complete.
+
+OpenClaw config could not be read: ~/.openclaw/openclaw.json
+- <root>: read failed at ~/.openclaw/openclaw.json: Error: OpenClaw state at ~/.openclaw/state/openclaw.sqlite is undergoing offline maintenance; retry when it finishes.

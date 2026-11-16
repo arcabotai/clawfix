@@ -1,0 +1,1 @@
+SQLite schema is incomplete or noncanonical for ~/.openclaw/agents/main/agent/openclaw-agent.sqlite: missing or drifted index idx_agent_session_nodes_active; run openclaw doctor --fix to repair it.

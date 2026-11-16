@@ -21,10 +21,10 @@ import { createServerStarter } from '../src/server-start.js';
 
 const successfulSpawn = (stdout = '') => ({ status: 0, signal: null, stdout, stderr: '' });
 
-test('native doctor runs the broad lint set and skips only workspace-heavy readiness checks', () => {
+test('native doctor runs the broad lint set and skips only workspace-heavy readiness checks', async () => {
   let args;
   let timeout;
-  const result = collectNativeDoctor('/usr/local/bin/openclaw', (_command, received, options) => {
+  const result = await collectNativeDoctor('/usr/local/bin/openclaw', (_command, received, options) => {
     args = received;
     timeout = options.timeout;
     if (received.includes('--include')) {
@@ -102,7 +102,7 @@ test('native config validation parses the complete adapter-bounded JSON envelope
   assert.doesNotMatch(result.warnings[0], /sk-testsecret/);
 });
 
-test('native Doctor parses the complete adapter-bounded JSON envelope before projecting fields', () => {
+test('native Doctor parses the complete adapter-bounded JSON envelope before projecting fields', async () => {
   const message = `doctor warning ${'y'.repeat(300_000)} token=${`ghp_${'b'.repeat(36)}`}`;
   const stdout = JSON.stringify({
     ok: false,
@@ -113,7 +113,7 @@ test('native Doctor parses the complete adapter-bounded JSON envelope before pro
   assert.ok(Buffer.byteLength(stdout) > 250_000);
   assert.ok(Buffer.byteLength(stdout) < 1_000_000);
 
-  const result = collectNativeDoctor('/usr/local/bin/openclaw', () => successfulSpawn(stdout));
+  const result = await collectNativeDoctor('/usr/local/bin/openclaw', () => successfulSpawn(stdout));
 
   assert.equal(result.available, true);
   assert.equal(result.findings.length, 1);
@@ -121,7 +121,7 @@ test('native Doctor parses the complete adapter-bounded JSON envelope before pro
   assert.doesNotMatch(result.findings[0].message, /ghp_testsecret/);
 });
 
-test('native collectors reject partial JSON from timed-out subprocesses', () => {
+test('native collectors reject partial JSON from timed-out subprocesses', async () => {
   const timedOut = {
     status: null,
     signal: 'SIGTERM',
@@ -136,7 +136,7 @@ test('native collectors reject partial JSON from timed-out subprocesses', () => 
     error: { code: 'ETIMEDOUT', message: 'timed out' },
   };
   const config = collectNativeConfigValidation('/usr/local/bin/openclaw', () => timedOut);
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => timedOut);
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => timedOut);
   assert.equal(config.available, false);
   assert.equal(config.valid, null);
   assert.equal(doctor.available, false);
@@ -146,7 +146,7 @@ test('native collectors reject partial JSON from timed-out subprocesses', () => 
   assert.deepEqual(doctor.findings, []);
 });
 
-test('a completed doctor lint finding is kept and a timeout with the same text is not', () => {
+test('a completed doctor lint finding is kept and a timeout with the same text is not', async () => {
   const envelope = {
     ok: false,
     checksRun: 1,
@@ -159,7 +159,7 @@ test('a completed doctor lint finding is kept and a timeout with the same text i
       fixHint: 'Set gateway.mode local',
     }],
   };
-  const completed = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const completed = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 1,
     signal: null,
     stdout: JSON.stringify(envelope),
@@ -170,7 +170,7 @@ test('a completed doctor lint finding is kept and a timeout with the same text i
   assert.equal(completed.findings[0].message, 'gateway.mode is unset');
   assert.equal(completed.findings[0].checkId, 'core/doctor/gateway-config');
 
-  const killed = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const killed = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: null,
     signal: 'SIGTERM',
     stdout: JSON.stringify(envelope),
@@ -182,9 +182,9 @@ test('a completed doctor lint finding is kept and a timeout with the same text i
   assert.equal(JSON.stringify(killed).includes('gateway.mode is unset'), false);
 });
 
-test('native collectors reject valid JSON with the wrong top-level contract', () => {
+test('native collectors reject valid JSON with the wrong top-level contract', async () => {
   const wrongShape = () => successfulSpawn('{}');
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', wrongShape);
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', wrongShape);
   const config = collectNativeConfigValidation('/usr/local/bin/openclaw', wrongShape);
   const status = collectNativeStatus('/usr/local/bin/openclaw', wrongShape);
   const security = collectNativeSecurityAudit('/usr/local/bin/openclaw', wrongShape);
@@ -207,14 +207,14 @@ test('native status and security reject plausible but incomplete sibling envelop
   }
 });
 
-test('native collectors reject runtime exit code 2 even with plausible JSON', () => {
+test('native collectors reject runtime exit code 2 even with plausible JSON', async () => {
   const failed = stdout => () => ({
     status: 2,
     signal: null,
     stdout: JSON.stringify(stdout),
     stderr: 'runtime failure',
   });
-  assert.equal(collectNativeDoctor('/usr/local/bin/openclaw', failed({ ok: false, checksRun: 1, checksSkipped: 0, findings: [] })).available, false);
+  assert.equal((await collectNativeDoctor('/usr/local/bin/openclaw', failed({ ok: false, checksRun: 1, checksSkipped: 0, findings: [] }))).available, false);
   assert.equal(collectNativeConfigValidation('/usr/local/bin/openclaw', failed({ valid: false, issues: [] })).available, false);
   assert.equal(collectNativeStatus('/usr/local/bin/openclaw', failed({ runtimeVersion: '2026.6.11' })).available, false);
   assert.equal(collectNativeSecurityAudit('/usr/local/bin/openclaw', failed({ summary: {}, findings: [] })).available, false);
@@ -222,7 +222,7 @@ test('native collectors reject runtime exit code 2 even with plausible JSON', ()
 
 test('native doctor keeps a real 2026.11.3 lint report, including requirement', async () => {
   const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 1,
     signal: null,
     stdout,
@@ -244,7 +244,7 @@ test('native doctor keeps a real 2026.11.3 lint report, including requirement', 
 
 test('native doctor accepts the documented exit-2 lint-inspection envelope', async () => {
   const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/lint-inspection-failure.json', import.meta.url), 'utf8');
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 2,
     signal: null,
     stdout,
@@ -264,8 +264,8 @@ test('native doctor accepts the documented exit-2 lint-inspection envelope', asy
   }]);
 });
 
-test('native doctor keeps errorCode and line and drops a free-form error code', () => {
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+test('native doctor keeps errorCode and line and drops a free-form error code', async () => {
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 1,
     signal: null,
     stdout: JSON.stringify({
@@ -535,7 +535,7 @@ printf '%s\\n' '{"ok":false,"checksRun":1,"checksSkipped":0,"findings":[{"checkI
 
 test('native and hosted doctor keep requirement from a real 2026.11.3 lint report', async (t) => {
   const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 1, signal: null, stdout, stderr: '',
   }));
   const heartbeat = doctor.findings.find(finding => finding.checkId === 'core/doctor/heartbeat-cadence-migration');

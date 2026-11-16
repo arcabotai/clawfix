@@ -305,9 +305,9 @@ test('OpenClaw runtime mismatch is preserved even when the CLI exits non-zero', 
   assert.ok(issues.some(issue => issue.id === 'openclaw-node-engine-mismatch'));
 });
 
-test('native Doctor findings are collected from read-only JSON output', () => {
+test('native Doctor findings are collected from read-only JSON output', async () => {
   let args;
-  const result = collectNativeDoctor('/usr/local/bin/openclaw', (_binary, receivedArgs) => {
+  const result = await collectNativeDoctor('/usr/local/bin/openclaw', (_binary, receivedArgs) => {
     args = receivedArgs;
     return {
       status: 1,

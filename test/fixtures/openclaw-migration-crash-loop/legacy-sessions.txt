@@ -1,0 +1,3 @@
+Gateway failed to start: Legacy session store requires migration:
+~/.openclaw/agents/main/sessions/sessions.json.
+Run "openclaw doctor --fix" against the same state/config before starting OpenClaw.

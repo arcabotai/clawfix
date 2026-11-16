@@ -6,14 +6,19 @@
 
 import {
   classifyHeartbeatScratchFile,
+  classifyPostUpgradeMigration,
+  classifyStalledDoctor,
   configWrittenByNewerVersion,
   describeConfigWrittenByNewerVersion,
   describeIncompleteNpmInstall,
   describeOpenClawRedactedPlaceholders,
   describeOpenClawUpdateAvailable,
+  describePostUpgradeMigration,
+  describeStalledDoctor,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
   openclawUpdateAvailable,
+  readGatewayLiveness,
   stuckSessionWindowCount,
   placeholderPathsForDiagnostic,
 } from '../cli/bin/security.js';
@@ -756,6 +761,50 @@ echo "Edit ~/.openclaw/openclaw.json to remove duplicates"`,
 # If you have issues, check for leftover files from a previous install:
 ls -la ~/.openclaw/ 2>/dev/null
 echo "✅ No action needed unless you're experiencing config conflicts"`,
+  },
+
+  {
+    id: 'post-upgrade-migration-crash-loop',
+    severity: 'critical',
+    title: 'Post-upgrade migration is crash-looping',
+    description: 'Startup is refusing legacy workspace setup, a drifted idx_agent_session_nodes_active index, or a legacy sessions.json. openclaw gateway restart does not migrate that state. Run Doctor\'s migration by hand after a state-dir backup. ClawFix does not run doctor --fix for this.',
+    detect: (diag) => classifyPostUpgradeMigration(logText(diag)) !== null,
+    describe: (diag) => describePostUpgradeMigration(classifyPostUpgradeMigration(logText(diag))),
+    fix: `# Advisory only. A gateway restart does not migrate this state.
+# Doctor --fix is not run from this script: it stops the gateway and can hang.
+echo "Post-upgrade migration is crash-looping. openclaw gateway restart will not fix it."
+echo "Back up the OpenClaw state directory before any migration."
+echo "Index idx_agent_session_nodes_active was repaired by: openclaw doctor --fix"
+echo "If that command is still running after 120 seconds, send SIGTERM, wait, then SIGKILL. Do not start it again."
+echo "A legacy workspace setup conflict can make doctor --fix refuse. Move that legacy file aside. Do not delete the workspace."
+echo "A per-agent sessions.json may need: openclaw doctor --session-sqlite import --session-sqlite-all-agents"
+echo "Stop the gateway before that import."`,
+  },
+
+  {
+    id: 'doctor-fix-stalled',
+    severity: 'critical',
+    title: 'Doctor repair is stalled',
+    description: 'doctor --fix is hung, stale, or left the gateway stopped. Do not start another doctor --fix. SIGTERM has been ignored; escalate to SIGKILL, then restore the gateway only if it was running before Doctor stopped it.',
+    detect: (diag) => classifyStalledDoctor({
+      text: logText(diag),
+      gatewayDown: readGatewayLiveness(diag.openclaw?.gatewayStatus) === 'down'
+        && diag.openclaw?.portListening !== true,
+      doctorProcesses: diag.openclaw?.doctorProcesses,
+    }) !== null,
+    describe: (diag) => describeStalledDoctor(classifyStalledDoctor({
+      text: logText(diag),
+      gatewayDown: readGatewayLiveness(diag.openclaw?.gatewayStatus) === 'down'
+        && diag.openclaw?.portListening !== true,
+      doctorProcesses: diag.openclaw?.doctorProcesses,
+    })),
+    fix: `# Advisory only. Do not start another doctor --fix.
+echo "Doctor is stalled or its cleanup failed. The gateway may still be stopped."
+echo "Do not run openclaw doctor --fix again."
+echo "To stop a hung doctor: kill -TERM the doctor pid, wait a few seconds, then kill -KILL if it is still there."
+echo "That releases the offline-maintenance lease."
+echo "Start the gateway afterward only if it was running before Doctor stopped it."
+echo "A gateway restart while Doctor still holds the lease crash-loops."`,
   },
 
   {

@@ -1,0 +1,2 @@
+Legacy workspace setup state requires migration for ~/.openclaw/workspace; run openclaw doctor --fix.
+Failed migrating legacy workspace state: legacy workspace setup conflicts with canonical SQLite state.

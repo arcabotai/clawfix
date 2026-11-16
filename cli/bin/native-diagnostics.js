@@ -1,14 +1,21 @@
 import { homedir } from 'node:os';
-import { runProcessSync } from '../adapters/process.js';
-import { projectOpenClawUpdateStatus, redactText } from './security.js';
+import { runProcess, runProcessSync } from '../adapters/process.js';
+import {
+  DOCTOR_INVOCATION_TIMEOUT_MS,
+  DOCTOR_KILL_GRACE_MS,
+  DOCTOR_KILL_SIGNALS,
+  projectOpenClawUpdateStatus,
+  redactText,
+} from './security.js';
 
 const VERSION_STDOUT_BYTES = 1_200;
 const VERSION_STDERR_BYTES = 4_000;
 const DOCTOR_STDOUT_BYTES = 1_000_000;
 // OpenClaw bounds hosted doctor diagnosis at 120 seconds
 // (src/commands/doctor-process.ts, timeoutMs). Lint is read-only. A kill at
-// this budget is a collector state, not an OpenClaw finding.
-export const DOCTOR_LINT_TIMEOUT_MS = 120_000;
+// this budget is a collector state, not an OpenClaw finding. SIGTERM is sent
+// first because a stalled doctor --fix has ignored that signal; SIGKILL follows.
+export const DOCTOR_LINT_TIMEOUT_MS = DOCTOR_INVOCATION_TIMEOUT_MS;
 const JSON_STDOUT_BYTES = 2_000_000;
 const JSON_STDERR_BYTES = 8_000;
 const PORT_STDOUT_BYTES = 80_000;
@@ -20,6 +27,17 @@ function defaultRunSync(executable, argv, options) {
     maxStdoutBytes: options.maxStdoutBytes,
     maxStderrBytes: options.maxStderrBytes,
     shell: false,
+  });
+}
+
+function defaultRunDoctor(executable, argv, options) {
+  return runProcess(executable, argv, {
+    timeoutMs: options.timeout,
+    maxStdoutBytes: options.maxStdoutBytes,
+    maxStderrBytes: options.maxStderrBytes,
+    killSignals: DOCTOR_KILL_SIGNALS,
+    killGraceMs: DOCTOR_KILL_GRACE_MS,
+    killProcessGroup: true,
   });
 }
 
@@ -219,8 +237,8 @@ function isDoctorLintFailureEnvelope(parsed) {
     && finding.severity === 'error';
 }
 
-export function collectNativeDoctor(openclawBin, runSync = defaultRunSync) {
-  const result = normalizeProcessResult(runSync(openclawBin, [
+export async function collectNativeDoctor(openclawBin, runCommand = defaultRunDoctor) {
+  const result = normalizeProcessResult(await runCommand(openclawBin, [
     'doctor',
     '--lint',
     '--json',
