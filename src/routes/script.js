@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\\.auth REMOVED|config reload: gateway\\.auth\\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern' | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js|owns this state directory|owns state-lifecycle|GatewayLockError|OPENCLAW_STATE_LEASE_ABORTED|state ownership is no longer current|cannot verify Gateway ownership|gateway\\.auth REMOVED|config reload: gateway\\.auth\\.mode|AUTH_PROFILE_MIGRATION_REQUIRED|requires legacy credential migration|without replaying credentials|withheld-cross-device|device token mismatch|stale device-token pattern|MemorySearch timed out after 15s|memory-lancedb embedding timed out|memory_search|reindex-lock\\.sqlite' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -1428,6 +1428,67 @@ if [ -z "\$GATEWAY_AUTH_JSON" ]; then
   GATEWAY_AUTH_JSON=null
 fi
 
+# *.reindex-lock.sqlite size and age. Never delete the file.
+MEMORY_REINDEX_JSON=null
+MEMORY_REINDEX_JSON=\$(node - "\$OPENCLAW_DIR" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
+const root = process.argv[2] || '';
+const suffix = '.reindex-lock.sqlite';
+function redact(value) {
+  let text = String(value || '');
+  const home = os.homedir();
+  if (home && (text === home || text.startsWith(home + path.sep))) {
+    text = '~' + text.slice(home.length);
+  }
+  const parts = text.split(path.sep);
+  const usersAt = parts.findIndex(function (part) { return part === 'Users' || part === 'home'; });
+  if (usersAt >= 0 && parts[usersAt + 1]) {
+    text = ['~'].concat(parts.slice(usersAt + 2)).join('/');
+  }
+  return text.slice(0, 300);
+}
+let reindexAlive = false;
+try {
+  const out = execFileSync('ps', ['-eo', 'args='], { encoding: 'utf8', timeout: 5000, maxBuffer: 200000 });
+  reindexAlive = String(out).split('\\n').some(function (line) {
+    if (/\\bclawfix\\b/i.test(line)) return false;
+    return /\\bopenclaw\\b/.test(line) && /\\bmemory\\b/.test(line) && /\\b(?:index|reindex)\\b/.test(line);
+  });
+} catch (error) {
+  reindexAlive = false;
+}
+const locks = [];
+function walk(dir, depth) {
+  if (locks.length >= 8 || depth > 6) return;
+  let names;
+  try { names = fs.readdirSync(dir); } catch (error) { return; }
+  for (let i = 0; i < names.length; i += 1) {
+    if (locks.length >= 8) return;
+    const full = path.join(dir, names[i]);
+    let info;
+    try { info = fs.lstatSync(full); } catch (error) { continue; }
+    if (info.isSymbolicLink()) continue;
+    if (info.isDirectory()) { walk(full, depth + 1); continue; }
+    if (!info.isFile() || !names[i].endsWith(suffix)) continue;
+    locks.push({
+      path: redact(full),
+      bytes: info.size,
+      ageMs: Math.max(0, Math.floor(Date.now() - info.mtimeMs)),
+      reindexAlive: reindexAlive,
+    });
+  }
+}
+if (root && root !== 'not found') walk(root, 0);
+process.stdout.write(JSON.stringify({ reindexAlive: reindexAlive, locks: locks }));
+NODE
+) || true
+if [ -z "\$MEMORY_REINDEX_JSON" ]; then
+  MEMORY_REINDEX_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -1460,7 +1521,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "doctorProcesses": \$DOCTOR_PROCESSES_JSON,
     "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON,
     "nodeRuntimes": \$NODE_RUNTIMES_JSON,
-    "gatewayAuth": \$GATEWAY_AUTH_JSON
+    "gatewayAuth": \$GATEWAY_AUTH_JSON,
+    "memoryReindexLocks": \$MEMORY_REINDEX_JSON
   },
   "service": {
     "manager": "\$SERVICE_MANAGER",
