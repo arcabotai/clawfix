@@ -3076,7 +3076,7 @@ const MISSING_GATEWAY_TOKEN = {
 
 test('a captured doctor gateway-auth finding aliases the loopback repair when the audit did not', async () => {
   const stdout = await readFile(new URL('./fixtures/openclaw-doctor-lint/empty-config.json', import.meta.url), 'utf8');
-  const doctor = collectNativeDoctor('/usr/local/bin/openclaw', () => ({
+  const doctor = await collectNativeDoctor('/usr/local/bin/openclaw', () => ({
     status: 1, signal: null, stdout, stderr: '',
   }));
   const issues = deriveIssues(fakeCollected({ nativeDoctor: doctor }));

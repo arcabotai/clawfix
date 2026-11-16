@@ -1,0 +1,3 @@
+node dist/infra/sqlite-source-revision.worker.js --openclaw-sqlite-readonly-child content-version ~/.openclaw/state/openclaw.sqlite
+Doctor interrupted by SIGTERM; cancelling inspections and settling admitted repairs before exit.
+CLI signal cleanup did not complete. Retry the command to reclaim interrupted snapshots.

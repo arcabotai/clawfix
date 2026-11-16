@@ -4,6 +4,10 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Detect a post-upgrade migration crash loop from the startup lines `Legacy workspace setup state requires migration`, `missing or drifted index idx_agent_session_nodes_active`, and a legacy `sessions.json` that still needs migration. A gateway restart does not clear these. ClawFix does not run `doctor --fix` for them: that command stops the gateway, and on the reported releases it refused the workspace conflict and skipped per-agent session stores.
+- Detect a stalled or failed `doctor --fix` from a repeating SQLite read-only snapshot, `sqlite-source-revision` content-version respawn, an incomplete process census after the gateway was stopped, a SIGTERM cleanup failure, or a doctor process still running after 15 minutes. Guidance is to escalate from SIGTERM to SIGKILL and not to start another unbounded `--fix`.
+- Bound every doctor invocation ClawFix starts to 120 seconds. The process is sent SIGTERM and then SIGKILL. If the gateway was running before that invocation and is stopped after it, ClawFix restarts the gateway once and does not run doctor again.
+
 ## 0.12.0 - 2026-08-02
 
 - Expanded the guarded repair catalog from 1 to 5 entries: `gateway-not-running` (needs systemd/launchd), plus four config toggles applied and verified through OpenClaw's own CLI — `auto-update-enabled-warning`, `gateway-loopback-no-auth`, `no-hybrid-search`, and `no-memory-flush`. Every toggle shares one `configToggleRepair` contract with a read-back verification and a rollback path.

@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -100 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -i "error\\|warn\\|fail\\|crash\\|EADDRINUSE\\|EACCES" | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -882,12 +882,17 @@ check_port 18791 "browser control"
 # not an OpenClaw finding, even if the killed process wrote partial JSON.
 DOCTOR_JSON=null
 if [ -n "\$OPENCLAW_BIN" ]; then
-  DOCTOR_JSON=\$(node - "\$OPENCLAW_BIN" <<'NODE'
-const { spawnSync } = require('node:child_process');
+  DOCTOR_JSON=\$(node - "\$OPENCLAW_BIN" "\${GATEWAY_PORT:-18789}" "\$PORT_LISTENING" <<'NODE'
+const { spawn } = require('node:child_process');
 const { homedir } = require('node:os');
+const net = require('node:net');
 
 const bin = process.argv[2] || '';
+const gatewayPort = Number(process.argv[3]);
+const wasListening = process.argv[4] === 'true';
 const DOCTOR_TIMEOUT_MS = 120000;
+const DOCTOR_KILL_GRACE_MS = 5000;
+const doctorLimits = { timeout: DOCTOR_TIMEOUT_MS, killGraceMs: DOCTOR_KILL_GRACE_MS };
 const home = homedir();
 
 function clean(value, maxLength) {
@@ -961,7 +966,78 @@ function redact(value) {
   return text;
 }
 
-const result = spawnSync(bin, [
+function runChild(args, timeoutMs) {
+  return new Promise((resolve) => {
+    let child;
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let timer = null;
+    let killTimer = null;
+    const finish = (status, signal) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      resolve({
+        status: status == null ? null : status,
+        signal: signal || null,
+        stdout,
+        stderr,
+        error: timedOut ? { code: 'ETIMEDOUT' } : null,
+      });
+    };
+    try {
+      child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    } catch (error) {
+      resolve({ status: null, signal: null, stdout: '', stderr: String(error && error.message || ''), error, timedOut: false });
+      return;
+    }
+    const signalChild = (signal) => {
+      const pid = child && child.pid;
+      if (!pid) return;
+      try { process.kill(-pid, signal); return; } catch (error) {}
+      try { process.kill(pid, signal); } catch (error) {}
+    };
+    child.stdout.on('data', (chunk) => {
+      if (stdout.length < 1000000) stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      if (stderr.length < 8000) stderr += chunk;
+    });
+    child.on('error', () => finish(null, null));
+    child.on('close', (status, signal) => finish(status, signal));
+    timer = setTimeout(() => {
+      timedOut = true;
+      signalChild('SIGTERM');
+      killTimer = setTimeout(() => signalChild('SIGKILL'), doctorLimits.killGraceMs);
+    }, timeoutMs);
+  });
+}
+
+function portOpen(port) {
+  return new Promise((resolve) => {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      resolve(false);
+      return;
+    }
+    const socket = net.connect({ host: '127.0.0.1', port });
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(300);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+const doctorArgs = [
   'doctor',
   '--lint',
   '--json',
@@ -970,64 +1046,116 @@ const result = spawnSync(bin, [
   '--skip',
   'core/doctor/skills-readiness',
   '--no-workspace-suggestions',
-], {
-  timeout: DOCTOR_TIMEOUT_MS,
-  encoding: 'utf8',
-  maxBuffer: 1000000,
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
+];
 
-let projected;
-if (result.error && result.error.code === 'ETIMEDOUT') {
-  projected = {
-    available: false,
-    timedOut: true,
-    state: 'timed out',
-    checksRun: 0,
-    checksSkipped: 0,
-    findings: [],
-  };
-} else {
-  let parsed = null;
-  if (typeof result.stdout === 'string' && result.stdout.trim()) {
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch (error) {
-      parsed = null;
-    }
-  }
-  const failureEnvelope = isFailureEnvelope(parsed);
-  const failed = Boolean(result.error)
-    || result.signal != null
-    || !((result.status === 0 || result.status === 1) || (result.status === 2 && failureEnvelope));
-  const findings = isEnvelope(parsed)
-    ? parsed.findings.slice(0, 100).map(projectFinding)
-    : null;
-  if (failed || !findings || findings.some(function (finding) { return !finding; })) {
+(async () => {
+  const result = await runChild(doctorArgs, doctorLimits.timeout);
+  let projected;
+  if (result.error && result.error.code === 'ETIMEDOUT') {
     projected = {
       available: false,
-      timedOut: false,
+      timedOut: true,
+      state: 'timed out',
       checksRun: 0,
       checksSkipped: 0,
       findings: [],
     };
   } else {
-    projected = {
-      available: true,
-      timedOut: false,
-      ok: parsed.ok === true,
-      checksRun: parsed.checksRun,
-      checksSkipped: parsed.checksSkipped,
-      findings: findings,
-    };
+    let parsed = null;
+    if (typeof result.stdout === 'string' && result.stdout.trim()) {
+      try {
+        parsed = JSON.parse(result.stdout);
+      } catch (error) {
+        parsed = null;
+      }
+    }
+    const failureEnvelope = isFailureEnvelope(parsed);
+    const failed = Boolean(result.error)
+      || result.signal != null
+      || !((result.status === 0 || result.status === 1) || (result.status === 2 && failureEnvelope));
+    const findings = isEnvelope(parsed)
+      ? parsed.findings.slice(0, 100).map(projectFinding)
+      : null;
+    if (failed || !findings || findings.some(function (finding) { return !finding; })) {
+      projected = {
+        available: false,
+        timedOut: false,
+        checksRun: 0,
+        checksSkipped: 0,
+        findings: [],
+      };
+    } else {
+      projected = {
+        available: true,
+        timedOut: false,
+        ok: parsed.ok === true,
+        checksRun: parsed.checksRun,
+        checksSkipped: parsed.checksSkipped,
+        findings: findings,
+      };
+    }
   }
-}
-process.stdout.write(JSON.stringify(projected));
+  if (wasListening) {
+    const open = await portOpen(gatewayPort);
+    if (!open) await runChild(['gateway', 'restart'], 60000);
+  }
+  process.stdout.write(JSON.stringify(projected));
+})().catch(() => {
+  process.stdout.write('null');
+});
 NODE
 ) || true
 fi
 if [ -z "\$DOCTOR_JSON" ]; then
   DOCTOR_JSON=null
+fi
+
+# Elapsed time only. Command text can contain paths and is not uploaded.
+DOCTOR_PROCESSES_JSON=\$(node <<'NODE'
+const { spawnSync } = require('node:child_process');
+function parseElapsed(value) {
+  if (/^\\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : null;
+  }
+  const parts = String(value).split(/[-:]/).map(Number);
+  if (parts.length < 2 || parts.length > 4 || parts.some((part) => !Number.isSafeInteger(part) || part < 0)) return null;
+  const weights = parts.length === 2 ? [60, 1] : parts.length === 3 ? [3600, 60, 1] : [86400, 3600, 60, 1];
+  return parts.reduce((total, part, index) => total + part * weights[index], 0);
+}
+function project(text) {
+  const found = [];
+  const skip = new Set([String(process.pid), String(process.ppid || '')]);
+  for (const line of String(text || '').split('\\n')) {
+    const match = /^\\s*(\\d+)\\s+(\\S+)\\s+(.*)$/.exec(line);
+    if (!match) continue;
+    if (skip.has(match[1])) continue;
+    const command = match[3];
+    if (!/(^|\\s)openclaw(\\s|$)/.test(command) || !/(^|\\s)doctor(\\s|$)/.test(command)) continue;
+    if (/\\bclawfix\\b/.test(command)) continue;
+    const elapsedSeconds = parseElapsed(match[2]);
+    if (elapsedSeconds === null) continue;
+    found.push({ elapsedSeconds: elapsedSeconds, fix: /(^|\\s)--fix(\\s|$)/.test(command) });
+    if (found.length >= 8) break;
+  }
+  return found;
+}
+const attempts = [
+  ['-eo', 'pid=,etimes=,args='],
+  ['-axo', 'pid=,etime=,args='],
+];
+let projected = [];
+for (const args of attempts) {
+  const result = spawnSync('ps', args, { encoding: 'utf8', timeout: 5000 });
+  if (result.error || result.status !== 0) continue;
+  projected = project(result.stdout);
+  if (projected.length > 0 || args[0] === '-axo') break;
+}
+process.stdout.write(JSON.stringify(projected));
+NODE
+)
+if [ -z "\$DOCTOR_PROCESSES_JSON" ]; then
+  DOCTOR_PROCESSES_JSON='[]'
 fi
 
 # A running session_windows row whose session_nodes entry is '{}' and
@@ -1134,6 +1262,7 @@ DIAGNOSTIC=\$(cat <<EOF
     "gatewayPort": "\${GATEWAY_PORT:-18789}",
     "processExists": \$PROCESS_EXISTS,
     "portListening": \$PORT_LISTENING,
+    "doctorProcesses": \$DOCTOR_PROCESSES_JSON,
     "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON
   },
   "service": {
@@ -1232,6 +1361,26 @@ fi
 # Doctor timeout is a collector state. It is not counted as an OpenClaw finding.
 if [ "\$DOCTOR_JSON" != "null" ] && echo "\$DOCTOR_JSON" | jq -e '.timedOut == true' >/dev/null; then
   echo -e "   \${YELLOW}⚠️  OpenClaw Doctor timed out\${NC}"
+fi
+
+if printf '%s\\n' "\$GATEWAY_LOG" "\$ERROR_LOG" | grep -Eqi 'Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration'; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Post-upgrade migration crash loop — gateway restart will not fix it\${NC}\\n"
+fi
+DOCTOR_STALL=false
+if printf '%s\\n' "\$GATEWAY_LOG" "\$ERROR_LOG" | grep -Eqi 'sqlite-source-revision|process census is incomplete|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|undergoing offline maintenance'; then
+  DOCTOR_STALL=true
+fi
+SNAPSHOT_COUNT=\$(printf '%s\\n' "\$GATEWAY_LOG" "\$ERROR_LOG" | grep -c 'SQLite read-only snapshot' || true)
+if [ "\${SNAPSHOT_COUNT:-0}" -ge 3 ]; then
+  DOCTOR_STALL=true
+fi
+if printf '%s\\n' "\$DOCTOR_PROCESSES_JSON" | jq -e 'map(select(.elapsedSeconds >= 900)) | length > 0' >/dev/null 2>&1; then
+  DOCTOR_STALL=true
+fi
+if [ "\$DOCTOR_STALL" = "true" ]; then
+  ISSUES=\$((ISSUES + 1))
+  ISSUE_LIST="\${ISSUE_LIST}   \${RED}❌ Doctor repair looks stalled — do not start another doctor --fix\${NC}\\n"
 fi
 
 # Zombie gateway detection

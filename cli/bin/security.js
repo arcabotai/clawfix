@@ -594,3 +594,198 @@ export function safeJsonForHtml(value) {
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
 }
+
+// OpenClaw 2026.11.3 prints the service-manager line even when that line is not
+// the health check. A gateway started by hand looks like:
+//   Runtime: stopped (diagnostic only, not the check target)
+//   Connectivity check: ok
+//   Listening: 127.0.0.1:18789
+// The connectivity check is the verdict. A diagnostic-only "stopped" is not.
+export function readGatewayLiveness(status) {
+  const probe = String(status || '')
+    .split('\n')
+    .filter((line) => !/diagnostic only, not the check target/i.test(line))
+    .join('\n');
+  const connectivity = /(?:connectivity|read) check:\s*(ok|failed|timed out)/i.exec(probe);
+  if (connectivity) return connectivity[1].toLowerCase() === 'ok' ? 'up' : 'down';
+  if (/running.*pid|state active|^listening:/im.test(probe)) return 'up';
+  if (/not running|failed to start|\bstopped\b|\binactive\b/i.test(probe)) return 'down';
+  if (/warning/i.test(probe)) return 'unknown';
+  return 'down';
+}
+
+// Every doctor invocation ClawFix starts uses this budget. It matches OpenClaw's
+// hosted diagnosis timeout (src/commands/doctor-process.ts). A hung doctor --fix
+// has ignored SIGTERM, so the kill escalates to SIGKILL after the grace period.
+export const DOCTOR_INVOCATION_TIMEOUT_MS = 120_000;
+export const DOCTOR_KILL_GRACE_MS = 5_000;
+export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
+// Shorter than the 26, 50, and 79 minute stalls, and longer than a doctor run
+// that finished in about four minutes on the same host.
+export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
+
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified/i;
+
+export function retainDiagnosticLogLine(line) {
+  return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
+}
+
+function uniqueShapes(shapes) {
+  return Object.freeze([...new Set(shapes)]);
+}
+
+/**
+ * Post-upgrade startup refusals that a gateway restart does not clear.
+ * Shapes are the strings from openclaw/openclaw #137866, #150797, and #134873.
+ */
+export function classifyPostUpgradeMigration(text) {
+  const source = String(text ?? '');
+  const shapes = [];
+  if (/Legacy workspace setup state requires migration/i.test(source)
+      || /legacy workspace setup conflicts with canonical SQLite state/i.test(source)) {
+    shapes.push('workspace-setup');
+  }
+  if (/missing or drifted index idx_agent_session_nodes_active/i.test(source)) {
+    shapes.push('session-index');
+  }
+  if (/Legacy session store requires migration/i.test(source) && /sessions\.json\b/i.test(source)) {
+    shapes.push('legacy-sessions');
+  }
+  if (shapes.length === 0) return null;
+  return Object.freeze({ shapes: uniqueShapes(shapes), restartWillNotFix: true });
+}
+
+export function describePostUpgradeMigration(match) {
+  const shapes = Array.isArray(match?.shapes) ? match.shapes : [];
+  const parts = [
+    'Post-upgrade state is crash-looping. openclaw gateway restart will not migrate it.',
+  ];
+  if (shapes.includes('workspace-setup')) {
+    parts.push('Legacy workspace setup state requires migration. doctor --fix can refuse when that file conflicts with canonical SQLite state. Back up the state directory and move the legacy workspace setup file aside. Do not delete the workspace.');
+  }
+  if (shapes.includes('session-index')) {
+    parts.push('The agent database is missing or has drifted index idx_agent_session_nodes_active. The reported repair was openclaw doctor --fix, which rebuilt the canonical index. Back up the state directory first. ClawFix does not run that command, because the same --fix stops the gateway and can hang.');
+  }
+  if (shapes.includes('legacy-sessions')) {
+    parts.push('A legacy sessions.json still needs migration. On the reported 2026.8.1 release, doctor --fix skipped per-agent stores. The import that worked was openclaw doctor --session-sqlite import --session-sqlite-all-agents after stopping the gateway.');
+  }
+  parts.push('Do not automatically retry an unbounded doctor --fix.');
+  return parts.join(' ');
+}
+
+function normalizeDoctorProcesses(value) {
+  if (!Array.isArray(value)) return [];
+  const processes = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const elapsedSeconds = entry.elapsedSeconds;
+    if (!Number.isSafeInteger(elapsedSeconds) || elapsedSeconds < 0) continue;
+    processes.push({ elapsedSeconds, fix: entry.fix === true });
+    if (processes.length >= 8) break;
+  }
+  return processes;
+}
+
+function parseElapsedToken(value) {
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : null;
+  }
+  const parts = String(value).split(/[-:]/).map(part => Number(part));
+  if (parts.length < 2 || parts.length > 4 || parts.some(part => !Number.isSafeInteger(part) || part < 0)) {
+    return null;
+  }
+  const weights = parts.length === 2
+    ? [60, 1]
+    : parts.length === 3
+      ? [3600, 60, 1]
+      : [86400, 3600, 60, 1];
+  return parts.reduce((total, part, index) => total + part * weights[index], 0);
+}
+
+/** Keep elapsed time and whether argv contained --fix. Drop the command text. */
+export function projectDoctorProcesses(listing, { selfPid = '', parentPid = '' } = {}) {
+  const processes = [];
+  const skip = new Set([String(selfPid || ''), String(parentPid || '')].filter(Boolean));
+  for (const line of String(listing || '').split('\n')) {
+    const match = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const [, pid, elapsedText, command] = match;
+    if (skip.has(pid)) continue;
+    if (!/(^|\s)openclaw(\s|$)/.test(command) || !/(^|\s)doctor(\s|$)/.test(command)) continue;
+    if (/\bclawfix\b/.test(command)) continue;
+    const elapsedSeconds = parseElapsedToken(elapsedText);
+    if (elapsedSeconds === null) continue;
+    processes.push({
+      elapsedSeconds,
+      fix: /(^|\s)--fix(\s|$)/.test(command),
+    });
+    if (processes.length >= 8) break;
+  }
+  return processes;
+}
+
+/**
+ * Hung or failed doctor --fix. Log shapes are from openclaw/openclaw #191601,
+ * #174842, and #170773. A completed doctor that only stopped and restarted the
+ * gateway is not a stall.
+ */
+export function classifyStalledDoctor({ text = '', gatewayDown = false, doctorProcesses = [] } = {}) {
+  const source = String(text ?? '');
+  const processes = normalizeDoctorProcesses(doctorProcesses);
+  const shapes = [];
+  const snapshotCount = source.match(/SQLite read-only snapshot/gi)?.length ?? 0;
+  if (snapshotCount >= 3) shapes.push('snapshot-loop');
+  if (/sqlite-source-revision\.worker\.js/i.test(source) && /content-version/i.test(source)) {
+    shapes.push('content-version-respawn');
+  }
+  if (/OpenClaw process census is incomplete/i.test(source)) shapes.push('census-stall');
+  if (/Doctor interrupted by SIGTERM/i.test(source) || /CLI signal cleanup did not complete/i.test(source)) {
+    shapes.push('sigterm-cleanup-failed');
+  }
+  if (processes.some(entry => entry.elapsedSeconds >= STALE_DOCTOR_ELAPSED_SECONDS)) {
+    shapes.push('stale-process');
+  }
+  const stoppedForRepair = /Stopped the managed Gateway for Doctor repair/i.test(source);
+  const verifiedRestart = /Gateway restarted and verified after Doctor repair/i.test(source);
+  const offlineMaintenance = /undergoing offline maintenance/i.test(source);
+  const down = gatewayDown === true;
+  if (down && stoppedForRepair && !verifiedRestart) shapes.push('gateway-left-stopped');
+  else if (down && offlineMaintenance && !verifiedRestart && shapes.length === 0) {
+    shapes.push('offline-maintenance');
+  }
+  const unique = uniqueShapes(shapes);
+  if (unique.length === 0) return null;
+  const gatewayLeftStopped = down && (
+    unique.includes('gateway-left-stopped')
+    || unique.includes('offline-maintenance')
+    || unique.includes('stale-process')
+    || unique.includes('snapshot-loop')
+    || unique.includes('content-version-respawn')
+    || unique.includes('census-stall')
+    || unique.includes('sigterm-cleanup-failed')
+  );
+  return Object.freeze({
+    shapes: unique,
+    gatewayLeftStopped,
+    restartWillNotFix: true,
+  });
+}
+
+export function describeStalledDoctor(match) {
+  const shapes = Array.isArray(match?.shapes) ? match.shapes : [];
+  const parts = ['Doctor is stalled or left cleanup unfinished. Do not run doctor --fix again.'];
+  if (match?.gatewayLeftStopped) {
+    parts.push('The gateway is stopped. Restarting it while Doctor still holds the offline-maintenance lease crash-loops. Send SIGTERM, wait, then SIGKILL if the doctor process is still there. Start the gateway afterward only if it was running before Doctor stopped it.');
+  } else if (shapes.includes('snapshot-loop')) {
+    parts.push('The read-only snapshot loop kept running and ignored SIGTERM. SIGKILL was required. Check that the gateway is listening after the doctor process is gone.');
+  } else if (shapes.includes('census-stall')) {
+    parts.push('Doctor went silent after stopping the managed gateway, then reported that the OpenClaw process census was incomplete. One report stayed in that state for about 79 minutes.');
+  } else if (shapes.includes('content-version-respawn') || shapes.includes('sigterm-cleanup-failed')) {
+    parts.push('sqlite-source-revision content-version workers kept respawning, and SIGTERM cleanup can fail. Do not start another --fix to reclaim the snapshot.');
+  } else {
+    parts.push('A doctor process is still running past 15 minutes. ClawFix limits its own doctor invocations to 120 seconds and escalates from SIGTERM to SIGKILL.');
+  }
+  parts.push('ClawFix will not start an unbounded doctor --fix.');
+  return parts.join(' ');
+}

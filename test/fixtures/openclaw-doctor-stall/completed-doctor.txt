@@ -1,0 +1,4 @@
+┌  OpenClaw doctor
+Stopped the managed Gateway for Doctor repair.
+Gateway restarted and verified after Doctor repair.
+└  Doctor complete.

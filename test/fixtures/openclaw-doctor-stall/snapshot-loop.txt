@@ -1,0 +1,3 @@
+[state/sqlite] SQLite read-only snapshot for ~/.openclaw/state/openclaw.sqlite: 49.1 MiB, budget 362 seconds
+[state/sqlite] SQLite read-only snapshot for ~/.openclaw/state/openclaw.sqlite: 49.4 MiB, budget 362 seconds
+[state/sqlite] SQLite read-only snapshot for ~/.openclaw/state/openclaw.sqlite: 49.6 MiB, budget 362 seconds

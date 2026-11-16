@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 54,
+    "deterministicCount": 56,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -80,6 +80,7 @@
       "config-written-by-newer-version",
       "context-overflow",
       "discord-allowlist-empty",
+      "doctor-fix-stalled",
       "duplicate-plugin",
       "filevault-blocks-reboot",
       "gateway-extended-downtime",
@@ -112,6 +113,7 @@
       "pi-backed-openai-codex-route",
       "plaintext-secrets-in-config",
       "port-conflict",
+      "post-upgrade-migration-crash-loop",
       "provider-prefix-unregistered",
       "redacted-placeholder-corruption",
       "session-transcript-not-indexed",

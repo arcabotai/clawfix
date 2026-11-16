@@ -3,6 +3,7 @@ import * as nodeFs from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
 import { TextDecoder } from 'node:util';
 
+import { projectDoctorProcesses } from '../bin/security.js';
 import { processAdapter as defaultProcessAdapter } from './process.js';
 
 export const OPENCLAW_TIMEOUT_MS = 10_000;
@@ -136,6 +137,20 @@ function snapshotInvocation(argv, options, env) {
   if (windowsHide !== undefined && typeof windowsHide !== 'boolean') {
     throw new TypeError('windowsHide must be a boolean');
   }
+  const { killSignals } = options;
+  if (killSignals !== undefined && (!Array.isArray(killSignals)
+      || killSignals.length < 1
+      || killSignals.length > 3
+      || killSignals.some((signal) => typeof signal !== 'string' || !/^SIG[A-Z0-9]+$/.test(signal)))) {
+    throw new TypeError('killSignals must contain one to three signal names');
+  }
+  const { killGraceMs } = options;
+  if (killGraceMs !== undefined && (!Number.isSafeInteger(killGraceMs) || killGraceMs < 0)) {
+    throw new TypeError('killGraceMs must be a non-negative safe integer');
+  }
+  if (options.killProcessGroup !== undefined && typeof options.killProcessGroup !== 'boolean') {
+    throw new TypeError('killProcessGroup must be a boolean');
+  }
 
   const executable = options.executable;
   if (executable !== undefined
@@ -155,6 +170,9 @@ function snapshotInvocation(argv, options, env) {
       env: callEnv === undefined ? env : Object.freeze({ ...callEnv }),
       windowsHide,
       shell: false,
+      ...(killSignals === undefined ? {} : { killSignals: Object.freeze([...killSignals]) }),
+      ...(killGraceMs === undefined ? {} : { killGraceMs }),
+      ...(options.killProcessGroup === undefined ? {} : { killProcessGroup: options.killProcessGroup }),
     }),
   });
 }
@@ -563,6 +581,15 @@ export function createOpenClawAdapter({
      * Transient CLI invocations are excluded by verb, and this process is excluded outright.
      * Treat the result as supporting evidence only: `gatewayListening()` is the real signal.
      */
+    async doctorProcesses(options = {}) {
+      const self = String(process.pid);
+      const parent = String(process.ppid || '');
+      const etimes = await successfulText('ps', ['-eo', 'pid=,etimes=,args='], options);
+      const elapsed = etimes
+        ? []
+        : await successfulText('ps', ['-axo', 'pid=,etime=,args='], options);
+      return projectDoctorProcesses(etimes || elapsed, { selfPid: self, parentPid: parent });
+    },
     async gatewayProcesses(options = {}) {
       const listing = await successfulText('pgrep', ['-af', 'openclaw'], options);
       const self = String(process.pid);

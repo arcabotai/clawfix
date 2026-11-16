@@ -12,7 +12,28 @@
 // which itself only ever spawns argv arrays (shell: false). ctx.wait is an injectable delay hook
 // so tests can drive apply -> verify without real timers.
 
+import {
+  DOCTOR_INVOCATION_TIMEOUT_MS,
+  DOCTOR_KILL_GRACE_MS,
+  DOCTOR_KILL_SIGNALS,
+} from '../bin/security.js';
 import { applyFailureReason } from './repair-engine.js';
+
+const boundedDoctorOptions = Object.freeze({
+  timeoutMs: DOCTOR_INVOCATION_TIMEOUT_MS,
+  killSignals: DOCTOR_KILL_SIGNALS,
+  killGraceMs: DOCTOR_KILL_GRACE_MS,
+  killProcessGroup: true,
+});
+
+async function restoreGatewayAfterDoctor(openclaw, gatewayPort, wasRunning) {
+  if (wasRunning !== true || typeof openclaw.gatewayListening !== 'function') return null;
+  const port = Number.isInteger(gatewayPort) ? gatewayPort : 18789;
+  const stillRunning = await openclaw.gatewayListening(port, { timeoutMs: 5_000 });
+  if (stillRunning !== false) return true;
+  await openclaw.invoke(['gateway', 'restart'], { timeoutMs: 60_000 });
+  return await openclaw.gatewayListening(port, { timeoutMs: 5_000 }) === true;
+}
 
 /**
  * Preserve the process adapter's complete terminal verdict without retaining command output or
@@ -284,7 +305,8 @@ const gatewayLoopbackNoAuth = Object.freeze({
       steps: Object.freeze([
         'Check whether gateway.auth.token is present without recording its value.',
         'Set gateway.auth.mode to token through the OpenClaw CLI (argv, no shell).',
-        'If no token exists, run `openclaw doctor --fix --generate-gateway-token` so OpenClaw generates one.',
+        'If no token exists, run `openclaw doctor --fix --generate-gateway-token` so OpenClaw generates one. That doctor invocation is limited to 120 seconds, is killed with SIGTERM and then SIGKILL, and is not run again.',
+        'If the gateway was running before that doctor command and is stopped after it, restart the gateway once.',
         'Read gateway.auth.mode and token presence back to confirm token auth is usable.',
         'Restart the gateway yourself for it to take effect; existing clients need the new token.',
       ]),
@@ -331,13 +353,19 @@ const gatewayLoopbackNoAuth = Object.freeze({
         tokenMayHaveChanged: false,
       });
     }
+    const port = Number.isInteger(ctx.gatewayPort) ? ctx.gatewayPort : 18789;
+    let wasRunning = null;
+    if (typeof ctx.openclaw.gatewayListening === 'function') {
+      wasRunning = await ctx.openclaw.gatewayListening(port, { timeoutMs: 5_000 });
+    }
     let generated;
     try {
       generated = await ctx.openclaw.invoke(
         ['doctor', '--fix', '--generate-gateway-token'],
-        { timeoutMs: 120_000 },
+        boundedDoctorOptions,
       );
     } catch (error) {
+      await restoreGatewayAfterDoctor(ctx.openclaw, port, wasRunning);
       return terminalResult(null, {
         stage: 'generate-token',
         changed: true,
@@ -348,12 +376,26 @@ const gatewayLoopbackNoAuth = Object.freeze({
         error: true,
       });
     }
+    const gatewayRestored = await restoreGatewayAfterDoctor(ctx.openclaw, port, wasRunning);
+    if (wasRunning === true && gatewayRestored === false) {
+      return terminalResult(generated, {
+        stage: 'generate-token',
+        changed: true,
+        changes: Object.freeze(changes),
+        tokenPreviouslyPresent: false,
+        tokenMayHaveChanged: true,
+        gatewayRestored: false,
+        errorSummary: 'Gateway was running before doctor and was left stopped',
+        error: true,
+      });
+    }
     return terminalResult(generated, {
       stage: 'generate-token',
       changed: true,
       changes: Object.freeze(changes),
       tokenPreviouslyPresent: false,
       tokenMayHaveChanged: true,
+      ...(wasRunning === true ? { gatewayRestored: true } : {}),
     });
   },
 
@@ -444,6 +486,9 @@ const gatewayLoopbackNoAuth = Object.freeze({
   },
 });
 
+// post-upgrade-migration-crash-loop and doctor-fix-stalled are detect-only.
+// doctor --fix is not a bounded repair for those shapes: it stops the gateway,
+// and the reported workspace and per-agent session failures were not fixed by it.
 export const repairCatalog = Object.freeze({
   'gateway-not-running': gatewayNotRunning,
   'auto-update-enabled-warning': autoUpdateEnabled,

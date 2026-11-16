@@ -221,7 +221,7 @@ Calling unbounded `openclaw doctor --fix` from ClawFix would run this whole set.
 | Fleet admission | 2_000 ms per agent, 5_000 ms per run. This admits or defers; it does not kill | `:45-48`, `:149-157` |
 | OpenAI OAuth TLS preflight inside a check | 4_000 ms | `src/flows/doctor-core-checks.ts:286` |
 | WhatsApp responsiveness status RPC | 3_000 ms | `src/flows/doctor-health-contributions-final.ts:505` |
-| ClawFix lint spawn | 120_000 ms, matching the hosted diagnosis budget | `cli/bin/native-diagnostics.js:6-11`, `src/routes/script.js:826-836` |
+| ClawFix doctor invocation | 120_000 ms, then SIGTERM, then SIGKILL after 5_000 ms | `cli/bin/security.js` (`DOCTOR_INVOCATION_TIMEOUT_MS`, `DOCTOR_KILL_SIGNALS`), `cli/bin/native-diagnostics.js`, `src/routes/script.js`, `cli/core/repair-catalog.js` |
 | ClawFix `status`, `security audit`, `config validate`, `update status` | 30_000 ms | `cli/bin/native-diagnostics.js:90`, `:407-417` |
 
 A lint kill at 120 s is a collector timeout. Doctor may already have written a partial stdout. That text is not a finished envelope.
@@ -276,3 +276,33 @@ Items already aligned, so they are not work:
 
 1. Parse the exit-2 blocked envelope in the CLI collector and the hosted script, and keep `requirement`, `errorCode`, and `line` on every accepted finding. Fixtures are the 2026.11.3 captures above, with the temp state path rewritten to `~/.openclaw/...` and the Node binary path removed.
 2. For the exact missing-token `core/doctor/gateway-auth` shape, dedupe it against an existing `gateway.loopback_no_auth` security finding and otherwise point it at the existing `gateway-loopback-no-auth` repair. Dedupe `core/doctor/security` against a security-audit finding whose check id equals `requirement` when that requirement is a single check id. Do not map SecretRef gateway-auth findings onto the token repair.
+
+## Post-upgrade migration crash loop and stalled doctor
+
+`state-dir-migration` still matches only `State dir migration skipped`. That string is the harmless "destination already exists" case. It is not the upgrade crash loop.
+
+`post-upgrade-migration-crash-loop` matches three startup shapes, and a gateway restart does not clear them:
+
+| Shape | String | Report |
+|---|---|---|
+| `workspace-setup` | `Legacy workspace setup state requires migration`, or `legacy workspace setup conflicts with canonical SQLite state` | [openclaw#137866](https://github.com/openclaw/openclaw/issues/137866) |
+| `session-index` | `missing or drifted index idx_agent_session_nodes_active` | [openclaw#150797](https://github.com/openclaw/openclaw/issues/150797) |
+| `legacy-sessions` | `Legacy session store requires migration` together with `sessions.json` | [openclaw#134873](https://github.com/openclaw/openclaw/issues/134873) |
+
+There is no catalog repair. `doctor --fix` rebuilt the missing index in #150797 (about 26 seconds), but the same command refused the workspace conflict in #137866 and silently skipped the per-agent `sessions.json` in #134873. It also stops the managed gateway and runs every doctor migration, plugin install, and model rewrite. A 120 second kill of that command can leave a maintenance lease behind. The guidance tells the operator to back up the state directory and run Doctor's migration by hand, including `openclaw doctor --session-sqlite import --session-sqlite-all-agents` for the per-agent store.
+
+`doctor-fix-stalled` matches a hung or failed doctor, not a doctor that stopped the gateway and then printed `Gateway restarted and verified after Doctor repair` plus `Doctor complete`:
+
+| Shape | Evidence | Report |
+|---|---|---|
+| `census-stall` | `OpenClaw process census is incomplete` | [openclaw#191601](https://github.com/openclaw/openclaw/issues/191601). The gateway stayed down for about 79 minutes after `Stopped the managed Gateway for Doctor repair.` |
+| `snapshot-loop` | `SQLite read-only snapshot` at least three times | [openclaw#174842](https://github.com/openclaw/openclaw/issues/174842). SIGTERM was ignored. SIGKILL was required. |
+| `content-version-respawn` | `sqlite-source-revision.worker.js` and `content-version` | [openclaw#170773](https://github.com/openclaw/openclaw/issues/170773) |
+| `sigterm-cleanup-failed` | `Doctor interrupted by SIGTERM` or `CLI signal cleanup did not complete` | #170773 |
+| `gateway-left-stopped` | `Stopped the managed Gateway for Doctor repair` without a verified restart, and the gateway is down | #191601, #170773 |
+| `offline-maintenance` | `undergoing offline maintenance` while the gateway is down and doctor has not verified a restart | #191601 |
+| `stale-process` | an `openclaw doctor` process whose elapsed time is at least 15 minutes | The same reports. The command text is not retained. |
+
+ClawFix does not start another `doctor --fix` from this finding.
+
+Doctor invocations ClawFix itself starts (`doctor --lint` in the CLI and the hosted script, and `doctor --fix --generate-gateway-token` in the token repair) use the 120 second budget, send SIGTERM, then SIGKILL after 5 seconds. If the gateway was listening before the invocation and is not listening after it, ClawFix runs `gateway restart` once. It does not run doctor again. A killed lint is still a collector timeout, not an OpenClaw finding.
