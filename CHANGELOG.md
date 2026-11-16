@@ -4,6 +4,7 @@ ClawFix follows semantic versioning for the published npm CLI. GitHub releases a
 
 ## Unreleased
 
+- Name the Node binary that fails OpenClaw's engine range. The finding reports the shell node, the gateway service node from a readable LaunchAgent, systemd unit, or scheduled task, and a Companion tools node, with the path and version. A gateway node that is already inside the range is lower severity. The range comes from the installed `package.json` `engines.node` field when it can be read, otherwise Node 24.22.1+ or 26.12.1+. ClawFix does not install or switch Node.
 - Detect retired `agents.defaults.heartbeat` (and per-agent heartbeat keys) when they are still in config or when update admission returns `invalid-config` for `agents.defaults` before Doctor can migrate them. The finding names the key path. A successful doctor lint that already reported the heartbeat migration checks replaces this leftover-key finding instead of repeating it. Deleting the block is not a repair.
 - Detect `plugins.installs` and `Unrecognized key: "installs"`. An empty object can be removed after a config backup and `openclaw config validate`; populated install records are left in place.
 

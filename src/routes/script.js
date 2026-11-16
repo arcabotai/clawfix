@@ -747,7 +747,7 @@ ERROR_LOG=""
 SIGTERM_COUNT=0
 
 if [ -f "\$OPENCLAW_DIR/logs/gateway.log" ]; then
-  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration' | tail -30 || echo "")
+  GATEWAY_LOG=\$(tail -500 "\$OPENCLAW_DIR/logs/gateway.log" 2>/dev/null | grep -Ei 'error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT.md cannot be migrated|HEARTBEAT.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration|requires Node|detected Node|detected: Node|is unsupported|preflight-node-runtime|Active Gateway runtime|Node\\.js' | tail -30 || echo "")
   echo -e "   \${GREEN}✅ Gateway log found (\$(wc -l < "\$OPENCLAW_DIR/logs/gateway.log" | tr -d ' ') lines)\${NC}"
 fi
 
@@ -1233,6 +1233,148 @@ if [ -z "\$STUCK_SESSION_WINDOWS_JSON" ]; then
   STUCK_SESSION_WINDOWS_JSON=null
 fi
 
+# Node binaries the shell, the gateway service, and Companion actually use.
+# Facts only. The service decides which ones fall outside the engine range.
+NODE_RUNTIMES_JSON=null
+NODE_RUNTIMES_JSON=\$(node - "\$OPENCLAW_BIN" "\$GATEWAY_PID" "\$OC_VERSION_STDERR" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
+const bin = process.argv[2] || '';
+const gatewayPid = process.argv[3] || '';
+const versionErr = process.argv[4] || '';
+const home = process.env.HOME || process.env.USERPROFILE || '';
+function redact(value) {
+  let text = String(value || '');
+  if (home && home !== '/' && home !== '\\\\') text = text.split(home).join('~');
+  text = text.replace(/\\/(?:Users|home)\\/[^/\\s]+/g, '~');
+  text = text.replace(/[A-Za-z]:\\\\Users\\\\[^\\\\\\s]+/g, '~');
+  return text;
+}
+function versionOf(executable) {
+  if (!executable || !path.isAbsolute(executable)) return null;
+  try {
+    const out = execFileSync(executable, ['--version'], {
+      encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const match = String(out).match(/v?(\\d+\\.\\d+\\.\\d+)/);
+    return match ? match[1] : null;
+  } catch (error) {
+    return null;
+  }
+}
+function push(list, runtime) {
+  if (!runtime || !runtime.version || !/^\\d+\\.\\d+\\.\\d+\$/.test(runtime.version)) return;
+  const itemPath = runtime.path ? redact(runtime.path).slice(0, 300) : null;
+  const key = runtime.source + '|' + (itemPath || '') + '|' + runtime.version;
+  if (list.some(function (item) { return item.key === key; })) return;
+  list.push({ key: key, source: runtime.source, path: itemPath, version: runtime.version });
+}
+function readText(file) {
+  try {
+    const info = fs.statSync(file);
+    if (!info.isFile() || info.size > 1000000) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    return '';
+  }
+}
+function nodeToken(text) {
+  const match = String(text || '').match(/(?:^|[\\s"'=])((?:~|\\/)[^\\s"']*\\/node)(?=\$|[\\s"'])/);
+  return match ? match[1] : '';
+}
+function serviceNode() {
+  const plist = readText(path.join(home, 'Library', 'LaunchAgents', 'ai.openclaw.gateway.plist'));
+  const plistNode = plist.match(/<string>([^<]*\\/node)<\\/string>/i);
+  if (plistNode) return plistNode[1];
+  const units = [
+    path.join(home, '.config', 'systemd', 'user', 'openclaw-gateway.service'),
+    '/etc/systemd/system/openclaw-gateway.service',
+  ];
+  for (let i = 0; i < units.length; i += 1) {
+    const exec = readText(units[i]).match(/^ExecStart=\\s*(.+)\$/m);
+    const token = exec ? nodeToken(exec[1]) : '';
+    if (token) return token;
+  }
+  if (process.platform === 'win32') {
+    const names = ['OpenClaw Gateway', 'openclaw-gateway'];
+    for (let i = 0; i < names.length; i += 1) {
+      try {
+        const xml = execFileSync('schtasks', ['/Query', '/TN', names[i], '/XML'], {
+          encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const command = String(xml).match(/<Command>([^<]+)<\\/Command>/i);
+        if (command && /node(?:\\.exe)?\$/i.test(command[1].trim())) return command[1].trim();
+      } catch (error) {}
+    }
+  }
+  if (/^\\d+\$/.test(gatewayPid)) {
+    try {
+      const exe = fs.readlinkSync('/proc/' + gatewayPid + '/exe');
+      if (exe && /\\/node\$/.test(exe)) return exe;
+    } catch (error) {}
+    try {
+      const args = execFileSync('ps', ['-p', gatewayPid, '-o', 'args='], {
+        encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const token = nodeToken(args);
+      if (token) return token;
+    } catch (error) {}
+  }
+  return '';
+}
+const runtimes = [];
+const shellMatch = String(process.version || '').match(/v?(\\d+\\.\\d+\\.\\d+)/);
+if (shellMatch) push(runtimes, { source: 'shell', path: process.execPath, version: shellMatch[1] });
+const gatewayPath = serviceNode();
+if (gatewayPath) {
+  const fromName = String(gatewayPath).match(/node-v(\\d+\\.\\d+\\.\\d+)/);
+  push(runtimes, { source: 'gateway', path: gatewayPath, version: versionOf(gatewayPath) || (fromName && fromName[1]) });
+}
+try {
+  const names = fs.readdirSync(path.join(home, '.openclaw', 'tools'));
+  let kept = 0;
+  for (let i = 0; i < names.length && kept < 3; i += 1) {
+    const fromName = String(names[i]).match(/^node-v(\\d+\\.\\d+\\.\\d+)\$/);
+    if (!fromName) continue;
+    const executable = path.join(home, '.openclaw', 'tools', names[i], 'bin', 'node');
+    let info;
+    try { info = fs.statSync(executable); } catch (error) { continue; }
+    if (!info.isFile()) continue;
+    push(runtimes, { source: 'companion', path: executable, version: versionOf(executable) || fromName[1] });
+    kept += 1;
+  }
+} catch (error) {}
+let engines = null;
+let current = bin;
+try { current = fs.realpathSync(bin); } catch (error) {}
+current = current ? path.dirname(current) : '';
+for (let depth = 0; depth < 6 && current; depth += 1) {
+  try {
+    const parsed = JSON.parse(readText(path.join(current, 'package.json')) || 'null');
+    const node = parsed && parsed.name === 'openclaw' && parsed.engines && parsed.engines.node;
+    if (typeof node === 'string' && node.length > 0 && node.length < 200) {
+      engines = node.trim();
+      break;
+    }
+  } catch (error) {}
+  const parent = path.dirname(current);
+  if (parent === current) break;
+  current = parent;
+}
+process.stdout.write(JSON.stringify({
+  engines: engines,
+  runtimes: runtimes.map(function (item) {
+    return { source: item.source, path: item.path, version: item.version };
+  }),
+  versionError: redact(versionErr).slice(0, 2000),
+}));
+NODE
+) || true
+if [ -z "\$NODE_RUNTIMES_JSON" ]; then
+  NODE_RUNTIMES_JSON=null
+fi
+
 # --- Build Diagnostic Payload ---
 echo ""
 echo -e "\${BLUE}📦 Building diagnostic report...\${NC}"
@@ -1263,7 +1405,8 @@ DIAGNOSTIC=\$(cat <<EOF
     "processExists": \$PROCESS_EXISTS,
     "portListening": \$PORT_LISTENING,
     "doctorProcesses": \$DOCTOR_PROCESSES_JSON,
-    "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON
+    "stuckSessionWindows": \$STUCK_SESSION_WINDOWS_JSON,
+    "nodeRuntimes": \$NODE_RUNTIMES_JSON
   },
   "service": {
     "manager": "\$SERVICE_MANAGER",

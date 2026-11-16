@@ -1,10 +1,13 @@
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 import { runProcess, runProcessSync } from '../adapters/process.js';
 import {
   DOCTOR_INVOCATION_TIMEOUT_MS,
   DOCTOR_KILL_GRACE_MS,
   DOCTOR_KILL_SIGNALS,
   projectOpenClawUpdateStatus,
+  redactHomePath,
   redactText,
 } from './security.js';
 
@@ -163,14 +166,184 @@ export function collectOpenClawVersion(openclawBin, runSync = defaultRunSync) {
     failed ? processFailureText(result) : result.stderr,
     1000,
   ));
-  const mismatch = error.match(/Node\.js (.+?) is required \(current: ([^)]+)\)/i);
+  const classic = error.match(/Node\.js (.+?) is required \(current:\s*([^)]+)\)/i);
+  const required = error.match(/requires Node\s+((?:>=\d+\.\d+\.\d+(?:\s+<\d+(?:\.\d+\.\d+)?)?)(?:\s*\|\|\s*>=\d+\.\d+\.\d+(?:\s+<\d+(?:\.\d+\.\d+)?)?)*)/i);
+  const detected = error.match(/detected(?::\s*Node|\s+Node)\s+v?(\d+\.\d+\.\d+)/i);
+  const unsupported = error.match(/Node\s+(\d+\.\d+\.\d+)\s+is unsupported/i);
+  const runtimeRequired = classic?.[1]?.trim() || required?.[1]?.replace(/\s+/g, ' ').trim() || null;
+  const runtimeCurrent = classic?.[2]?.trim() || detected?.[1] || unsupported?.[1] || null;
 
   return {
     version,
-    runtimeCompatible: !failed && result.status === 0 && !mismatch,
-    runtimeRequired: mismatch?.[1]?.trim() || null,
-    runtimeCurrent: mismatch?.[2]?.trim() || null,
+    runtimeCompatible: !failed && result.status === 0 && !runtimeRequired && !runtimeCurrent,
+    runtimeRequired,
+    runtimeCurrent,
     error: !failed && result.status === 0 ? '' : error,
+  };
+}
+
+function nodeVersionOf(executable, runSync) {
+  const windowsPath = typeof executable === 'string' && /^[A-Za-z]:\\/.test(executable);
+  if (typeof executable !== 'string' || (!isAbsolute(executable) && !windowsPath)) return null;
+  try {
+    const result = normalizeProcessResult(runSync(executable, ['--version'], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxStdoutBytes: 200,
+      maxStderrBytes: 400,
+    }));
+    const match = `${result.stdout || ''}\n${result.stderr || ''}`.match(/v?(\d+\.\d+\.\d+)/);
+    return match ? match[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+function readTextFile(filePath, limit = 200_000) {
+  try {
+    const info = statSync(filePath);
+    if (!info.isFile() || info.size > limit) return '';
+    return readFileSync(filePath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function firstNodeToken(text) {
+  const match = String(text ?? '').match(/(?:^|[\s"'=])((?:~|\/)[^\s"']*\/node|node)(?=$|[\s"'])/);
+  return match ? match[1] : null;
+}
+
+function enginesFromPackage(openclawBin) {
+  if (typeof openclawBin !== 'string' || openclawBin.length === 0) return null;
+  let current = openclawBin;
+  try { current = realpathSync(openclawBin); } catch { /* keep the given path */ }
+  current = dirname(current);
+  for (let depth = 0; depth < 6 && current; depth += 1) {
+    const file = join(current, 'package.json');
+    const text = readTextFile(file, 1_000_000);
+    if (text) {
+      try {
+        const parsed = JSON.parse(text);
+        const engines = parsed?.name === 'openclaw' ? parsed?.engines?.node : null;
+        if (typeof engines === 'string' && engines.length > 0 && engines.length < 200) return engines.trim();
+      } catch { /* keep walking */ }
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function companionNodes(home, runSync) {
+  const tools = join(home, '.openclaw', 'tools');
+  let names = [];
+  try { names = readdirSync(tools); } catch { return []; }
+  const found = [];
+  for (const name of names) {
+    if (!/^node-v\d+\.\d+\.\d+$/.test(name)) continue;
+    const executable = join(tools, name, 'bin', 'node');
+    let info;
+    try { info = statSync(executable); } catch { continue; }
+    if (!info.isFile()) continue;
+    const fromName = name.match(/node-v(\d+\.\d+\.\d+)/);
+    found.push({
+      source: 'companion',
+      path: executable,
+      version: nodeVersionOf(executable, runSync) || fromName?.[1] || null,
+    });
+    if (found.length >= 3) break;
+  }
+  return found;
+}
+
+function gatewayFromService(home, runSync, platform) {
+  const plist = readTextFile(join(home, 'Library', 'LaunchAgents', 'ai.openclaw.gateway.plist'));
+  const plistNode = plist.match(/<string>([^<]*\/node)<\/string>/i)?.[1];
+  if (plistNode) {
+    return { source: 'gateway', path: plistNode, version: nodeVersionOf(plistNode, runSync), origin: 'launchd' };
+  }
+  const units = [
+    join(home, '.config', 'systemd', 'user', 'openclaw-gateway.service'),
+    '/etc/systemd/system/openclaw-gateway.service',
+  ];
+  for (const unitPath of units) {
+    const exec = readTextFile(unitPath).match(/^ExecStart=\s*(.+)$/m)?.[1];
+    const unitNode = firstNodeToken(exec);
+    if (unitNode && unitNode !== 'node') {
+      return { source: 'gateway', path: unitNode, version: nodeVersionOf(unitNode, runSync), origin: 'systemd' };
+    }
+  }
+  if (platform === 'win32') {
+    for (const name of ['OpenClaw Gateway', 'openclaw-gateway']) {
+      let result;
+      try {
+        result = normalizeProcessResult(runSync('schtasks', ['/Query', '/TN', name, '/XML'], {
+          encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'],
+          maxStdoutBytes: 20_000, maxStderrBytes: 400,
+        }));
+      } catch {
+        continue;
+      }
+      const command = String(result.stdout || '').match(/<Command>([^<]+)<\/Command>/i)?.[1]?.trim();
+      if (command && /node(?:\.exe)?$/i.test(command)) {
+        return {
+          source: 'gateway',
+          path: command,
+          version: nodeVersionOf(command, runSync),
+          origin: 'scheduled-task',
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function gatewayNode(home, gatewayPid, runSync, platform) {
+  const fromService = gatewayFromService(home, runSync, platform);
+  if (fromService?.version) return fromService;
+  if (gatewayPid && /^\d+$/.test(String(gatewayPid))) {
+    try {
+      const result = normalizeProcessResult(runSync('ps', ['-p', String(gatewayPid), '-o', 'args='], {
+        encoding: 'utf8', timeout: 5_000, stdio: ['ignore', 'pipe', 'pipe'],
+        maxStdoutBytes: 2_000, maxStderrBytes: 400,
+      }));
+      const token = firstNodeToken(result.stdout);
+      if (token && token !== 'node' && isAbsolute(token)) {
+        const version = nodeVersionOf(token, runSync);
+        if (version) return { source: 'gateway', path: token, version, origin: 'process' };
+      }
+    } catch {
+      return fromService;
+    }
+  }
+  return fromService;
+}
+
+export function collectNodeRuntimes({
+  home = homedir(),
+  openclawBin = '',
+  gatewayPid = '',
+  platform = process.platform,
+  runSync = defaultRunSync,
+} = {}) {
+  const shellPath = process.execPath;
+  const shellVersion = String(process.version || '').replace(/^v/, '');
+  const runtimes = [{ source: 'shell', path: shellPath, version: shellVersion }];
+  const gateway = gatewayNode(home, gatewayPid, runSync, platform);
+  if (gateway?.version) runtimes.push(gateway);
+  for (const companion of companionNodes(home, runSync)) {
+    if (companion.version) runtimes.push(companion);
+  }
+  return {
+    engines: enginesFromPackage(openclawBin),
+    runtimes: runtimes.slice(0, 8).map(runtime => ({
+      source: runtime.source,
+      path: runtime.path ? redactHomePath(runtime.path, home) : null,
+      version: runtime.version,
+    })),
   };
 }
 

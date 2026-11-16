@@ -19,6 +19,8 @@ import {
   describeOpenClawUpdateAvailable,
   describePostUpgradeMigration,
   describeStalledDoctor,
+  classifyNodeEngineMismatch,
+  describeNodeEngineMismatch,
   incompleteNpmInstall,
   isOpenClawRedactedPlaceholder,
   legacyHeartbeatPaths,
@@ -233,6 +235,19 @@ export function hasLegacyHeartbeatConfig(config) {
   return legacyHeartbeatPaths(config).length > 0;
 }
 
+function nodeEngineInput(diag) {
+  const openclaw = isPlainRecord(diag?.openclaw) ? diag.openclaw : {};
+  const facts = isPlainRecord(openclaw.nodeRuntimes) ? openclaw.nodeRuntimes : {};
+  return {
+    engines: facts.engines,
+    runtimes: Array.isArray(facts.runtimes) ? facts.runtimes : openclaw.nodeRuntimesList,
+    text: [logText(diag), facts.versionError, openclaw.versionError, openclaw.error].filter(Boolean).join('\n'),
+    runtimeCompatible: openclaw.runtimeCompatible,
+    runtimeRequired: openclaw.runtimeRequired,
+    runtimeCurrent: openclaw.runtimeCurrent,
+  };
+}
+
 function retiredHeartbeatDetail(diag) {
   return classifyLegacyHeartbeat({
     config: diag?.config,
@@ -246,20 +261,23 @@ export const KNOWN_ISSUES = [
     id: 'openclaw-node-engine-mismatch',
     severity: 'critical',
     title: 'Node.js runtime is incompatible with this OpenClaw release',
-    description: 'OpenClaw is installed, but its CLI refuses to start because the active Node.js version is outside the release\'s supported engine range. npm may install the package with only a warning, leaving a broken runtime behind.',
-    detect: (diag) => (
-      diag.openclaw?.runtimeCompatible === false &&
-      typeof diag.openclaw?.runtimeRequired === 'string' &&
-      diag.openclaw.runtimeRequired.length > 0
-    ),
-    fix: `# Repair guidance: upgrade Node.js with your existing version manager
-echo "Current Node: $(node --version 2>/dev/null || echo unavailable)"
-echo "OpenClaw requirement was reported by the installed CLI."
-echo "Install a supported Node release, open a fresh shell, then verify:"
+    description: 'A Node binary used by the shell, the gateway service, or Companion is outside OpenClaw\'s engine range. The finding names each path and version. ClawFix does not install or switch Node. A gateway that is already on a supported Node is a lower-severity mismatch.',
+    detect: (diag) => {
+      try {
+        return classifyNodeEngineMismatch(nodeEngineInput(diag)) !== null;
+      } catch { return false; }
+    },
+    severityFor: (diag) => classifyNodeEngineMismatch(nodeEngineInput(diag))?.severity,
+    describe: (diag) => describeNodeEngineMismatch(classifyNodeEngineMismatch(nodeEngineInput(diag))),
+    fix: `# Detect only. Do not install Node, change PATH, or rewrite the service.
+echo "A Node binary is outside OpenClaw's supported engine range."
+echo "Shell: the node on PATH. Gateway: the LaunchAgent, systemd unit, or scheduled task. Companion: ~/.openclaw/tools/node-v*/bin/node."
+echo "Supported range, when package.json engines.node cannot be read: Node 24.22.1+ or 26.12.1+. Node 22, 23, and 25 are unsupported."
+echo "If the gateway service node is already supported, fix the shell or Companion binary instead."
+echo "Verify after you change it yourself:"
 echo "  node --version"
 echo "  openclaw --version"
-echo "  openclaw doctor --lint --json"
-echo "No runtime changes were made automatically because Node installation methods vary by host."`,
+echo "ClawFix does not install or switch Node."`,
   },
 
   {
@@ -2042,12 +2060,23 @@ export function detectIssues(diagnostic) {
         return false;
       }
     })
-    .map(issue => ({
-      id: issue.id,
-      severity: issue.severity,
-      kind: classifyKnownIssue(issue),
-      title: issue.title,
-      description: issueDescription(issue, diagnostic),
-      fix: issue.fix,
-    }));
+    .map(issue => {
+      let severity = issue.severity;
+      if (typeof issue.severityFor === 'function') {
+        try {
+          const chosen = issue.severityFor(diagnostic);
+          if (typeof chosen === 'string' && chosen) severity = chosen;
+        } catch {
+          severity = issue.severity;
+        }
+      }
+      return {
+        id: issue.id,
+        severity,
+        kind: classifyKnownIssue({ ...issue, severity }),
+        title: issue.title,
+        description: issueDescription(issue, diagnostic),
+        fix: issue.fix,
+      };
+    });
 }

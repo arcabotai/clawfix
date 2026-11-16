@@ -1,0 +1,2 @@
+detected: Node 24.22.1 at /opt/homebrew/Cellar/node/24.22.1/bin/node
+Active Gateway runtime: node=v24.22.1
