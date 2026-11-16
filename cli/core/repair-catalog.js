@@ -486,6 +486,126 @@ const gatewayLoopbackNoAuth = Object.freeze({
   },
 });
 
+const pluginsInstallsUnrecognized = Object.freeze({
+  id: 'plugins-installs-unrecognized',
+  title: 'Remove empty plugins.installs',
+  description:
+    'plugins.installs is not a valid plugins key. An empty object is removed after a config '
+    + 'backup and checked with openclaw config validate. Populated install records are not deleted.',
+  risk: 'low',
+
+  async preflight(ctx) {
+    const read = await ctx.openclaw.configGet('plugins.installs', { timeoutMs: 10_000 });
+    if (!read?.ok) {
+      return Object.freeze({
+        ok: false,
+        reason: 'plugins_installs_absent',
+        evidence: { errorSummary: read?.errorSummary ?? null },
+      });
+    }
+    if (String(read.value ?? '').trim() !== '{}') {
+      return Object.freeze({
+        ok: false,
+        reason: 'plugins_installs_not_empty',
+        evidence: { empty: false },
+      });
+    }
+    return Object.freeze({ ok: true, evidence: { empty: true } });
+  },
+
+  async preview() {
+    return Object.freeze({
+      steps: Object.freeze([
+        'Copy openclaw.json to a timestamped backup.',
+        'Remove only plugins.installs through openclaw config unset (argv, no shell).',
+        'Run openclaw config validate --json when that command returns a verdict.',
+        'Restore the backup if validation fails.',
+      ]),
+    });
+  },
+
+  async apply(ctx) {
+    if (typeof ctx.backupConfig !== 'function') {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: 'config backup is unavailable',
+      });
+    }
+    let backup;
+    try {
+      backup = await ctx.backupConfig();
+    } catch (error) {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: error.message,
+      });
+    }
+    if (!backup?.ok || typeof backup.path !== 'string' || backup.path.length === 0) {
+      return terminalResult(null, {
+        changed: false,
+        error: true,
+        errorSummary: 'config backup failed',
+      });
+    }
+    const removed = await ctx.openclaw.configUnset('plugins.installs', { timeoutMs: 30_000 });
+    if (applyFailureReason(removed) !== null) {
+      return terminalResult(removed, {
+        changed: false,
+        backupPath: backup.path,
+        stage: 'unset',
+      });
+    }
+    if (typeof ctx.openclaw.configValidate === 'function') {
+      const validation = await ctx.openclaw.configValidate({ timeoutMs: 30_000 });
+      if (validation?.available === true && validation.valid === false) {
+        if (typeof ctx.restoreConfig === 'function') {
+          await ctx.restoreConfig({ path: backup.path });
+        }
+        return terminalResult(null, {
+          changed: false,
+          backupPath: backup.path,
+          restored: true,
+          error: true,
+          errorSummary: 'openclaw config validate rejected the edited config',
+        });
+      }
+    }
+    return terminalResult(removed, {
+      changed: true,
+      backupPath: backup.path,
+      stage: 'unset',
+    });
+  },
+
+  async verify(ctx) {
+    const read = await ctx.openclaw.configGet('plugins.installs', { timeoutMs: 10_000 });
+    const value = String(read?.value ?? '').trim();
+    const gone = read?.ok !== true || value === '' || value === 'null';
+    return Object.freeze({
+      ok: gone && value !== '{}',
+      evidence: { present: read?.ok === true && value === '{}', errorSummary: read?.errorSummary ?? null },
+    });
+  },
+
+  async rollback(ctx, { applyResult } = {}) {
+    if (typeof applyResult?.backupPath !== 'string' || typeof ctx.restoreConfig !== 'function') {
+      return Object.freeze({
+        rolledBack: false,
+        note: 'No config backup was recorded, so plugins.installs was not restored.',
+      });
+    }
+    const restored = await ctx.restoreConfig({ path: applyResult.backupPath });
+    return Object.freeze({
+      rolledBack: restored?.ok === true,
+      note: restored?.ok === true
+        ? 'Restored openclaw.json from the backup taken before plugins.installs was removed.'
+        : 'Could not restore the config backup.',
+    });
+  },
+});
+
 // post-upgrade-migration-crash-loop and doctor-fix-stalled are detect-only.
 // doctor --fix is not a bounded repair for those shapes: it stops the gateway,
 // and the reported workspace and per-agent session failures were not fixed by it.
@@ -494,4 +614,5 @@ export const repairCatalog = Object.freeze({
   'auto-update-enabled-warning': autoUpdateEnabled,
   'gateway-loopback-no-auth': gatewayLoopbackNoAuth,
   'no-memory-flush': memoryFlushDisabled,
+  'plugins-installs-unrecognized': pluginsInstallsUnrecognized,
 });

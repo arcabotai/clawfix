@@ -562,6 +562,38 @@ export function createOpenClawAdapter({
       return invoke(['config', 'set', key, String(value)], options);
     },
 
+    /**
+     * Run OpenClaw's own config validator. `available` is false when the
+     * command did not return a recognized JSON verdict.
+     */
+    async configValidate(options = {}) {
+      const result = await invoke(['config', 'validate', '--json'], options);
+      let parsed = null;
+      try {
+        parsed = JSON.parse(String(result.stdout || ''));
+      } catch {
+        parsed = null;
+      }
+      const valid = parsed && typeof parsed === 'object'
+        ? (typeof parsed.valid === 'boolean' ? parsed.valid
+          : typeof parsed.ok === 'boolean' ? parsed.ok : null)
+        : null;
+      if (valid === null) {
+        return Object.freeze({
+          available: false,
+          valid: null,
+          status: result.status,
+          errorSummary: result.errorSummary || null,
+        });
+      }
+      return Object.freeze({
+        available: true,
+        valid,
+        status: result.status,
+        errorSummary: null,
+      });
+    },
+
     /** Remove one config key through OpenClaw itself. */
     async configUnset(key, options = {}) {
       if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]{1,128}$/.test(key)) {

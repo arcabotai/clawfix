@@ -413,6 +413,16 @@ async function applyCatalogRepair(issue, rl, session) {
     ctx: {
       openclaw: openClawAdapter,
       wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+      backupConfig: async () => {
+        const backupPath = `${CONFIG_PATH}.bak.${Date.now()}`;
+        await copyFile(CONFIG_PATH, backupPath);
+        return { ok: true, path: backupPath };
+      },
+      restoreConfig: async ({ path } = {}) => {
+        if (typeof path !== 'string' || !path.startsWith(`${CONFIG_PATH}.bak.`)) return { ok: false };
+        await copyFile(path, CONFIG_PATH);
+        return { ok: true };
+      },
     },
   });
 

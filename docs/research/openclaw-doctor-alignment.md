@@ -277,6 +277,23 @@ Items already aligned, so they are not work:
 1. Parse the exit-2 blocked envelope in the CLI collector and the hosted script, and keep `requirement`, `errorCode`, and `line` on every accepted finding. Fixtures are the 2026.11.3 captures above, with the temp state path rewritten to `~/.openclaw/...` and the Node binary path removed.
 2. For the exact missing-token `core/doctor/gateway-auth` shape, dedupe it against an existing `gateway.loopback_no_auth` security finding and otherwise point it at the existing `gateway-loopback-no-auth` repair. Dedupe `core/doctor/security` against a security-audit finding whose check id equals `requirement` when that requirement is a single check id. Do not map SecretRef gateway-auth findings onto the token repair.
 
+## Retired config keys that block update admission
+
+Item 3 is applied. A successful doctor lint (`available === true`, not timed out) that reports `core/doctor/heartbeat-cadence-migration`, `core/doctor/heartbeat-scratch-migration`, or `core/doctor/heartbeat-task-cron-migration` replaces the local leftover-key finding on the CLI. The doctor finding is kept and `heartbeat-no-model-override` is not added again. A timed-out lint does not silence the local detector. The hosted card stays one issue: when doctor already reported the migration, its message and the key path are the description.
+
+`heartbeat-no-model-override` also matches:
+
+| Evidence | Path named | Remedy |
+|---|---|---|
+| `agents.defaults.heartbeat`, `agents.entries.<id>.heartbeat`, or `agents.list.<id>.heartbeat` | that path | `openclaw doctor --fix` converts the block into an automation. Do not delete it first. |
+| `invalid-config` with `agents.defaults: unrecognized key <key>` | `agents.defaults` until the config or an `unrecognized_keys ["heartbeat"]` line identifies the child | Same. Update admission can refuse before Doctor's migration runs ([openclaw#193157](https://github.com/openclaw/openclaw/issues/193157)). |
+| `unrecognized_keys ["heartbeat"]` | `agents.defaults.heartbeat` | Same. |
+| `Agent "ops" HEARTBEAT.md cannot be migrated` / `symlink target escapes the agent workspace` | `agents.entries.ops.heartbeat` when that key is present, plus the agent name | The file blocks `doctor --fix` and update admission ([openclaw#186862](https://github.com/openclaw/openclaw/issues/186862)). A scratch-migration doctor finding covers this and is not repeated. |
+
+Deleting `agents.defaults.heartbeat` is not a repair. Doctor's migration preserves the schedule and model; a delete drops them.
+
+`plugins-installs-unrecognized` matches `plugins.installs` and `plugins: Unrecognized key: "installs"` ([openclaw#138652](https://github.com/openclaw/openclaw/issues/138652)). An empty object is the catalog repair `plugins-installs-unrecognized`: copy `openclaw.json` to a backup, `openclaw config unset plugins.installs`, then `openclaw config validate --json` when that command returns a verdict, and restore the backup on failure. A populated object is detect-only because those records belong in the SQLite plugin index before the key is removed.
+
 ## Post-upgrade migration crash loop and stalled doctor
 
 `state-dir-migration` still matches only `State dir migration skipped`. That string is the harmless "destination already exists" case. It is not the upgrade crash loop.

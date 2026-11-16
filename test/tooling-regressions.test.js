@@ -110,12 +110,12 @@ test('landing page presents truthful evidence for the published 0.12.0 twenty-on
   // Claims that must stay true of what actually ships.
   assert.match(landing, /glibc and musl \(Alpine\) hosts/);
   assert.match(landing, /render, accept typed input, and exit cleanly/);
-  // Repair scope must stay honest: four reviewed catalog repairs, applied one at a time.
-  assert.match(landing, /Four reviewed catalog repairs/);
-  assert.match(landing, /four guarded repairs/);
-  assert.match(landing, /chat-first TUI \+ 4 repairs/);
-  assert.doesNotMatch(landing, /five guarded repairs/);
-  assert.doesNotMatch(landing, /5 repairs/);
+  // Repair scope must stay honest: five reviewed catalog repairs, applied one at a time.
+  assert.match(landing, /Five reviewed catalog repairs/);
+  assert.match(landing, /five guarded repairs/);
+  assert.match(landing, /chat-first TUI \+ 5 repairs/);
+  assert.doesNotMatch(landing, /four guarded repairs/);
+  assert.doesNotMatch(landing, /4 repairs/);
   assert.match(landing, /require explicit approval/);
   // The payment surface is gone; the site must not advertise one.
   assert.doesNotMatch(landing, /Pay with Card|lemonsqueezy|2 USDC/i);

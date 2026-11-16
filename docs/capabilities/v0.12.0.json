@@ -64,7 +64,7 @@
     }
   },
   "detectors": {
-    "deterministicCount": 56,
+    "deterministicCount": 57,
     "ids": [
       "auto-update-enabled-warning",
       "auto-update-restart-loop",
@@ -112,6 +112,7 @@
       "oversized-error-log",
       "pi-backed-openai-codex-route",
       "plaintext-secrets-in-config",
+      "plugins-installs-unrecognized",
       "port-conflict",
       "post-upgrade-migration-crash-loop",
       "provider-prefix-unregistered",
@@ -125,7 +126,7 @@
     ]
   },
   "executableRepairs": {
-    "count": 4,
+    "count": 5,
     "items": [
       {
         "id": "auto-update-enabled-warning",
@@ -145,6 +146,11 @@
       {
         "id": "no-memory-flush",
         "title": "Enable memory flush on compaction",
+        "risk": "low"
+      },
+      {
+        "id": "plugins-installs-unrecognized",
+        "title": "Remove empty plugins.installs",
         "risk": "low"
       }
     ],

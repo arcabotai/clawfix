@@ -1,0 +1,3 @@
+Agent "ops" HEARTBEAT.md cannot be migrated: HEARTBEAT.md symlink target escapes the agent workspace
+Agent "ops" HEARTBEAT.md was not migrated: HEARTBEAT.md symlink target escapes the agent workspace
+{"verdict": "refuse", "reasons": [{"code": "heartbeat-migration"}]}

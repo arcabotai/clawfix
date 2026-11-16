@@ -1,0 +1,3 @@
+Gateway failed to start: Invalid config at ~/.openclaw/openclaw.json:
+openclaw.json:1271 — plugins: Unrecognized key: "installs"
+Run "openclaw doctor --fix" to repair, then retry.

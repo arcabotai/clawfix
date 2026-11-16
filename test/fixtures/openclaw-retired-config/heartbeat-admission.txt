@@ -1,0 +1,7 @@
+Update refused: configuration is invalid at ~/.openclaw/openclaw.json.
+- agents.defaults: unrecognized key <key>
+Run `openclaw doctor --fix` to repair retired or unrecognized configuration fields, then correct any remaining errors before retrying.
+
+OpenClaw update failed: invalid-config.
+Admission checks: config: refuse, node-runtime: ok.
+Failing check candidate-admission (invalid-config)

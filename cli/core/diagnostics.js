@@ -3,8 +3,12 @@ import {
 } from 'node:path';
 
 import {
+  classifyLegacyHeartbeat,
+  classifyPluginsInstalls,
   classifyPostUpgradeMigration,
   classifyStalledDoctor,
+  describeLegacyHeartbeat,
+  describePluginsInstalls,
   describePostUpgradeMigration,
   describeStalledDoctor,
   readGatewayLiveness,
@@ -1236,6 +1240,30 @@ export function deriveIssues(collected) {
   }
   const heartbeatIssue = heartbeatScratchIssue(workspace.heartbeatFile);
   if (heartbeatIssue) issues.push(heartbeatIssue);
+  const legacyHeartbeat = classifyLegacyHeartbeat({
+    config,
+    text: combinedLogs,
+    nativeDoctor,
+  });
+  if (legacyHeartbeat && (legacyHeartbeat.showKeys || legacyHeartbeat.fileBlocked)) {
+    issues.push({
+      knownIssueId: 'heartbeat-no-model-override',
+      severity: legacyHeartbeat.admission || legacyHeartbeat.fileBlocked ? 'high' : 'low',
+      kind: legacyHeartbeat.admission || legacyHeartbeat.fileBlocked ? 'failure' : 'warning',
+      text: 'Legacy heartbeat config needs migration',
+      description: describeLegacyHeartbeat(legacyHeartbeat),
+    });
+  }
+  const pluginsInstalls = classifyPluginsInstalls({ config, text: combinedLogs });
+  if (pluginsInstalls) {
+    issues.push({
+      knownIssueId: 'plugins-installs-unrecognized',
+      severity: 'high',
+      kind: 'failure',
+      text: 'Retired plugins.installs key is rejected',
+      description: describePluginsInstalls(pluginsInstalls),
+    });
+  }
   if (!workspace.hasSoul && workspace.workspaceDir) {
     issues.push({ severity: 'low', kind: 'optimization', text: 'No SOUL.md found (agent has no personality)' });
   }

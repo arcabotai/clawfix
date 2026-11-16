@@ -1,0 +1,1 @@
+agents.defaults: unrecognized_keys ["heartbeat"]

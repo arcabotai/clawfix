@@ -624,7 +624,7 @@ export const DOCTOR_KILL_SIGNALS = Object.freeze(['SIGTERM', 'SIGKILL']);
 // that finished in about four minutes on the same host.
 export const STALE_DOCTOR_ELAPSED_SECONDS = 15 * 60;
 
-const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified/i;
+const DIAGNOSTIC_LOG_LINE = /error|warn|fail|crash|EADDRINUSE|EACCES|Legacy workspace setup state requires migration|legacy workspace setup conflicts with canonical SQLite state|missing or drifted index idx_agent_session_nodes_active|Legacy session store requires migration|sessions\.json|Stopped the managed Gateway for Doctor repair|SQLite read-only snapshot|sqlite-source-revision|content-version|process census is incomplete|undergoing offline maintenance|Doctor interrupted by SIGTERM|CLI signal cleanup did not complete|Doctor complete|Gateway restarted and verified|invalid-config|Unrecognized key|HEARTBEAT\.md cannot be migrated|HEARTBEAT\.md was not migrated|symlink target escapes the agent workspace|heartbeat-migration/i;
 
 export function retainDiagnosticLogLine(line) {
   return DIAGNOSTIC_LOG_LINE.test(String(line ?? ''));
@@ -788,4 +788,177 @@ export function describeStalledDoctor(match) {
   }
   parts.push('ClawFix will not start an unbounded doctor --fix.');
   return parts.join(' ');
+}
+
+// Doctor lint check ids that own legacy heartbeat migration. When a successful
+// lint reports one of these, it replaces the local leftover-key finding.
+export const HEARTBEAT_DOCTOR_CHECK_IDS = Object.freeze([
+  'core/doctor/heartbeat-cadence-migration',
+  'core/doctor/heartbeat-scratch-migration',
+  'core/doctor/heartbeat-task-cron-migration',
+]);
+
+const SAFE_CONFIG_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+function plainRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function safeConfigId(value) {
+  return typeof value === 'string' && SAFE_CONFIG_ID.test(value) ? value : null;
+}
+
+export function nativeDoctorFromDiagnostic(diagnostic) {
+  const record = diagnostic?.nativeDoctor || diagnostic?.openclaw?.nativeDoctor;
+  return plainRecord(record) ? record : null;
+}
+
+export function doctorLintSucceeded(nativeDoctor) {
+  return plainRecord(nativeDoctor)
+    && nativeDoctor.available === true
+    && nativeDoctor.timedOut !== true
+    && Array.isArray(nativeDoctor.findings);
+}
+
+export function legacyHeartbeatPaths(config) {
+  const paths = [];
+  if (plainRecord(config?.agents?.defaults?.heartbeat)) paths.push('agents.defaults.heartbeat');
+  const entries = config?.agents?.entries;
+  if (plainRecord(entries)) {
+    for (const [id, entry] of Object.entries(entries)) {
+      if (!plainRecord(entry?.heartbeat)) continue;
+      const safe = safeConfigId(id);
+      paths.push(safe ? `agents.entries.${safe}.heartbeat` : 'agents.entries.heartbeat');
+    }
+  }
+  if (Array.isArray(config?.agents?.list)) {
+    config.agents.list.forEach((entry, index) => {
+      if (!plainRecord(entry?.heartbeat)) return;
+      const safe = safeConfigId(entry?.id) || safeConfigId(entry?.name);
+      paths.push(safe ? `agents.list.${safe}.heartbeat` : `agents.list.${index}.heartbeat`);
+    });
+  }
+  return paths;
+}
+
+function doctorCheckIds(nativeDoctor) {
+  if (!doctorLintSucceeded(nativeDoctor)) return [];
+  return nativeDoctor.findings
+    .map(finding => finding?.checkId)
+    .filter(id => typeof id === 'string');
+}
+
+function heartbeatDoctorLines(nativeDoctor) {
+  if (!doctorLintSucceeded(nativeDoctor)) return [];
+  return nativeDoctor.findings
+    .filter(finding => HEARTBEAT_DOCTOR_CHECK_IDS.includes(finding?.checkId))
+    .map(finding => {
+      const path = typeof finding.path === 'string' && finding.path ? ` (${finding.path})` : '';
+      const message = String(finding.message || finding.checkId);
+      return `${message}${path}`;
+    })
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
+/**
+ * Retired heartbeat keys and the update-admission / file refusals that fire
+ * before Doctor's migration. A successful doctor lint that already reported
+ * the heartbeat migration checks covers the key; a timed-out lint does not.
+ */
+export function classifyLegacyHeartbeat({ config, text = '', nativeDoctor = null } = {}) {
+  const source = String(text ?? '');
+  const paths = legacyHeartbeatPaths(config);
+  const namedHeartbeat = /unrecognized_keys\s*[:=]?\s*\[[^\]]*["']heartbeat["']/i.test(source)
+    || /Unrecognized key:\s*"heartbeat"/i.test(source);
+  const redactedChild = /agents\.defaults:\s*unrecognized key\s*<key>/i.test(source);
+  const admission = /invalid-config/i.test(source) && (
+    namedHeartbeat
+    || redactedChild
+    || (/agents\.defaults:\s*unrecognized key/i.test(source) && paths.includes('agents.defaults.heartbeat'))
+  );
+  const fileAgent = /Agent "([A-Za-z0-9_-]{1,64})" HEARTBEAT\.md (?:cannot be migrated|was not migrated)/.exec(source);
+  const fileBlocked = Boolean(fileAgent) || /symlink target escapes the agent workspace/i.test(source)
+    || /HEARTBEAT\.md cannot be migrated/i.test(source);
+  const checks = doctorCheckIds(nativeDoctor);
+  const keysCoveredByDoctor = checks.some(id => HEARTBEAT_DOCTOR_CHECK_IDS.includes(id));
+  const fileCoveredByDoctor = checks.includes('core/doctor/heartbeat-scratch-migration');
+  const keyEvidence = paths.length > 0 || namedHeartbeat || admission;
+  const showKeys = keyEvidence && !keysCoveredByDoctor;
+  const showFile = fileBlocked && !fileCoveredByDoctor;
+  if (!showKeys && !showFile && !(keysCoveredByDoctor && keyEvidence)) return null;
+  const reported = [...paths];
+  if ((namedHeartbeat || (admission && paths.includes('agents.defaults.heartbeat')))
+      && !reported.includes('agents.defaults.heartbeat')) {
+    reported.unshift('agents.defaults.heartbeat');
+  }
+  return Object.freeze({
+    paths: Object.freeze(reported),
+    admission: admission || namedHeartbeat,
+    redactedAdmission: admission && !namedHeartbeat && !paths.includes('agents.defaults.heartbeat'),
+    fileBlocked: showFile,
+    fileAgent: fileAgent?.[1] || null,
+    keysCoveredByDoctor,
+    fileCoveredByDoctor,
+    showKeys,
+    doctorLines: Object.freeze(heartbeatDoctorLines(nativeDoctor)),
+  });
+}
+
+export function describeLegacyHeartbeat(detail) {
+  if (!detail) return 'Retired heartbeat configuration needs Doctor migration.';
+  const parts = [];
+  if (detail.keysCoveredByDoctor && !detail.showKeys && detail.doctorLines.length > 0) {
+    const paths = detail.paths.length ? ` Key path: ${detail.paths.join(', ')}.` : '';
+    parts.push(`Doctor lint already reported the heartbeat migration.${paths} ${detail.doctorLines.join(' ')}`);
+  }
+  if (detail.showKeys) {
+    if (detail.redactedAdmission && detail.paths.length === 0) {
+      parts.push('Update admission returned invalid-config for agents.defaults: unrecognized key. The key name was redacted in that output.');
+    } else if (detail.paths.length > 0) {
+      parts.push(`Retired heartbeat config at ${detail.paths.join(', ')} is not in the current schema.`);
+    }
+    if (detail.admission && !detail.redactedAdmission) {
+      parts.push('Update admission returned invalid-config before Doctor could migrate this key. A gateway restart does not remove it.');
+    }
+    parts.push('Run openclaw doctor --fix so Doctor can convert the block into an automation. Do not delete the key first; that drops the saved schedule and model.');
+  }
+  if (detail.fileBlocked) {
+    const who = detail.fileAgent ? `Agent "${detail.fileAgent}" ` : '';
+    parts.push(`${who}HEARTBEAT.md cannot be migrated: the symlink target escapes the agent workspace. doctor --fix and update admission refuse this file. Do not delete it from this check.`);
+  }
+  return parts.join(' ') || 'Retired heartbeat configuration needs Doctor migration.';
+}
+
+export function classifyPluginsInstalls({ config, text = '' } = {}) {
+  const source = String(text ?? '');
+  const fromLog = /plugins:\s*Unrecognized key:\s*"installs"/i.test(source)
+    || /Unrecognized key:\s*"installs"/i.test(source);
+  let empty = false;
+  let populated = false;
+  let present = false;
+  if (plainRecord(config?.plugins) && Object.hasOwn(config.plugins, 'installs')) {
+    present = true;
+    const value = config.plugins.installs;
+    empty = plainRecord(value) && Object.keys(value).length === 0;
+    populated = !empty;
+  }
+  if (!present && !fromLog) return null;
+  return Object.freeze({
+    path: 'plugins.installs',
+    empty,
+    populated,
+    fromLog,
+  });
+}
+
+export function describePluginsInstalls(detail) {
+  if (!detail) return 'plugins.installs is rejected as Unrecognized key: "installs".';
+  if (detail.empty) {
+    return 'plugins.installs is an empty retired key. Gateway startup rejects it as plugins: Unrecognized key: "installs". OpenClaw removes an empty plugins.installs object. Back up openclaw.json, delete only that key, then run openclaw config validate.';
+  }
+  if (detail.populated) {
+    return 'plugins.installs is still present and is not an empty object. Startup can fail with plugins: Unrecognized key: "installs". Populated install records belong in the SQLite plugin index before the key is removed. This check does not delete them.';
+  }
+  return 'Gateway startup failed with plugins: Unrecognized key: "installs" at plugins.installs. If the value is an empty object, back up the config and delete only that key. If it contains install records, do not delete it by hand.';
 }

@@ -25,7 +25,9 @@ const LOCAL_ISSUE_TEXT_REPAIR_MAP = new Map([
 
 // Explicit knownIssueId -> repairId map. Populate as local detectors and reviewed repairs are
 // added together; an unmapped knownIssueId stays advisory-only.
-const LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP = new Map([]);
+const LOCAL_KNOWN_ISSUE_ID_REPAIR_MAP = new Map([
+  ['plugins-installs-unrecognized', 'plugins-installs-unrecognized'],
+]);
 
 // Explicit native checkId -> repairId map (exact checkId equality only).
 const NATIVE_CHECK_ID_REPAIR_MAP = new Map([
