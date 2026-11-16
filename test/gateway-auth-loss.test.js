@@ -35,7 +35,7 @@ function collected(text, extra = {}) {
 }
 
 test('a backup or the removal log shows gateway.auth was lost, without printing a token', async () => {
-  const text = await fixture('auth-removed.log');
+  const text = await fixture('auth-removed.txt');
   assert.equal(retainDiagnosticLogLine('gateway.auth REMOVED'), true);
   const issue = detectIssues({
     logs: { errors: text },
@@ -65,7 +65,7 @@ test('a backup or the removal log shows gateway.auth was lost, without printing 
 
 test('missing gateway.auth without a backup or removal line is not a loss', async () => {
   assert.equal(detectIssues({
-    logs: { errors: await fixture('negatives.log') },
+    logs: { errors: await fixture('negatives.txt') },
     openclaw: {
       gatewayAuth: {
         current: { read: true, present: false, mode: null },
@@ -76,7 +76,7 @@ test('missing gateway.auth without a backup or removal line is not a loss', asyn
   }).some(entry => entry.id === 'gateway-auth-removed'), false);
 
   assert.equal(detectIssues({
-    logs: { errors: await fixture('auth-removed.log') },
+    logs: { errors: await fixture('auth-removed.txt') },
     openclaw: {
       gatewayAuth: {
         current: { read: true, present: true, mode: 'token' },
@@ -88,7 +88,7 @@ test('missing gateway.auth without a backup or removal line is not a loss', asyn
 });
 
 test('auth-loss replaces the generic missing-token gateway findings', async () => {
-  const issues = deriveIssues(collected(await fixture('auth-removed.log'), {
+  const issues = deriveIssues(collected(await fixture('auth-removed.txt'), {
     gatewayAuth: {
       current: { read: true, present: false, mode: null },
       backups: [{ name: 'openclaw.json.bak', present: true, mode: 'password' }],
@@ -119,7 +119,7 @@ test('auth-loss replaces the generic missing-token gateway findings', async () =
 });
 
 test('AUTH_PROFILE_MIGRATION_REQUIRED is one finding and does not repeat the doctor line', async () => {
-  const text = await fixture('auth-profile.log');
+  const text = await fixture('auth-profile.txt');
   const issues = deriveIssues(collected(text, {
     nativeDoctor: {
       available: true,
@@ -142,7 +142,7 @@ test('AUTH_PROFILE_MIGRATION_REQUIRED is one finding and does not repeat the doc
 });
 
 test('withheld-cross-device and the mismatch line are one stale-token finding', async () => {
-  const text = await fixture('stale-device.log');
+  const text = await fixture('stale-device.txt');
   const issues = deriveIssues(collected(text, {
     nativeDoctor: {
       available: true,
@@ -164,7 +164,7 @@ test('withheld-cross-device and the mismatch line are one stale-token finding', 
   assert.match(matches[0].description, /189206/);
   assert.equal(matches[0].description.includes('0eab85f6'), false);
   assert.equal(repairCatalog['stale-device-token'], undefined);
-  assert.equal(deriveIssues(collected(await fixture('negatives.log')))
+  assert.equal(deriveIssues(collected(await fixture('negatives.txt')))
     .some(issue => issue.knownIssueId === 'stale-device-token'
       || issue.knownIssueId === 'auth-profile-migration-required'), false);
 });

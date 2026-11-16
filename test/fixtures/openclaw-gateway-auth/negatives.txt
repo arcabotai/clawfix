@@ -1,0 +1,7 @@
+preservedGatewayAuth=false
+gateway.auth.mode is token and the gateway is healthy
+auth profile store is healthy
+unauthorized: token mismatch
+withheld for review
+device token refreshed
+npm WARN package-lock.json

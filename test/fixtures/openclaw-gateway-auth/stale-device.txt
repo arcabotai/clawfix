@@ -1,0 +1,4 @@
+gateway connect failed: GatewayClientRequestError: unauthorized: device token mismatch (rotate/reissue device token)
+Pending: 0 · Paired: 1
+{"role":"operator","tokenDelivery":"withheld-cross-device"}
+Local cached operator device token for cli (0eab85f6…) predates the gateway rotation. This is a stale device-token pattern and can fail with device token mismatch.

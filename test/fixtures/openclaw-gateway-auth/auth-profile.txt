@@ -1,0 +1,6 @@
+[agents/auth-profiles] auth profile store update failed: Auth profile store ~/.openclaw/agents/main/agent/openclaw-agent.sqlite requires legacy credential migration; run openclaw doctor --fix.
+moonshot/kimi-k3 -> AUTH_PROFILE_MIGRATION_REQUIRED
+anthropic/claude-opus-4-8 -> AUTH_PROFILE_MIGRATION_REQUIRED
+minimax/MiniMax-M3 -> AUTH_PROFILE_MIGRATION_REQUIRED
+next=none
+Archived a previously migrated legacy auth source without replaying credentials (~/.openclaw/agents/main/agent/auth-profiles.json.migrated-2026-08-31T17-24-53.663Z-redacted).
